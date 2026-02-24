@@ -1,0 +1,1462 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Medici Operations Center v2.0</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg:#0d1117;--surface:#161b22;--surface2:#1c2333;--border:#30363d;
+  --text:#e6edf3;--text2:#8b949e;--accent:#58a6ff;
+  --green:#3fb950;--yellow:#d29922;--red:#f85149;--orange:#db6d28;
+  --cyan:#39d2c0;--purple:#bc8cff;--pink:#f778ba;
+}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;
+  background:var(--bg);color:var(--text);min-height:100vh;overflow-x:hidden}
+
+/* ── Top bar ── */
+.topbar{background:var(--surface);border-bottom:1px solid var(--border);padding:12px 24px;
+  display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100}
+.topbar h1{font-size:18px;font-weight:600;display:flex;align-items:center;gap:8px}
+.topbar h1 .dot{width:10px;height:10px;border-radius:50%;display:inline-block}
+.dot.ok{background:var(--green);box-shadow:0 0 8px var(--green)}
+.dot.err{background:var(--red);box-shadow:0 0 8px var(--red);animation:pulse 1.5s infinite}
+.dot.warn{background:var(--yellow);box-shadow:0 0 8px var(--yellow);animation:pulse 2s infinite}
+.topbar-right{display:flex;align-items:center;gap:16px;font-size:13px;color:var(--text2)}
+.topbar-right button{background:var(--surface2);color:var(--text);border:1px solid var(--border);
+  padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px;transition:.15s}
+.topbar-right button:hover{background:var(--accent);color:#fff;border-color:var(--accent)}
+.topbar-right button.active{background:var(--green);color:#000;border-color:var(--green)}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+
+/* ── Alert bar ── */
+.alert-bar{background:#f8514922;border:1px solid var(--red);border-radius:8px;
+  margin:16px 24px 0;padding:12px 16px;display:none;align-items:center;gap:8px;
+  font-size:14px;color:var(--red);animation:pulse 2s infinite}
+.alert-bar.show{display:flex}
+
+/* ── Nav Tabs (top-level sections) ── */
+.nav-tabs{display:flex;gap:0;padding:0 24px;margin-top:12px;border-bottom:2px solid var(--border);overflow-x:auto}
+.nav-tab{padding:10px 18px;font-size:13px;cursor:pointer;color:var(--text2);
+  border-bottom:3px solid transparent;transition:.15s;white-space:nowrap;font-weight:500}
+.nav-tab:hover{color:var(--text)}
+.nav-tab.active{color:var(--accent);border-bottom-color:var(--accent)}
+.nav-tab .count{font-size:11px;padding:1px 6px;border-radius:8px;margin-right:4px;font-weight:600}
+.nav-tab .count.red{background:var(--red);color:#fff}
+.nav-tab .count.green{background:var(--green);color:#000}
+.nav-tab .count.yellow{background:var(--yellow);color:#000}
+.nav-tab .count.blue{background:var(--accent);color:#000}
+.nav-panel{display:none;padding:16px 24px 24px}
+.nav-panel.active{display:block}
+
+/* ── KPI cards ── */
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px;margin-bottom:16px}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:10px;
+  padding:14px;transition:.2s;cursor:default}
+.card:hover{border-color:var(--accent);transform:translateY(-1px)}
+.card .label{font-size:11px;color:var(--text2);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px}
+.card .value{font-size:26px;font-weight:700;line-height:1.1}
+.card .sub{font-size:11px;color:var(--text2);margin-top:4px}
+.card.danger .value{color:var(--red)}
+.card.danger{border-color:var(--red);background:#f851490a}
+.card.warning .value{color:var(--yellow)}
+.card.warning{border-color:var(--yellow);background:#d299220a}
+.card.ok .value{color:var(--green)}
+.card.ok{border-color:var(--green);background:#3fb9500a}
+.card.info .value{color:var(--accent)}
+.card.purple .value{color:var(--purple)}
+.card.purple{border-color:var(--purple);background:#bc8cff0a}
+.card.cyan .value{color:var(--cyan)}
+.card.cyan{border-color:var(--cyan);background:#39d2c00a}
+.card.pink .value{color:var(--pink)}
+.card.pink{border-color:var(--pink);background:#f778ba0a}
+
+/* ── Sections ── */
+.section{background:var(--surface);border:1px solid var(--border);border-radius:10px;
+  margin-bottom:16px;overflow:hidden}
+.section-header{padding:12px 16px;border-bottom:1px solid var(--border);
+  display:flex;align-items:center;justify-content:space-between}
+.section-header h2{font-size:14px;font-weight:600;display:flex;align-items:center;gap:8px}
+.badge{font-size:11px;padding:2px 8px;border-radius:10px;font-weight:500}
+.badge.red{background:var(--red);color:#fff}
+.badge.green{background:var(--green);color:#000}
+.badge.yellow{background:var(--yellow);color:#000}
+.badge.blue{background:var(--accent);color:#000}
+
+/* ── Tables ── */
+table{width:100%;border-collapse:collapse;font-size:13px}
+thead{background:var(--surface2)}
+th{padding:10px 12px;text-align:right;font-weight:600;color:var(--text2);font-size:11px;
+  text-transform:uppercase;letter-spacing:.5px;border-bottom:1px solid var(--border)}
+td{padding:8px 12px;border-bottom:1px solid var(--border);vertical-align:top;max-width:300px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+tr:hover{background:var(--surface2)}
+.empty-row td{text-align:center;color:var(--text2);padding:20px;font-style:italic}
+
+/* ── Grids ── */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px}
+@media(max-width:1200px){.grid3{grid-template-columns:1fr 1fr}.grid2{grid-template-columns:1fr}}
+@media(max-width:800px){.grid3{grid-template-columns:1fr}}
+
+/* ── Status ── */
+.status{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:500}
+.status.s-red{background:#f8514922;color:var(--red)}
+.status.s-green{background:#3fb95022;color:var(--green)}
+.status.s-yellow{background:#d2992222;color:var(--yellow)}
+.status.s-blue{background:#58a6ff22;color:var(--accent)}
+.status.s-purple{background:#bc8cff22;color:var(--purple)}
+.status.s-cyan{background:#39d2c022;color:var(--cyan)}
+
+/* ── Tabs (inside sections) ── */
+.tabs{display:flex;gap:0;border-bottom:1px solid var(--border);padding:0 16px}
+.tab{padding:10px 16px;font-size:13px;cursor:pointer;color:var(--text2);border-bottom:2px solid transparent;transition:.15s}
+.tab:hover{color:var(--text)}
+.tab.active{color:var(--accent);border-bottom-color:var(--accent)}
+.tab-panel{display:none}
+.tab-panel.active{display:block}
+
+/* ── Bar chart ── */
+.bar-chart{padding:12px 16px}
+.bar-row{display:flex;align-items:center;gap:8px;margin:4px 0;font-size:12px}
+.bar-row .bar-label{width:150px;text-overflow:ellipsis;overflow:hidden;white-space:nowrap}
+.bar-row .bar-track{flex:1;height:20px;background:var(--surface2);border-radius:4px;overflow:hidden;display:flex}
+.bar-row .bar-fill{height:100%;transition:.5s}
+.bar-row .bar-fill.active{background:var(--accent)}
+.bar-row .bar-fill.stuck{background:var(--red)}
+.bar-row .bar-fill.sold{background:var(--green)}
+.bar-row .bar-count{min-width:60px;text-align:left;color:var(--text2)}
+
+/* ── Heartbeat indicator ── */
+.heartbeat{display:flex;align-items:center;gap:12px;padding:16px}
+.heartbeat .pulse-ring{width:60px;height:60px;border-radius:50%;display:flex;align-items:center;
+  justify-content:center;font-size:22px;position:relative}
+.heartbeat .pulse-ring.ok{background:#3fb95022;border:2px solid var(--green);color:var(--green)}
+.heartbeat .pulse-ring.warn{background:#d2992222;border:2px solid var(--yellow);color:var(--yellow)}
+.heartbeat .pulse-ring.err{background:#f8514922;border:2px solid var(--red);color:var(--red);animation:pulse 1s infinite}
+.heartbeat .hb-info{flex:1}
+.heartbeat .hb-info .hb-title{font-size:16px;font-weight:600;margin-bottom:4px}
+.heartbeat .hb-info .hb-detail{font-size:13px;color:var(--text2)}
+
+/* ── Waste progress ── */
+.waste-bar{height:8px;border-radius:4px;background:var(--surface2);overflow:hidden;margin-top:6px}
+.waste-bar .fill{height:100%;transition:.5s}
+.waste-bar .fill.urgent{background:linear-gradient(90deg,var(--red),var(--orange))}
+.waste-bar .fill.warn{background:linear-gradient(90deg,var(--yellow),var(--orange))}
+.waste-bar .fill.safe{background:linear-gradient(90deg,var(--green),var(--cyan))}
+
+/* ── Loading ── */
+.loading{text-align:center;padding:40px;color:var(--text2)}
+.spinner{display:inline-block;width:24px;height:24px;border:3px solid var(--border);
+  border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* ── Drift highlight ── */
+.drift-up{color:var(--red)}
+.drift-down{color:var(--green)}
+
+/* ── BI period buttons ── */
+.bi-period{background:var(--surface2);color:var(--text);border:1px solid var(--border);
+  padding:6px 16px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:500;transition:.15s}
+.bi-period:hover{background:var(--accent);color:#fff;border-color:var(--accent)}
+.bi-period.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+
+/* ── Action buttons (Emergency) ── */
+.action-btn{display:inline-block;background:var(--surface2);color:var(--text);border:1px solid var(--border);
+  padding:10px 18px;border-radius:8px;cursor:pointer;font-size:13px;transition:.15s;margin:4px}
+.action-btn:hover{background:var(--accent);color:#fff;border-color:var(--accent);transform:translateY(-1px)}
+.danger-btn{border-color:var(--red);color:var(--red)}
+.danger-btn:hover{background:var(--red);color:#fff;border-color:var(--red)}
+
+/* ── Severity indicators ── */
+.severity{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:6px;font-size:12px;font-weight:600}
+.severity-0{background:#3fb95022;color:var(--green)}
+.severity-1{background:#39d2c022;color:var(--cyan)}
+.severity-2{background:#58a6ff22;color:var(--accent)}
+.severity-3{background:#d2992222;color:var(--yellow)}
+.severity-4{background:#db6d2822;color:var(--orange)}
+.severity-5{background:#f8514922;color:var(--red);animation:pulse 1.5s infinite}
+
+/* ── Bar chart for BI hourly ── */
+.bi-bar{display:flex;align-items:flex-end;gap:3px;height:120px;padding:0 16px 8px}
+.bi-bar-col{display:flex;flex-direction:column;align-items:center;flex:1;gap:2px}
+.bi-bar-col .bar{width:100%;border-radius:3px 3px 0 0;min-width:12px;transition:.3s}
+.bi-bar-col .bar.bookings{background:var(--accent)}
+.bi-bar-col .bar.errors{background:var(--red)}
+.bi-bar-col .hour-label{font-size:9px;color:var(--text2)}
+
+/* ── Log entries ── */
+.log-critical td{background:#f8514915;color:var(--red);font-weight:600}
+.log-error td{background:#f8514910;color:var(--red)}
+.log-warning td{background:#d299220a;color:var(--yellow)}
+.log-info td{color:var(--text)}
+.log-debug td{color:var(--text2)}
+td.log-msg{white-space:pre-wrap;word-break:break-word;max-width:600px;font-family:'Cascadia Code','Fira Code',monospace;font-size:12px}
+</style>
+</head>
+<body>
+
+<!-- ═══ Top Bar ═══ -->
+<div class="topbar">
+  <h1><span class="dot" id="statusDot"></span> Medici Operations Center <span style="font-size:12px;color:var(--text2);font-weight:400">v2.0</span></h1>
+  <div class="topbar-right">
+    <span id="lastUpdate">טוען...</span>
+    <button id="btnAutoRefresh" class="active" onclick="toggleAutoRefresh()">Auto 30s</button>
+    <button onclick="loadData()">&#x21BB; רענן</button>
+    <button id="btnSound" onclick="toggleSound()">&#x1f50a; Sound OFF</button>
+  </div>
+</div>
+
+<!-- ═══ Alert Bar ═══ -->
+<div class="alert-bar" id="alertBar"><span id="alertText"></span></div>
+
+<!-- ═══ Nav Tabs ═══ -->
+<div class="nav-tabs">
+  <div class="nav-tab active" data-nav="overview">&#x1F4CA; סקירה כללית</div>
+  <div class="nav-tab" data-nav="reservations">&#x1F4E5; הזמנות Zenith <span class="count blue" id="navResCount">0</span></div>
+  <div class="nav-tab" data-nav="waste">&#x1F4B8; חדרים לא נמכרו <span class="count yellow" id="navWasteCount">0</span></div>
+  <div class="nav-tab" data-nav="conversion">&#x1F4B0; המרה ורווחיות</div>
+  <div class="nav-tab" data-nav="pricedrift">&#x1F4C9; שינויי מחיר <span class="count red" id="navDriftCount">0</span></div>
+  <div class="nav-tab" data-nav="errors">&#x26A0;&#xFE0F; שגיאות</div>
+  <div class="nav-tab" data-nav="azure">&#x2601;&#xFE0F; Azure Monitor</div>
+  <div class="nav-tab" data-nav="bi">&#x1F4CA; BI Analytics</div>
+  <div class="nav-tab" data-nav="emergency">&#x1F6A8; חירום <span class="count" id="navEmergCount" style="display:none">!</span></div>
+  <div class="nav-tab" data-nav="history">&#x1F4C8; מגמות היסטוריות</div>
+  <div class="nav-tab" data-nav="alerting">&#x1F514; התראות <span class="count red" id="navAlertCount" style="display:none">0</span></div>
+  <div class="nav-tab" data-nav="logs">&#x1F4DC; Logs <span class="count blue" id="navLogCount">0</span></div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!--  PANEL 1: Overview                                                -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<div class="nav-panel active" id="panel-overview">
+
+  <!-- KPI Cards -->
+  <div class="cards" id="kpiCards">
+    <div class="card"><div class="label">מצב מערכת</div><div class="value" style="font-size:16px"><div class="spinner"></div></div></div>
+  </div>
+
+  <!-- Heartbeat + SalesOffice side by side -->
+  <div class="grid2">
+
+    <!-- BuyRooms Heartbeat -->
+    <div class="section">
+      <div class="section-header"><h2>&#x1F493; BuyRooms Heartbeat</h2></div>
+      <div class="heartbeat" id="heartbeatArea">
+        <div class="pulse-ring ok">&#x2764;</div>
+        <div class="hb-info">
+          <div class="hb-title">טוען...</div>
+          <div class="hb-detail">-</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- SalesOffice -->
+    <div class="section">
+      <div class="section-header">
+        <h2>&#x1F4CB; SalesOffice Orders</h2>
+        <div>
+          <span class="badge blue" id="soPendingBadge">Pending: 0</span>
+          <span class="badge yellow" id="soProgressBadge">In Progress: 0</span>
+          <span class="badge green" id="soCompleteBadge">Completed: 0</span>
+          <span class="badge red" id="soFailedBadge" style="display:none">Failed: 0</span>
+        </div>
+      </div>
+      <div style="overflow-x:auto">
+        <table>
+          <thead><tr><th>ID</th><th>סטטוס</th><th>מתאריך</th><th>עד תאריך</th><th>פעיל</th></tr></thead>
+          <tbody id="soBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Stuck Cancellations -->
+  <div class="section" id="sectionStuck" style="display:none">
+    <div class="section-header">
+      <h2>&#x26A0;&#xFE0F; ביטולים תקועים <span class="badge red" id="stuckBadge">0</span></h2>
+    </div>
+    <div style="overflow-x:auto">
+      <table>
+        <thead><tr><th>PreBookId</th><th>BookingId</th><th>מלון</th><th>מקור</th><th>תאריך ביטול</th><th>ימים תקוע</th><th>שגיאות</th><th>שגיאה אחרונה</th></tr></thead>
+        <tbody id="stuckBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Hotel Bar Chart -->
+  <div class="section">
+    <div class="section-header"><h2>&#x1F3E8; חדרים פעילים לפי מלון</h2></div>
+    <div class="bar-chart" id="hotelChart"></div>
+  </div>
+
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!--  PANEL 2: Reservations (Zenith Cockpit)                          -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<div class="nav-panel" id="panel-reservations">
+
+  <div class="cards" id="resKpiCards"></div>
+
+  <div class="section">
+    <div class="section-header"><h2>&#x1F4E5; הזמנות אחרונות (7 ימים) — New / Cancel / Modify</h2></div>
+    <div style="overflow-x:auto">
+      <table>
+        <thead><tr>
+          <th>סוג</th><th>ID</th><th>מלון</th><th>UniqueId</th><th>סטטוס</th>
+          <th>Check-in</th><th>Check-out</th><th>סכום</th><th>מטבע</th>
+          <th>חדר</th><th>RatePlan</th><th>מאושר</th><th>תאריך</th>
+        </tr></thead>
+        <tbody id="resBody"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!--  PANEL 3: Room Waste                                              -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<div class="nav-panel" id="panel-waste">
+
+  <div class="cards" id="wasteKpiCards"></div>
+
+  <div class="section">
+    <div class="section-header"><h2>&#x1F4B8; חדרים לא נמכרו — מסודרים לפי זמן שנותר</h2></div>
+    <div style="overflow-x:auto">
+      <table>
+        <thead><tr>
+          <th>PreBookId</th><th>BookingId</th><th>מלון</th><th>מחיר</th>
+          <th>ביטול עד</th><th>שעות שנותרו</th><th>Check-in</th><th>Check-out</th><th>מקור</th>
+        </tr></thead>
+        <tbody id="wasteBody"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!--  PANEL 4: Conversion & Revenue                                    -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<div class="nav-panel" id="panel-conversion">
+
+  <div class="cards" id="convKpiCards"></div>
+
+  <div class="section">
+    <div class="section-header"><h2>&#x1F4B0; המרה לפי מלון</h2></div>
+    <div style="overflow-x:auto">
+      <table>
+        <thead><tr>
+          <th>מלון</th><th>נקנו</th><th>נמכרו</th><th>% המרה</th>
+          <th>שווי קנייה</th><th>שווי מכירה</th><th>רווח/הפסד</th>
+        </tr></thead>
+        <tbody id="convBody"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!--  PANEL 5: Price Drift                                             -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<div class="nav-panel" id="panel-pricedrift">
+
+  <div class="cards" id="driftKpiCards"></div>
+
+  <div class="section">
+    <div class="section-header"><h2>&#x1F4C9; שינויי מחיר (Active rooms — LastPrice &#x2260; Price)</h2></div>
+    <div style="overflow-x:auto">
+      <table>
+        <thead><tr>
+          <th>PreBookId</th><th>מלון</th><th>מחיר מקורי</th><th>מחיר אחרון</th>
+          <th>הפרש</th><th>% שינוי</th><th>תאריך עדכון</th>
+        </tr></thead>
+        <tbody id="driftBody"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!--  PANEL 6: Errors                                                  -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<div class="nav-panel" id="panel-errors">
+
+  <div class="section">
+    <div class="tabs">
+      <div class="tab active" data-tab="cancelErrors">שגיאות ביטול <span class="badge red" id="cancelErrBadge">0</span></div>
+      <div class="tab" data-tab="bookErrors">שגיאות הזמנה <span class="badge red" id="bookErrBadge">0</span></div>
+      <div class="tab" data-tab="pushErrors">שגיאות Push <span class="badge red" id="pushErrBadge">0</span></div>
+      <div class="tab" data-tab="backofficeErrors">שגיאות BackOffice <span class="badge red" id="boErrBadge">0</span></div>
+      <div class="tab" data-tab="queueErrors">שגיאות Queue <span class="badge red" id="queueErrBadge">0</span></div>
+    </div>
+
+    <div class="tab-panel active" id="cancelErrors">
+      <table><thead><tr><th>PreBookId</th><th>BookingId</th><th>שגיאה</th><th>תאריך</th></tr></thead>
+      <tbody id="cancelErrBody"></tbody></table>
+    </div>
+    <div class="tab-panel" id="bookErrors">
+      <table><thead><tr><th>PreBookId</th><th>קוד</th><th>שגיאה</th><th>תאריך</th></tr></thead>
+      <tbody id="bookErrBody"></tbody></table>
+    </div>
+    <div class="tab-panel" id="pushErrors">
+      <table><thead><tr><th>ID</th><th>BookId</th><th>Opportunity</th><th>שגיאה</th><th>תאריך</th></tr></thead>
+      <tbody id="pushErrBody"></tbody></table>
+    </div>
+    <div class="tab-panel" id="backofficeErrors">
+      <table><thead><tr><th>BackOffice ID</th><th>שגיאה</th><th>תאריך</th></tr></thead>
+      <tbody id="boErrBody"></tbody></table>
+    </div>
+    <div class="tab-panel" id="queueErrors">
+      <table><thead><tr><th>ID</th><th>מלון</th><th>הודעה</th><th>תאריך</th></tr></thead>
+      <tbody id="queueErrBody"></tbody></table>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!--  PANEL 7: Azure Monitor                                           -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<div class="nav-panel" id="panel-azure">
+  <div class="cards" id="azureKpiCards"><div class="card"><div class="label">טוען Azure...</div><div class="value"><div class="spinner"></div></div></div></div>
+
+  <div class="grid2">
+    <div class="section">
+      <div class="section-header"><h2>&#x2764;&#xFE0F; בדיקת בריאות API</h2>
+        <button onclick="loadAzureHealth()" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);padding:4px 12px;border-radius:6px;cursor:pointer;font-size:12px">&#x21BB; בדוק עכשיו</button>
+      </div>
+      <div style="overflow-x:auto">
+        <table>
+          <thead><tr><th>Endpoint</th><th>סטטוס</th><th>קוד</th><th>זמן תגובה</th><th>בדיקה אחרונה</th></tr></thead>
+          <tbody id="azHealthBody"><tr class="empty-row"><td colspan="5">לחץ "בדוק עכשיו" או המתן</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-header"><h2>&#x2601;&#xFE0F; משאבי Azure</h2>
+        <button onclick="loadAzureResources()" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);padding:4px 12px;border-radius:6px;cursor:pointer;font-size:12px">&#x21BB; רענן</button>
+      </div>
+      <div style="overflow-x:auto">
+        <table>
+          <thead><tr><th>שם</th><th>סוג</th><th>סטטוס</th><th>מיקום</th></tr></thead>
+          <tbody id="azResourceBody"><tr class="empty-row"><td colspan="4">לחץ "רענן"</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-header"><h2>&#x1F514; Azure Alerts (Activity Log)</h2>
+      <button onclick="loadAzureAlerts()" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);padding:4px 12px;border-radius:6px;cursor:pointer;font-size:12px">&#x21BB; רענן</button>
+    </div>
+    <div style="overflow-x:auto">
+      <table>
+        <thead><tr><th>זמן</th><th>רמה</th><th>הודעה</th><th>מקור</th><th>משאב</th></tr></thead>
+        <tbody id="azAlertBody"><tr class="empty-row"><td colspan="5">לחץ "רענן"</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!--  PANEL 8: BI Analytics                                            -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<div class="nav-panel" id="panel-bi">
+  <div style="display:flex;gap:8px;margin-bottom:12px">
+    <button class="bi-period active" data-period="today" onclick="loadBI('today',this)">&#x1F4C5; היום</button>
+    <button class="bi-period" data-period="yesterday" onclick="loadBI('yesterday',this)">אתמול</button>
+    <button class="bi-period" data-period="week" onclick="loadBI('week',this)">שבוע</button>
+    <button class="bi-period" data-period="month" onclick="loadBI('month',this)">חודש</button>
+  </div>
+  <div class="cards" id="biKpiCards"><div class="card"><div class="label">טוען BI...</div><div class="value"><div class="spinner"></div></div></div></div>
+
+  <div class="grid2">
+    <div class="section">
+      <div class="section-header"><h2>&#x1F4CA; שעתי — הזמנות ושגיאות</h2></div>
+      <div class="bar-chart" id="biHourlyChart"><div style="padding:20px;text-align:center;color:var(--text2)">המתן לנתונים...</div></div>
+    </div>
+    <div class="section">
+      <div class="section-header"><h2>&#x1F4A1; תובנות והמלצות</h2></div>
+      <div id="biInsights" style="padding:16px;font-size:14px;color:var(--text2)">המתן...</div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-header"><h2>&#x26A0;&#xFE0F; שגיאות מובילות</h2></div>
+    <div style="overflow-x:auto">
+      <table>
+        <thead><tr><th>שגיאה</th><th>כמות</th></tr></thead>
+        <tbody id="biTopErrors"><tr class="empty-row"><td colspan="2">המתן...</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="section" id="biPredictions" style="display:none">
+    <div class="section-header"><h2>&#x1F52E; חיזויים והתראות</h2></div>
+    <div style="overflow-x:auto">
+      <table>
+        <thead><tr><th>סוג</th><th>הודעה</th><th>חומרה</th><th>ביטחון</th><th>המלצה</th></tr></thead>
+        <tbody id="biPredBody"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!--  PANEL 9: Emergency Response                                      -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<div class="nav-panel" id="panel-emergency">
+  <div class="cards" id="emergKpiCards"><div class="card"><div class="label">טוען סטטוס חירום...</div><div class="value"><div class="spinner"></div></div></div></div>
+
+  <div class="grid2">
+    <div class="section">
+      <div class="section-header"><h2>&#x1F6A8; מצב חירום נוכחי</h2>
+        <button onclick="loadEmergency()" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);padding:4px 12px;border-radius:6px;cursor:pointer;font-size:12px">&#x21BB; בדוק</button>
+      </div>
+      <div id="emergStatusArea" style="padding:16px;font-size:14px">טוען...</div>
+    </div>
+
+    <div class="section">
+      <div class="section-header"><h2>&#x2699;&#xFE0F; פעולות חירום</h2></div>
+      <div id="emergActions" style="padding:16px">
+        <button onclick="execAction('TEST_ALL_CONNECTIONS')" class="action-btn">&#x1F50D; בדוק כל החיבורים</button>
+        <button onclick="execAction('HEALTH_CHECK_CYCLE')" class="action-btn">&#x1F493; מחזור בדיקת בריאות</button>
+        <button onclick="execAction('RESTART_MONITORING')" class="action-btn">&#x1F504; אתחל ניטור</button>
+        <button onclick="execAction('CLEAR_TEMP_CACHE')" class="action-btn">&#x1F9F9; נקה מטמון</button>
+        <button onclick="execAction('EMERGENCY_BACKUP')" class="action-btn">&#x1F4BE; גיבוי חירום</button>
+        <button onclick="if(confirm('שלח התראה למנהל?'))execAction('NOTIFY_ADMIN',true)" class="action-btn danger-btn">&#x1F4E7; שלח התראה למנהל</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-header"><h2>&#x2764;&#xFE0F; בריאות API מפורטת</h2></div>
+    <div style="overflow-x:auto">
+      <table>
+        <thead><tr><th>Endpoint</th><th>סטטוס</th><th>קוד</th><th>זמן תגובה</th></tr></thead>
+        <tbody id="emergApiBody"><tr class="empty-row"><td colspan="4">לחץ "בדוק"</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="section" id="emergActionResult" style="display:none">
+    <div class="section-header"><h2>&#x1F4CB; תוצאת פעולה</h2></div>
+    <pre id="emergActionOutput" style="padding:16px;font-size:13px;color:var(--text);white-space:pre-wrap;max-height:300px;overflow:auto"></pre>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!--  PANEL 10: Historical Trends                                      -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<div class="nav-panel" id="panel-history">
+  <div style="display:flex;gap:8px;margin-bottom:12px;align-items:center">
+    <button class="bi-period active" onclick="loadTrends('1h',this)">שעה</button>
+    <button class="bi-period" onclick="loadTrends('6h',this)">6 שעות</button>
+    <button class="bi-period" onclick="loadTrends('24h',this)">24 שעות</button>
+    <button class="bi-period" onclick="loadTrends('7d',this)">שבוע</button>
+    <button class="bi-period" onclick="loadTrends('30d',this)">חודש</button>
+    <span style="margin-right:auto"></span>
+    <button onclick="captureSnapshot()" style="background:var(--green);color:#000;border:none;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600">&#x1F4F8; צלם מצב עכשיו</button>
+    <button onclick="loadPerfReport()" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px">&#x1F4CB; דוח ביצועים</button>
+  </div>
+
+  <div class="cards" id="historyKpiCards"><div class="card"><div class="label">טוען מגמות...</div><div class="value"><div class="spinner"></div></div></div></div>
+
+  <div class="section">
+    <div class="section-header"><h2>&#x1F4C8; תובנות מגמה</h2></div>
+    <div id="histInsights" style="padding:16px;font-size:14px;color:var(--text2)">טוען...</div>
+  </div>
+
+  <div class="section" id="perfReportSection" style="display:none">
+    <div class="section-header"><h2>&#x1F4CB; דוח ביצועים</h2></div>
+    <pre id="perfReportOutput" style="padding:16px;font-size:13px;color:var(--text);white-space:pre-wrap;max-height:400px;overflow:auto"></pre>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!--  PANEL 11: Alerting                                               -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<div class="nav-panel" id="panel-alerting">
+  <div style="display:flex;gap:8px;margin-bottom:12px">
+    <button onclick="loadAlerts()" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px">&#x21BB; בדוק התראות</button>
+  </div>
+
+  <div class="cards" id="alertKpiCards"><div class="card"><div class="label">טוען התראות...</div><div class="value"><div class="spinner"></div></div></div></div>
+
+  <div class="section">
+    <div class="section-header"><h2>&#x1F514; התראות פעילות</h2></div>
+    <div style="overflow-x:auto">
+      <table>
+        <thead><tr><th>חומרה</th><th>כותרת</th><th>הודעה</th><th>קטגוריה</th><th>זמן</th></tr></thead>
+        <tbody id="alertBody"><tr class="empty-row"><td colspan="5">לחץ "בדוק התראות"</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-header"><h2>&#x1F4DD; סיכום</h2></div>
+    <pre id="alertSummary" style="padding:16px;font-size:14px;color:var(--text);white-space:pre-wrap;direction:rtl">לחץ "בדוק התראות" לקבלת סיכום</pre>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!--  PANEL 12: Logs                                                   -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<div class="nav-panel" id="panel-logs">
+  <div style="display:flex;gap:8px;margin-bottom:12px;align-items:center;flex-wrap:wrap">
+    <select id="logLevelFilter" onchange="loadLogs()" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);padding:6px 12px;border-radius:6px;font-size:12px">
+      <option value="">All Levels</option>
+      <option value="Critical">Critical</option>
+      <option value="Error">Error</option>
+      <option value="Warning">Warning</option>
+      <option value="Information">Information</option>
+      <option value="Debug">Debug</option>
+    </select>
+    <input id="logSearchInput" type="text" placeholder="חיפוש טקסט..." onkeyup="if(event.key==='Enter')loadLogs()" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);padding:6px 12px;border-radius:6px;font-size:12px;width:200px">
+    <input id="logCategoryInput" type="text" placeholder="קטגוריה (category)..." onkeyup="if(event.key==='Enter')loadLogs()" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);padding:6px 12px;border-radius:6px;font-size:12px;width:180px">
+    <select id="logCountFilter" onchange="loadLogs()" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);padding:6px 12px;border-radius:6px;font-size:12px">
+      <option value="100">100 אחרונים</option>
+      <option value="200">200</option>
+      <option value="500">500</option>
+      <option value="1000">1000</option>
+      <option value="">All</option>
+    </select>
+    <button onclick="loadLogs()" style="background:var(--accent);color:#fff;border:none;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600">&#x1F50D; חפש</button>
+    <button onclick="loadLogStats()" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px">&#x1F4CA; סטטיסטיקות</button>
+    <label style="font-size:12px;color:var(--text2);display:flex;align-items:center;gap:4px;margin-right:auto"><input type="checkbox" id="logAutoRefresh" checked onchange="toggleLogAutoRefresh()"> Auto-refresh 10s</label>
+  </div>
+
+  <div class="cards" id="logKpiCards"><div class="card"><div class="label">טוען Logs...</div><div class="value"><div class="spinner"></div></div></div></div>
+
+  <div class="section" id="logStatsSection" style="display:none">
+    <div class="section-header"><h2>&#x1F4CA; סטטיסטיקות לוג</h2></div>
+    <div class="grid2" id="logStatsGrid" style="padding:16px"></div>
+  </div>
+
+  <div class="section">
+    <div class="section-header"><h2>&#x1F4DC; רשומות לוג</h2> <span id="logFilterInfo" style="font-size:11px;color:var(--text2)"></span></div>
+    <div style="overflow-x:auto;max-height:600px;overflow-y:auto">
+      <table>
+        <thead style="position:sticky;top:0;z-index:1"><tr><th style="width:160px">זמן</th><th style="width:90px">Level</th><th style="width:140px">קטגוריה</th><th>הודעה</th></tr></thead>
+        <tbody id="logBody"><tr class="empty-row"><td colspan="4">לחץ "חפש" או המתן...</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<script>
+let autoRefresh = true, soundEnabled = false, refreshTimer = null, lastStuckCount = 0, D = null;
+
+// ── Nav tabs ──
+document.querySelectorAll('.nav-tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.nav-panel').forEach(p => p.classList.remove('active'));
+    tab.classList.add('active');
+    document.getElementById('panel-' + tab.dataset.nav).classList.add('active');
+  });
+});
+
+// ── Inner tabs ──
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    const parent = tab.closest('.section');
+    parent.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    parent.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+    tab.classList.add('active');
+    parent.querySelector('#' + tab.dataset.tab).classList.add('active');
+  });
+});
+
+function toggleAutoRefresh() {
+  autoRefresh = !autoRefresh;
+  const btn = document.getElementById('btnAutoRefresh');
+  btn.classList.toggle('active', autoRefresh);
+  btn.textContent = autoRefresh ? 'Auto 30s' : 'Auto OFF';
+  if (autoRefresh) scheduleRefresh(); else if (refreshTimer) { clearTimeout(refreshTimer); refreshTimer = null; }
+}
+function toggleSound() {
+  soundEnabled = !soundEnabled;
+  document.getElementById('btnSound').textContent = soundEnabled ? '\u{1F50A} Sound ON' : '\u{1F50A} Sound OFF';
+}
+function playAlert() {
+  if (!soundEnabled) return;
+  try {
+    const ctx = new AudioContext(), osc = ctx.createOscillator(), gain = ctx.createGain();
+    osc.connect(gain); gain.connect(ctx.destination);
+    osc.frequency.value = 800; gain.gain.value = 0.3; osc.start(); osc.stop(ctx.currentTime + 0.3);
+  } catch(e) {}
+}
+
+// ── Helpers ──
+function fmt(d) {
+  if (!d) return '-';
+  const dt = new Date(d);
+  return dt.toLocaleDateString('he-IL') + ' ' + dt.toLocaleTimeString('he-IL', {hour:'2-digit',minute:'2-digit'});
+}
+function fmtDate(d) {
+  if (!d) return '-';
+  return new Date(d).toLocaleDateString('he-IL');
+}
+function fmtNow() { return new Date().toLocaleTimeString('he-IL', {hour:'2-digit',minute:'2-digit',second:'2-digit'}); }
+function money(v) { return v != null ? '$' + Number(v).toLocaleString('en', {minimumFractionDigits:0, maximumFractionDigits:0}) : '-'; }
+function moneyFull(v) { return v != null ? '$' + Number(v).toLocaleString('en', {minimumFractionDigits:2, maximumFractionDigits:2}) : '-'; }
+function pct(v) { return v != null ? v.toFixed(1) + '%' : '-'; }
+function emptyRow(cols, text) { return '<tr class="empty-row"><td colspan="' + cols + '">' + (text || 'אין נתונים') + '</td></tr>'; }
+function statusBadge(cls, text) { return '<span class="status ' + cls + '">' + text + '</span>'; }
+function kpi(label, value, cls, sub) {
+  return '<div class="card ' + cls + '"><div class="label">' + label + '</div><div class="value">' + (value ?? '-') + '</div>' + (sub ? '<div class="sub">' + sub + '</div>' : '') + '</div>';
+}
+function esc(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+// ══════════════════════════════════════════════════════════════════════
+//  RENDER: Overview Panel
+// ══════════════════════════════════════════════════════════════════════
+function renderOverview(d) {
+  // KPI Cards
+  const c = [];
+  c.push(kpi('חדרים פעילים', d.totalActiveBookings, 'info', d.roomsBoughtToday + ' נקנו היום'));
+  c.push(kpi('ביטולים תקועים', d.stuckCancellations, d.stuckCancellations > 0 ? 'danger' : 'ok',
+    d.stuckCancellations > 0 ? 'דורש טיפול מיידי!' : 'הכל תקין'));
+  c.push(kpi('ביטולים קרובים', d.upcomingCancellations, d.upcomingCancellations > 5 ? 'warning' : 'info', 'תוך 48 שעות'));
+  c.push(kpi('Push פעילים', d.activePushOperations, 'info'));
+  c.push(kpi('Push נכשל', d.failedPushOperations, d.failedPushOperations > 0 ? 'danger' : 'ok'));
+  c.push(kpi('ביטולי הצלחה 24h', d.cancelSuccessLast24h, 'ok'));
+  c.push(kpi('שגיאות ביטול 24h', d.cancelErrorsLast24h, d.cancelErrorsLast24h > 0 ? 'warning' : 'ok'));
+  c.push(kpi('שגיאות הזמנה 24h', d.bookingErrorsLast24h, d.bookingErrorsLast24h > 0 ? 'warning' : 'ok'));
+  c.push(kpi('שגיאות BackOffice 24h', d.backOfficeErrorsLast24h, d.backOfficeErrorsLast24h > 0 ? 'warning' : 'ok'));
+  c.push(kpi('Opportunities', d.activeOpportunities, 'info'));
+  c.push(kpi('Queue ממתין', d.queuePending, d.queueErrors > 0 ? 'danger' : 'info', d.queueErrors > 0 ? d.queueErrors + ' שגיאות' : ''));
+  c.push(kpi('SalesOffice', d.salesOfficePending, d.salesOfficeFailed > 0 ? 'danger' : 'info',
+    d.salesOfficeFailed > 0 ? d.salesOfficeFailed + ' נכשל!' : d.salesOfficeCompleted + ' הושלם'));
+  document.getElementById('kpiCards').innerHTML = c.join('');
+
+  // Heartbeat
+  renderHeartbeat(d);
+
+  // SalesOffice
+  renderSalesOffice(d);
+
+  // Stuck
+  renderStuck(d);
+
+  // Hotel chart
+  renderHotelChart(d);
+}
+
+function renderHeartbeat(d) {
+  const area = document.getElementById('heartbeatArea');
+  const mins = d.minutesSinceLastPurchase;
+  const healthy = d.buyRoomsHealthy;
+  let ringClass = healthy ? 'ok' : (mins > 60 ? 'err' : 'warn');
+  let title = healthy ? 'BuyRooms פעיל' : (mins > 60 ? 'BuyRooms לא פעיל!' : 'BuyRooms איטי');
+  let detail = '';
+  if (d.lastBookPurchaseTime) detail += 'רכישה אחרונה: ' + fmt(d.lastBookPurchaseTime) + ' (' + mins + ' דקות)';
+  if (d.lastPreBookTime) detail += '<br>PreBook אחרון: ' + fmt(d.lastPreBookTime);
+  area.innerHTML = '<div class="pulse-ring ' + ringClass + '">&#x2764;</div>' +
+    '<div class="hb-info"><div class="hb-title">' + title + '</div><div class="hb-detail">' + detail + '</div></div>';
+}
+
+function renderStuck(d) {
+  const section = document.getElementById('sectionStuck');
+  document.getElementById('stuckBadge').textContent = d.stuckBookings?.length || 0;
+  if (!d.stuckBookings?.length) { section.style.display = 'none'; return; }
+  section.style.display = '';
+  document.getElementById('stuckBody').innerHTML = d.stuckBookings.map(b =>
+    '<tr><td><strong>' + b.preBookId + '</strong></td>' +
+    '<td>' + (b.contentBookingId || '-') + '</td>' +
+    '<td>' + (b.hotelId || '-') + '</td>' +
+    '<td>' + statusBadge(b.source === 1 ? 's-blue' : 's-yellow', b.sourceName) + '</td>' +
+    '<td>' + fmt(b.cancellationTo) + '</td>' +
+    '<td>' + statusBadge(b.daysStuck > 30 ? 's-red' : 's-yellow', b.daysStuck + ' ימים') + '</td>' +
+    '<td>' + b.errorCount + '</td>' +
+    '<td title="' + esc(b.lastError) + '">' + esc((b.lastError || '-').substring(0, 60)) + '</td></tr>'
+  ).join('');
+}
+
+function renderHotelChart(d) {
+  const el = document.getElementById('hotelChart');
+  if (!d.activeBookingsByHotel?.length) { el.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text2)">אין חדרים פעילים</div>'; return; }
+  const mx = Math.max(...d.activeBookingsByHotel.map(h => h.activeCount), 1);
+  el.innerHTML = d.activeBookingsByHotel.map(h => {
+    const ap = ((h.activeCount - h.stuckCount) / mx * 100);
+    const sp = (h.stuckCount / mx * 100);
+    return '<div class="bar-row"><div class="bar-label" title="Hotel ' + h.hotelId + '">' + (h.hotelName || 'Hotel ' + h.hotelId) + '</div>' +
+      '<div class="bar-track"><div class="bar-fill active" style="width:' + ap + '%"></div><div class="bar-fill stuck" style="width:' + sp + '%"></div></div>' +
+      '<div class="bar-count">' + h.activeCount + ' (' + (h.stuckCount > 0 ? '<span style="color:var(--red)">' + h.stuckCount + ' stuck</span>' : '0') + ')</div></div>';
+  }).join('') + '<div style="padding:8px 0;font-size:11px;color:var(--text2)">&#x1F535; פעיל &nbsp; &#x1F534; תקוע &nbsp; &#x1F7E2; נמכר</div>';
+}
+
+function renderSalesOffice(d) {
+  document.getElementById('soPendingBadge').textContent = 'Pending: ' + d.salesOfficePending;
+  document.getElementById('soProgressBadge').textContent = 'In Progress: ' + d.salesOfficeInProgress;
+  document.getElementById('soCompleteBadge').textContent = 'Completed: ' + d.salesOfficeCompleted;
+  const fb = document.getElementById('soFailedBadge');
+  if (d.salesOfficeFailed > 0) { fb.style.display = ''; fb.textContent = 'Failed: ' + d.salesOfficeFailed; } else fb.style.display = 'none';
+  const body = document.getElementById('soBody');
+  if (!d.salesOfficeStuckOrders?.length) { body.innerHTML = emptyRow(5, 'אין הזמנות ממתינות'); return; }
+  body.innerHTML = d.salesOfficeStuckOrders.map(o =>
+    '<tr><td>' + o.id + '</td>' +
+    '<td>' + statusBadge(!o.webJobStatus ? 's-yellow' : o.webJobStatus.includes('Failed') ? 's-red' : 's-blue', o.webJobStatus || 'Pending') + '</td>' +
+    '<td>' + fmt(o.dateFrom) + '</td><td>' + fmt(o.dateTo) + '</td>' +
+    '<td>' + (o.isActive ? statusBadge('s-green','Yes') : statusBadge('s-red','No')) + '</td></tr>'
+  ).join('');
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  RENDER: Reservations Panel
+// ══════════════════════════════════════════════════════════════════════
+function renderReservations(d) {
+  // Nav count
+  document.getElementById('navResCount').textContent = d.reservationsToday;
+
+  // KPI cards
+  const c = [];
+  c.push(kpi('הזמנות היום', d.reservationsToday, 'cyan'));
+  c.push(kpi('הזמנות שבוע', d.reservationsThisWeek, 'info'));
+  c.push(kpi('ביטולים שבוע', d.reservationCancelsThisWeek, d.reservationCancelsThisWeek > 0 ? 'warning' : 'ok'));
+  c.push(kpi('שינויים שבוע', d.reservationModifiesThisWeek, 'purple'));
+  c.push(kpi('הכנסות שבוע', money(d.reservationRevenueThisWeek), 'ok'));
+  document.getElementById('resKpiCards').innerHTML = c.join('');
+
+  // Table
+  const body = document.getElementById('resBody');
+  if (!d.recentReservations?.length) { body.innerHTML = emptyRow(13, 'אין הזמנות השבוע'); return; }
+  body.innerHTML = d.recentReservations.map(r => {
+    const typeCls = r.type === 'Cancel' ? 's-red' : r.type === 'Modify' ? 's-yellow' : 's-green';
+    const typeLabel = r.type === 'Cancel' ? 'ביטול' : r.type === 'Modify' ? 'שינוי' : 'חדשה';
+    return '<tr><td>' + statusBadge(typeCls, typeLabel) + '</td>' +
+      '<td>' + r.id + '</td>' +
+      '<td>' + (r.hotelCode || '-') + '</td>' +
+      '<td>' + (r.uniqueId || '-') + '</td>' +
+      '<td>' + (r.resStatus || '-') + '</td>' +
+      '<td>' + fmtDate(r.dateFrom) + '</td>' +
+      '<td>' + fmtDate(r.dateTo) + '</td>' +
+      '<td>' + moneyFull(r.amountAfterTax) + '</td>' +
+      '<td>' + (r.currencyCode || '-') + '</td>' +
+      '<td>' + (r.roomTypeCode || '-') + '</td>' +
+      '<td>' + (r.ratePlanCode || '-') + '</td>' +
+      '<td>' + (r.isApproved ? statusBadge('s-green','V') : statusBadge('s-yellow','X')) + '</td>' +
+      '<td>' + fmt(r.dateInsert) + '</td></tr>';
+  }).join('');
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  RENDER: Room Waste Panel
+// ══════════════════════════════════════════════════════════════════════
+function renderWaste(d) {
+  document.getElementById('navWasteCount').textContent = d.wasteRoomsTotal;
+
+  const c = [];
+  c.push(kpi('חדרים לא נמכרו', d.wasteRoomsTotal, d.wasteRoomsTotal > 10 ? 'warning' : 'info'));
+  c.push(kpi('שווי כולל', money(d.wasteTotalValue), 'danger', 'כסף שנשרף אם לא נמכר'));
+  c.push(kpi('פג תוקף תוך 24h', d.wasteExpiring24h, d.wasteExpiring24h > 0 ? 'danger' : 'ok', 'דחוף!'));
+  c.push(kpi('פג תוקף תוך 48h', d.wasteExpiring48h, d.wasteExpiring48h > 0 ? 'warning' : 'ok'));
+  document.getElementById('wasteKpiCards').innerHTML = c.join('');
+
+  const body = document.getElementById('wasteBody');
+  if (!d.wasteRooms?.length) { body.innerHTML = emptyRow(9, 'אין חדרים לא נמכרו — מצוין!'); return; }
+  body.innerHTML = d.wasteRooms.map(w => {
+    const urgency = w.hoursUntilExpiry < 24 ? 's-red' : w.hoursUntilExpiry < 48 ? 's-yellow' : 's-green';
+    return '<tr><td>' + w.preBookId + '</td>' +
+      '<td>' + (w.contentBookingId || '-') + '</td>' +
+      '<td>' + (w.hotelName || 'Hotel ' + w.hotelId) + '</td>' +
+      '<td>' + moneyFull(w.price) + '</td>' +
+      '<td>' + fmt(w.cancellationTo) + '</td>' +
+      '<td>' + statusBadge(urgency, w.hoursUntilExpiry + ' שעות') + '</td>' +
+      '<td>' + fmtDate(w.startDate) + '</td>' +
+      '<td>' + fmtDate(w.endDate) + '</td>' +
+      '<td>' + (w.source || '-') + '</td></tr>';
+  }).join('');
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  RENDER: Conversion & Revenue Panel
+// ══════════════════════════════════════════════════════════════════════
+function renderConversion(d) {
+  const conv = d.conversionRate || 0;
+  const pl = d.profitLoss || 0;
+  const plClass = pl >= 0 ? 'ok' : 'danger';
+
+  const c = [];
+  c.push(kpi('סה"כ נקנו', d.totalBought, 'info'));
+  c.push(kpi('סה"כ נמכרו', d.totalSold, 'cyan'));
+  c.push(kpi('% המרה', pct(conv), conv > 50 ? 'ok' : conv > 20 ? 'warning' : 'danger'));
+  c.push(kpi('שווי קנייה', money(d.totalBoughtValue), 'purple'));
+  c.push(kpi('שווי מכירה', money(d.totalSoldValue), 'ok'));
+  c.push(kpi('רווח / הפסד', money(pl), plClass, pl >= 0 ? 'רווח' : 'הפסד'));
+  c.push(kpi('נקנו היום', d.boughtToday, 'info', money(d.boughtTodayValue)));
+  c.push(kpi('נמכרו היום', d.soldToday, 'cyan', money(d.soldTodayValue)));
+  document.getElementById('convKpiCards').innerHTML = c.join('');
+
+  const body = document.getElementById('convBody');
+  if (!d.conversionByHotel?.length) { body.innerHTML = emptyRow(7); return; }
+  body.innerHTML = d.conversionByHotel.map(h => {
+    const hpl = h.soldValue - h.boughtValue;
+    const plCls = hpl >= 0 ? 'color:var(--green)' : 'color:var(--red)';
+    return '<tr><td>' + (h.hotelName || 'Hotel ' + h.hotelId) + '</td>' +
+      '<td>' + h.bought + '</td><td>' + h.sold + '</td>' +
+      '<td>' + pct(h.conversion) + '</td>' +
+      '<td>' + money(h.boughtValue) + '</td><td>' + money(h.soldValue) + '</td>' +
+      '<td style="' + plCls + ';font-weight:600">' + money(hpl) + '</td></tr>';
+  }).join('');
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  RENDER: Price Drift Panel
+// ══════════════════════════════════════════════════════════════════════
+function renderPriceDrift(d) {
+  document.getElementById('navDriftCount').textContent = d.priceDriftCount;
+
+  const c = [];
+  c.push(kpi('חדרים עם שינוי מחיר', d.priceDriftCount, d.priceDriftCount > 5 ? 'warning' : 'info'));
+  c.push(kpi('השפעה כוללת', money(d.priceDriftTotalImpact), 'danger', 'סכום מוחלט'));
+  document.getElementById('driftKpiCards').innerHTML = c.join('');
+
+  const body = document.getElementById('driftBody');
+  if (!d.priceDrifts?.length) { body.innerHTML = emptyRow(7, 'אין שינויי מחיר — יציב!'); return; }
+  body.innerHTML = d.priceDrifts.map(p => {
+    const up = p.driftAmount > 0;
+    const cls = up ? 'drift-up' : 'drift-down';
+    const arrow = up ? '&#x25B2;' : '&#x25BC;';
+    return '<tr><td>' + p.preBookId + '</td>' +
+      '<td>' + (p.hotelName || 'Hotel ' + p.hotelId) + '</td>' +
+      '<td>' + moneyFull(p.originalPrice) + '</td>' +
+      '<td>' + moneyFull(p.lastPrice) + '</td>' +
+      '<td class="' + cls + '">' + arrow + ' ' + moneyFull(Math.abs(p.driftAmount)) + '</td>' +
+      '<td class="' + cls + '">' + (p.driftPercent > 0 ? '+' : '') + p.driftPercent.toFixed(1) + '%</td>' +
+      '<td>' + fmt(p.dateLastPrice) + '</td></tr>';
+  }).join('');
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  RENDER: Errors Panel
+// ══════════════════════════════════════════════════════════════════════
+function renderErrors(d) {
+  // Cancel
+  document.getElementById('cancelErrBadge').textContent = d.cancelErrorsLast24h;
+  const ceBody = document.getElementById('cancelErrBody');
+  ceBody.innerHTML = d.recentCancelErrors?.length ? d.recentCancelErrors.map(e =>
+    '<tr><td>' + (e.preBookId || '-') + '</td><td>' + (e.contentBookingId || '-') + '</td>' +
+    '<td title="' + esc(e.error) + '">' + esc((e.error||'-').substring(0,80)) + '</td><td>' + fmt(e.dateInsert) + '</td></tr>'
+  ).join('') : emptyRow(4);
+
+  // Booking
+  document.getElementById('bookErrBadge').textContent = d.bookingErrorsLast24h;
+  const beBody = document.getElementById('bookErrBody');
+  beBody.innerHTML = d.recentBookingErrors?.length ? d.recentBookingErrors.map(e =>
+    '<tr><td>' + (e.preBookId || '-') + '</td><td>' + (e.code || '-') + '</td>' +
+    '<td title="' + esc(e.error) + '">' + esc((e.error||'-').substring(0,80)) + '</td><td>' + fmt(e.dateInsert) + '</td></tr>'
+  ).join('') : emptyRow(4);
+
+  // Push
+  document.getElementById('pushErrBadge').textContent = d.failedPushOperations;
+  const peBody = document.getElementById('pushErrBody');
+  peBody.innerHTML = d.failedPushItems?.length ? d.failedPushItems.map(e =>
+    '<tr><td>' + e.id + '</td><td>' + (e.bookId || '-') + '</td><td>' + (e.opportunityId || '-') + '</td>' +
+    '<td title="' + esc(e.error) + '">' + esc((e.error||'-').substring(0,60)) + '</td><td>' + fmt(e.dateInsert) + '</td></tr>'
+  ).join('') : emptyRow(5);
+
+  // BackOffice
+  document.getElementById('boErrBadge').textContent = d.backOfficeErrorsLast24h;
+  const boBody = document.getElementById('boErrBody');
+  boBody.innerHTML = d.recentBackOfficeErrors?.length ? d.recentBackOfficeErrors.map(e =>
+    '<tr><td>' + (e.backOfficeOptId || '-') + '</td>' +
+    '<td title="' + esc(e.errorLog) + '">' + esc((e.errorLog||'-').substring(0,100)) + '</td><td>' + fmt(e.dateCreate) + '</td></tr>'
+  ).join('') : emptyRow(3);
+
+  // Queue
+  document.getElementById('queueErrBadge').textContent = d.queueErrors;
+  const qBody = document.getElementById('queueErrBody');
+  qBody.innerHTML = d.queueErrorItems?.length ? d.queueErrorItems.map(e =>
+    '<tr><td>' + e.id + '</td><td>' + (e.hotelName || '-') + '</td>' +
+    '<td title="' + esc(e.message) + '">' + esc((e.message||'-').substring(0,80)) + '</td><td>' + fmt(e.createdOn) + '</td></tr>'
+  ).join('') : emptyRow(4);
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  RENDER: Alert Bar
+// ══════════════════════════════════════════════════════════════════════
+function renderAlert(d) {
+  const alerts = [];
+  if (d.stuckCancellations > 0) alerts.push(d.stuckCancellations + ' ביטולים תקועים!');
+  if (d.failedPushOperations > 0) alerts.push(d.failedPushOperations + ' Push failures');
+  if (d.salesOfficeFailed > 0) alerts.push(d.salesOfficeFailed + ' SalesOffice failed');
+  if (d.queueErrors > 0) alerts.push(d.queueErrors + ' Queue errors');
+  if (!d.buyRoomsHealthy) alerts.push('BuyRooms לא פעיל!');
+  if (d.wasteExpiring24h > 0) alerts.push(d.wasteExpiring24h + ' חדרים פגי תוקף תוך 24h!');
+
+  const bar = document.getElementById('alertBar');
+  const text = document.getElementById('alertText');
+
+  if (alerts.length > 0) {
+    bar.classList.add('show');
+    text.textContent = '&#x26A0; ' + alerts.join(' | ');
+    text.innerHTML = '&#x26A0; ' + alerts.join(' | ');
+    document.getElementById('statusDot').className = d.stuckCancellations > 0 || !d.buyRoomsHealthy ? 'dot err' : 'dot warn';
+    if (d.stuckCancellations > lastStuckCount) playAlert();
+    lastStuckCount = d.stuckCancellations;
+  } else {
+    bar.classList.remove('show');
+    document.getElementById('statusDot').className = 'dot ok';
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  RENDER: Azure Monitor Panel
+// ══════════════════════════════════════════════════════════════════════
+async function loadAzureHealth() {
+  document.getElementById('azHealthBody').innerHTML = '<tr><td colspan="5" style="text-align:center;padding:20px"><div class="spinner"></div></td></tr>';
+  try {
+    const resp = await fetch('/api/azure/health');
+    const data = await resp.json();
+    const endpoints = data.endpoints || [];
+    const cards = [];
+    const healthy = endpoints.filter(e => e.isHealthy).length;
+    const total = endpoints.length;
+    const cls = healthy === total ? 'ok' : healthy > total/2 ? 'warning' : 'danger';
+    cards.push(kpi('APIs בריאים', healthy + '/' + total, cls));
+    cards.push(kpi('SQL חיבור', data.sqlConnected ? 'מחובר' : 'מנותק', data.sqlConnected ? 'ok' : 'danger'));
+    cards.push(kpi('זמן תגובה ממוצע', Math.round(endpoints.reduce((s,e)=>s+e.responseTimeMs,0)/Math.max(total,1)) + 'ms', 'info'));
+    cards.push(kpi('בדיקה אחרונה', fmtNow(), 'info'));
+    document.getElementById('azureKpiCards').innerHTML = cards.join('');
+    document.getElementById('azHealthBody').innerHTML = endpoints.length ? endpoints.map(e =>
+      '<tr><td>' + esc(e.name) + '</td>' +
+      '<td>' + (e.isHealthy ? statusBadge('s-green','תקין') : statusBadge('s-red','נכשל')) + '</td>' +
+      '<td>' + (e.statusCode || '-') + '</td>' +
+      '<td>' + e.responseTimeMs + 'ms</td>' +
+      '<td>' + fmtNow() + '</td></tr>'
+    ).join('') : emptyRow(5, 'אין מידע');
+  } catch(err) {
+    document.getElementById('azureKpiCards').innerHTML = kpi('שגיאה', err.message, 'danger');
+    document.getElementById('azHealthBody').innerHTML = emptyRow(5, 'שגיאה: ' + err.message);
+  }
+}
+
+async function loadAzureResources() {
+  document.getElementById('azResourceBody').innerHTML = '<tr><td colspan="4" style="text-align:center;padding:20px"><div class="spinner"></div></td></tr>';
+  try {
+    const resp = await fetch('/api/azure/resources');
+    const data = await resp.json();
+    const resources = data.resources || [];
+    document.getElementById('azResourceBody').innerHTML = resources.length ? resources.map(r =>
+      '<tr><td>' + esc(r.name) + '</td><td>' + esc(r.type) + '</td>' +
+      '<td>' + (r.status === 'Online' || r.status === 'Running' ? statusBadge('s-green', r.status) : statusBadge('s-yellow', r.status || 'N/A')) + '</td>' +
+      '<td>' + esc(r.location || '-') + '</td></tr>'
+    ).join('') : emptyRow(4, 'אין משאבים או Azure CLI לא מותקן');
+  } catch(err) {
+    document.getElementById('azResourceBody').innerHTML = emptyRow(4, 'שגיאה: ' + err.message);
+  }
+}
+
+async function loadAzureAlerts() {
+  document.getElementById('azAlertBody').innerHTML = '<tr><td colspan="5" style="text-align:center;padding:20px"><div class="spinner"></div></td></tr>';
+  try {
+    const resp = await fetch('/api/azure/alerts');
+    const data = await resp.json();
+    const alerts = data.alerts || [];
+    document.getElementById('azAlertBody').innerHTML = alerts.length ? alerts.map(a =>
+      '<tr><td>' + fmt(a.timestamp) + '</td>' +
+      '<td>' + (a.severity === 'Critical' ? statusBadge('s-red', a.severity) : a.severity === 'Warning' ? statusBadge('s-yellow', a.severity) : statusBadge('s-blue', a.severity || 'Info')) + '</td>' +
+      '<td title="' + esc(a.description) + '">' + esc((a.description||'-').substring(0,60)) + '</td>' +
+      '<td>' + esc(a.source || '-') + '</td>' +
+      '<td>' + esc(a.resourceName || '-') + '</td></tr>'
+    ).join('') : emptyRow(5, 'אין התראות פעילות');
+  } catch(err) {
+    document.getElementById('azAlertBody').innerHTML = emptyRow(5, 'שגיאה: ' + err.message);
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  RENDER: BI Analytics Panel
+// ══════════════════════════════════════════════════════════════════════
+async function loadBI(period, btnEl) {
+  if (btnEl) {
+    document.querySelectorAll('.bi-period').forEach(b => b.classList.remove('active'));
+    btnEl.classList.add('active');
+  }
+  period = period || 'today';
+  document.getElementById('biKpiCards').innerHTML = '<div class="card"><div class="label">טוען BI...</div><div class="value"><div class="spinner"></div></div></div>';
+  try {
+    const resp = await fetch('/api/bi/' + period);
+    const data = await resp.json();
+    const m = data.metrics || {};
+
+    // KPI cards
+    const cards = [];
+    cards.push(kpi('סה"כ הזמנות', m.totalBookings ?? 0, 'info'));
+    cards.push(kpi('הצלחות', m.successfulBookings ?? 0, 'ok'));
+    cards.push(kpi('% הצלחה', pct(m.successRate), m.successRate > 80 ? 'ok' : m.successRate > 50 ? 'warning' : 'danger'));
+    cards.push(kpi('שגיאות הזמנה', m.bookingErrors ?? 0, m.bookingErrors > 0 ? 'danger' : 'ok'));
+    cards.push(kpi('שגיאות ביטול', m.cancelErrors ?? 0, m.cancelErrors > 0 ? 'warning' : 'ok'));
+    cards.push(kpi('הכנסות', money(m.revenue), 'cyan'));
+    cards.push(kpi('ממוצע להזמנה', money(m.avgBookingValue), 'purple'));
+    document.getElementById('biKpiCards').innerHTML = cards.join('');
+
+    // Hourly chart
+    const hourly = data.hourlyBreakdown || [];
+    if (hourly.length) {
+      const maxH = Math.max(...hourly.map(h => Math.max(h.bookings || 0, h.errors || 0)), 1);
+      document.getElementById('biHourlyChart').innerHTML =
+        '<div class="bi-bar">' + hourly.map(h => {
+          const bH = Math.max(((h.bookings||0) / maxH) * 100, 2);
+          const eH = Math.max(((h.errors||0) / maxH) * 100, h.errors > 0 ? 2 : 0);
+          return '<div class="bi-bar-col">' +
+            '<div class="bar bookings" style="height:' + bH + '%"></div>' +
+            (h.errors > 0 ? '<div class="bar errors" style="height:' + eH + '%"></div>' : '') +
+            '<div class="hour-label">' + (h.hour ?? '') + '</div></div>';
+        }).join('') + '</div>' +
+        '<div style="padding:4px 16px;font-size:11px;color:var(--text2)">&#x1F535; הזמנות &nbsp; &#x1F534; שגיאות</div>';
+    }
+
+    // Insights
+    const insights = data.insights || [];
+    const recs = data.recommendations || [];
+    let insightHtml = '';
+    if (insights.length) insightHtml += '<div style="margin-bottom:12px"><strong>תובנות:</strong><ul style="margin:8px 20px">' + insights.map(i => '<li style="margin:4px 0">' + esc(i) + '</li>').join('') + '</ul></div>';
+    if (recs.length) insightHtml += '<div><strong>המלצות:</strong><ul style="margin:8px 20px">' + recs.map(r => '<li style="margin:4px 0;color:var(--accent)">' + esc(r) + '</li>').join('') + '</ul></div>';
+    document.getElementById('biInsights').innerHTML = insightHtml || 'אין תובנות לתקופה זו';
+
+    // Top errors
+    const topErrors = data.topErrors || [];
+    document.getElementById('biTopErrors').innerHTML = topErrors.length ? topErrors.map(e =>
+      '<tr><td title="' + esc(e.error) + '">' + esc((e.error||'').substring(0,80)) + '</td><td>' + (e.count||0) + '</td></tr>'
+    ).join('') : emptyRow(2, 'אין שגיאות — מצוין!');
+
+    // Predictions
+    const preds = data.predictions || [];
+    if (preds.length) {
+      document.getElementById('biPredictions').style.display = '';
+      document.getElementById('biPredBody').innerHTML = preds.map(p => {
+        const sevCls = p.severity === 'High' ? 's-red' : p.severity === 'Medium' ? 's-yellow' : 's-green';
+        return '<tr><td>' + esc(p.type || '') + '</td><td>' + esc(p.message || '') + '</td>' +
+          '<td>' + statusBadge(sevCls, p.severity || '') + '</td>' +
+          '<td>' + pct(p.confidence * 100) + '</td>' +
+          '<td>' + esc(p.recommendation || '') + '</td></tr>';
+      }).join('');
+    } else {
+      document.getElementById('biPredictions').style.display = 'none';
+    }
+  } catch(err) {
+    document.getElementById('biKpiCards').innerHTML = kpi('שגיאה', err.message, 'danger');
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  RENDER: Emergency Response Panel
+// ══════════════════════════════════════════════════════════════════════
+async function loadEmergency() {
+  document.getElementById('emergKpiCards').innerHTML = '<div class="card"><div class="label">בודק חירום...</div><div class="value"><div class="spinner"></div></div></div>';
+  try {
+    const resp = await fetch('/api/emergency/status');
+    const data = await resp.json();
+
+    // KPIs
+    const sev = data.overallSeverity ?? 0;
+    const sevLabel = ['תקין','נמוך','בינוני','גבוה','קריטי','חירום'][sev] || sev;
+    const sevCls = sev <= 1 ? 'ok' : sev <= 3 ? 'warning' : 'danger';
+    const cards = [];
+    cards.push(kpi('רמת חומרה', sevLabel + ' (' + sev + '/5)', sevCls));
+    cards.push(kpi('בעיות קריטיות', (data.criticalIssues||[]).length, (data.criticalIssues||[]).length > 0 ? 'danger' : 'ok'));
+    cards.push(kpi('APIs תקינים', data.apiStatuses ? data.apiStatuses.filter(a=>a.isHealthy).length + '/' + data.apiStatuses.length : '-', 'info'));
+    cards.push(kpi('בדיקה אחרונה', fmtNow(), 'info'));
+    document.getElementById('emergKpiCards').innerHTML = cards.join('');
+
+    // Status area
+    let statusHtml = '<div class="severity severity-' + sev + '" style="font-size:16px;padding:8px 16px;margin-bottom:12px">' +
+      (sev === 0 ? '&#x2705;' : sev <= 2 ? '&#x26A0;&#xFE0F;' : '&#x1F6A8;') + ' ' + sevLabel + '</div>';
+    if (data.criticalIssues?.length) {
+      statusHtml += '<div style="margin-top:8px"><strong style="color:var(--red)">בעיות קריטיות:</strong><ul style="margin:8px 20px">';
+      data.criticalIssues.forEach(i => statusHtml += '<li style="margin:4px 0;color:var(--red)">' + esc(i) + '</li>');
+      statusHtml += '</ul></div>';
+    }
+    if (data.suggestedActions?.length) {
+      statusHtml += '<div style="margin-top:8px"><strong>פעולות מומלצות:</strong><ul style="margin:8px 20px">';
+      data.suggestedActions.forEach(a => statusHtml += '<li style="margin:4px 0;color:var(--accent)">' + esc(a) + '</li>');
+      statusHtml += '</ul></div>';
+    }
+    document.getElementById('emergStatusArea').innerHTML = statusHtml;
+
+    // API health table
+    const apis = data.apiStatuses || [];
+    document.getElementById('emergApiBody').innerHTML = apis.length ? apis.map(a =>
+      '<tr><td>' + esc(a.name) + '</td>' +
+      '<td>' + (a.isHealthy ? statusBadge('s-green','תקין') : statusBadge('s-red','נכשל')) + '</td>' +
+      '<td>' + (a.statusCode || '-') + '</td>' +
+      '<td>' + (a.responseTimeMs || '-') + 'ms</td></tr>'
+    ).join('') : emptyRow(4);
+  } catch(err) {
+    document.getElementById('emergKpiCards').innerHTML = kpi('שגיאה', err.message, 'danger');
+  }
+}
+
+async function execAction(actionType, confirmed) {
+  if (!confirmed && !confirm('בטוח שברצונך לבצע: ' + actionType + '?')) return;
+  const resultDiv = document.getElementById('emergActionResult');
+  const output = document.getElementById('emergActionOutput');
+  resultDiv.style.display = '';
+  output.textContent = 'מבצע ' + actionType + '...';
+  try {
+    const resp = await fetch('/api/emergency/action/' + actionType, { method: 'POST' });
+    const data = await resp.json();
+    output.textContent = JSON.stringify(data, null, 2);
+  } catch(err) {
+    output.textContent = 'שגיאה: ' + err.message;
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  RENDER: Historical Trends Panel
+// ══════════════════════════════════════════════════════════════════════
+async function loadTrends(period, btnEl) {
+  if (btnEl) {
+    btnEl.parentElement.querySelectorAll('.bi-period').forEach(b => b.classList.remove('active'));
+    btnEl.classList.add('active');
+  }
+  period = period || '24h';
+  document.getElementById('historyKpiCards').innerHTML = '<div class="card"><div class="label">טוען מגמות...</div><div class="value"><div class="spinner"></div></div></div>';
+  try {
+    const resp = await fetch('/api/history/trends/' + period);
+    const data = await resp.json();
+    const summary = data.summary || {};
+
+    const cards = [];
+    cards.push(kpi('נקודות מדידה', data.dataPointCount ?? 0, 'info'));
+    cards.push(kpi('תקופה', period, 'purple'));
+    if (summary.avgBookings !== undefined) cards.push(kpi('ממוצע הזמנות', summary.avgBookings?.toFixed(1), 'cyan'));
+    if (summary.avgErrors !== undefined) cards.push(kpi('ממוצע שגיאות', summary.avgErrors?.toFixed(1), summary.avgErrors > 5 ? 'warning' : 'ok'));
+    if (summary.maxStuck !== undefined) cards.push(kpi('מקס תקועים', summary.maxStuck, summary.maxStuck > 0 ? 'danger' : 'ok'));
+    if (summary.trend) cards.push(kpi('מגמה', summary.trend, summary.trend === 'improving' ? 'ok' : summary.trend === 'declining' ? 'danger' : 'info'));
+    document.getElementById('historyKpiCards').innerHTML = cards.join('');
+
+    // Insights
+    const insights = data.insights || [];
+    document.getElementById('histInsights').innerHTML = insights.length ?
+      '<ul style="margin:0 20px">' + insights.map(i => '<li style="margin:4px 0">' + esc(i) + '</li>').join('') + '</ul>' :
+      'אין מספיק נתונים לתובנות. המערכת צוברת מידע כל 15 דקות.';
+  } catch(err) {
+    document.getElementById('historyKpiCards').innerHTML = kpi('שגיאה', err.message, 'danger');
+  }
+}
+
+async function captureSnapshot() {
+  try {
+    const resp = await fetch('/api/history/snapshot', { method: 'POST' });
+    const data = await resp.json();
+    alert('Snapshot נלכד בהצלחה!\n' + (data.timestamp || ''));
+  } catch(err) {
+    alert('שגיאה: ' + err.message);
+  }
+}
+
+async function loadPerfReport() {
+  const section = document.getElementById('perfReportSection');
+  const output = document.getElementById('perfReportOutput');
+  section.style.display = '';
+  output.textContent = 'טוען דוח ביצועים...';
+  try {
+    const resp = await fetch('/api/history/report/24h');
+    const data = await resp.json();
+    output.textContent = JSON.stringify(data, null, 2);
+  } catch(err) {
+    output.textContent = 'שגיאה: ' + err.message;
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  RENDER: Alerting Panel
+// ══════════════════════════════════════════════════════════════════════
+async function loadAlerts() {
+  document.getElementById('alertKpiCards').innerHTML = '<div class="card"><div class="label">בודק התראות...</div><div class="value"><div class="spinner"></div></div></div>';
+  try {
+    const resp = await fetch('/api/alerts');
+    const data = await resp.json();
+    const alerts = data.alerts || data || [];
+
+    // KPIs
+    const crit = alerts.filter(a => a.severity === 'Critical').length;
+    const warn = alerts.filter(a => a.severity === 'Warning').length;
+    const info = alerts.filter(a => a.severity === 'Info').length;
+    const cards = [];
+    cards.push(kpi('סה"כ התראות', alerts.length, alerts.length > 0 ? 'warning' : 'ok'));
+    cards.push(kpi('קריטי', crit, crit > 0 ? 'danger' : 'ok'));
+    cards.push(kpi('אזהרה', warn, warn > 0 ? 'warning' : 'ok'));
+    cards.push(kpi('מידע', info, 'info'));
+    document.getElementById('alertKpiCards').innerHTML = cards.join('');
+
+    // Table
+    document.getElementById('alertBody').innerHTML = alerts.length ? alerts.map(a => {
+      const sevCls = a.severity === 'Critical' ? 's-red' : a.severity === 'Warning' ? 's-yellow' : 's-blue';
+      return '<tr><td>' + statusBadge(sevCls, a.severity || 'Info') + '</td>' +
+        '<td>' + esc(a.title || '') + '</td>' +
+        '<td title="' + esc(a.message) + '">' + esc((a.message||'').substring(0,60)) + '</td>' +
+        '<td>' + esc(a.category || '') + '</td>' +
+        '<td>' + fmt(a.timestamp) + '</td></tr>';
+    }).join('') : emptyRow(5, 'אין התראות — הכל תקין!');
+
+    // Summary
+    const summResp = await fetch('/api/alerts/summary');
+    const summData = await summResp.json();
+    document.getElementById('alertSummary').textContent = summData.summary || summData.text || JSON.stringify(summData, null, 2);
+  } catch(err) {
+    document.getElementById('alertKpiCards').innerHTML = kpi('שגיאה', err.message, 'danger');
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  RENDER: Logs Panel
+// ══════════════════════════════════════════════════════════════════════
+let logAutoTimer = null;
+
+async function loadLogs() {
+  const level = document.getElementById('logLevelFilter').value;
+  const search = document.getElementById('logSearchInput').value.trim();
+  const category = document.getElementById('logCategoryInput').value.trim();
+  const last = document.getElementById('logCountFilter').value;
+
+  let url = '/api/logs?';
+  if (level) url += 'level=' + encodeURIComponent(level) + '&';
+  if (search) url += 'search=' + encodeURIComponent(search) + '&';
+  if (category) url += 'category=' + encodeURIComponent(category) + '&';
+  if (last) url += 'last=' + last + '&';
+
+  try {
+    const resp = await fetch(url);
+    const data = await resp.json();
+    const entries = data.entries || [];
+
+    // KPI cards
+    const errCount = entries.filter(e => e.level === 'Error' || e.level === 'Critical').length;
+    const warnCount = entries.filter(e => e.level === 'Warning').length;
+    const cards = [];
+    cards.push(kpi('סה"כ ב-Buffer', data.total, 'info'));
+    cards.push(kpi('מוצגים', data.filtered, 'cyan'));
+    cards.push(kpi('שגיאות', errCount, errCount > 0 ? 'danger' : 'ok'));
+    cards.push(kpi('אזהרות', warnCount, warnCount > 0 ? 'warning' : 'ok'));
+    document.getElementById('logKpiCards').innerHTML = cards.join('');
+    document.getElementById('navLogCount').textContent = data.total;
+    document.getElementById('logFilterInfo').textContent = data.filtered + ' / ' + data.total + ' רשומות';
+
+    // Table
+    const body = document.getElementById('logBody');
+    if (!entries.length) {
+      body.innerHTML = emptyRow(4, 'אין רשומות לוג');
+      return;
+    }
+    body.innerHTML = entries.reverse().map(e => {
+      const cls = e.level === 'Critical' ? 'log-critical' :
+                  e.level === 'Error' ? 'log-error' :
+                  e.level === 'Warning' ? 'log-warning' :
+                  e.level === 'Debug' ? 'log-debug' : 'log-info';
+      const levelBadge = e.level === 'Critical' ? statusBadge('s-red', 'CRIT') :
+                         e.level === 'Error' ? statusBadge('s-red', 'ERR') :
+                         e.level === 'Warning' ? statusBadge('s-yellow', 'WARN') :
+                         e.level === 'Debug' ? statusBadge('s-purple', 'DBG') :
+                         statusBadge('s-blue', 'INFO');
+      const msg = esc(e.message || '') + (e.exception ? '\n' + esc(e.exception) : '');
+      return '<tr class="' + cls + '">' +
+        '<td style="white-space:nowrap;font-size:11px">' + fmtLog(e.timestamp) + '</td>' +
+        '<td>' + levelBadge + '</td>' +
+        '<td style="font-size:11px">' + esc(e.category || '') + '</td>' +
+        '<td class="log-msg">' + msg + '</td></tr>';
+    }).join('');
+  } catch(err) {
+    document.getElementById('logKpiCards').innerHTML = kpi('שגיאה', err.message, 'danger');
+  }
+}
+
+async function loadLogStats() {
+  const section = document.getElementById('logStatsSection');
+  section.style.display = '';
+  try {
+    const resp = await fetch('/api/logs/stats');
+    const data = await resp.json();
+    let html = '<div style="width:100%"><h3 style="font-size:14px;margin-bottom:8px">לפי Level</h3>';
+    if (data.byLevel) {
+      html += '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">';
+      for (const [k, v] of Object.entries(data.byLevel)) {
+        const cls = k === 'Error' || k === 'Critical' ? 'danger' : k === 'Warning' ? 'warning' : 'info';
+        html += '<div class="card ' + cls + '" style="min-width:120px"><div class="label">' + k + '</div><div class="value">' + v + '</div></div>';
+      }
+      html += '</div>';
+    }
+    html += '<h3 style="font-size:14px;margin-bottom:8px">לפי Category</h3>';
+    if (data.byCategory) {
+      html += '<div style="display:flex;gap:8px;flex-wrap:wrap">';
+      for (const [k, v] of Object.entries(data.byCategory)) {
+        html += '<div class="card info" style="min-width:140px"><div class="label">' + k + '</div><div class="value">' + v + '</div></div>';
+      }
+      html += '</div>';
+    }
+    html += '</div>';
+    if (data.logFilePath) html += '<div style="margin-top:12px;font-size:11px;color:var(--text2)">Log file: ' + esc(data.logFilePath) + '</div>';
+    document.getElementById('logStatsGrid').innerHTML = html;
+  } catch(err) {
+    document.getElementById('logStatsGrid').innerHTML = '<div style="color:var(--red)">שגיאה: ' + err.message + '</div>';
+  }
+}
+
+function toggleLogAutoRefresh() {
+  if (logAutoTimer) { clearInterval(logAutoTimer); logAutoTimer = null; }
+  if (document.getElementById('logAutoRefresh').checked) {
+    logAutoTimer = setInterval(() => {
+      // Only auto-refresh if logs tab is visible
+      if (document.getElementById('panel-logs').classList.contains('active')) loadLogs();
+    }, 10000);
+  }
+}
+
+function fmtLog(d) {
+  if (!d) return '-';
+  const dt = new Date(d);
+  return dt.toLocaleTimeString('he-IL', {hour:'2-digit',minute:'2-digit',second:'2-digit'}) +
+    '.' + String(dt.getMilliseconds()).padStart(3,'0');
+}
+
+// start log auto-refresh
+toggleLogAutoRefresh();
+
+// ══════════════════════════════════════════════════════════════════════
+//  MAIN: Load Data
+// ══════════════════════════════════════════════════════════════════════
+async function loadData() {
+  try {
+    const resp = await fetch('/api/status');
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    D = await resp.json();
+
+    renderOverview(D);
+    renderReservations(D);
+    renderWaste(D);
+    renderConversion(D);
+    renderPriceDrift(D);
+    renderErrors(D);
+    renderAlert(D);
+
+    // Auto-load new panels data in background
+    loadAzureHealth().catch(()=>{});
+    loadBI('today').catch(()=>{});
+    loadAlerts().catch(()=>{});
+    loadLogs().catch(()=>{});
+
+    document.getElementById('lastUpdate').textContent = 'עדכון אחרון: ' + fmtNow() + (D.dbConnected ? '' : ' [DB ERROR]');
+  } catch(err) {
+    document.getElementById('statusDot').className = 'dot err';
+    document.getElementById('lastUpdate').textContent = 'שגיאה: ' + err.message;
+    document.getElementById('kpiCards').innerHTML = '<div class="card danger"><div class="label">שגיאת חיבור</div><div class="value" style="font-size:14px">' + err.message + '</div></div>';
+  }
+}
+
+function scheduleRefresh() {
+  if (refreshTimer) clearTimeout(refreshTimer);
+  if (!autoRefresh) return;
+  refreshTimer = setTimeout(() => { loadData(); scheduleRefresh(); }, 30000);
+}
+
+loadData();
+scheduleRefresh();
+</script>
+</body>
+</html>
