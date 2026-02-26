@@ -348,6 +348,8 @@ public class HistoricalSnapshot
     public double AverageResponseTime { get; set; }
     public bool DatabaseConnected { get; set; }
     public string OverallStatus { get; set; } = "";
+    public int StuckCount { get; set; }
+    public int WasteRoomCount { get; set; }
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -363,4 +365,8 @@ public class AlertInfo
     public string Category { get; set; } = "";
     public DateTime Timestamp { get; set; }
     public bool IsActive { get; set; }
+    public bool IsAcknowledged { get; set; }
+    public bool IsSnoozed { get; set; }
+    public DateTime? AcknowledgedAt { get; set; }
+    public DateTime? SnoozedUntil { get; set; }
 }

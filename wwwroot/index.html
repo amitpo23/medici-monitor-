@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Medici Operations Center v2.0</title>
+<title>Medici Operations Center v2.2</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 :root{
@@ -199,7 +199,7 @@ td.log-msg{white-space:pre-wrap;word-break:break-word;max-width:600px;font-famil
 
 <!-- ═══ Top Bar ═══ -->
 <div class="topbar">
-  <h1><span class="dot" id="statusDot"></span> Medici Operations Center <span style="font-size:12px;color:var(--text2);font-weight:400">v2.0</span></h1>
+  <h1><span class="dot" id="statusDot"></span> Medici Operations Center <span style="font-size:12px;color:var(--text2);font-weight:400">v2.2</span></h1>
   <div class="topbar-right">
     <span id="lastUpdate">טוען...</span>
     <button id="btnAutoRefresh" class="active" onclick="toggleAutoRefresh()">Auto 30s</button>
@@ -224,6 +224,11 @@ td.log-msg{white-space:pre-wrap;word-break:break-word;max-width:600px;font-famil
   <div class="nav-tab" data-nav="emergency">&#x1F6A8; חירום <span class="count" id="navEmergCount" style="display:none">!</span></div>
   <div class="nav-tab" data-nav="history">&#x1F4C8; מגמות היסטוריות</div>
   <div class="nav-tab" data-nav="alerting">&#x1F514; התראות <span class="count red" id="navAlertCount" style="display:none">0</span></div>
+  <div class="nav-tab" data-nav="sla">&#x1F4CA; SLA</div>
+  <div class="nav-tab" data-nav="dbhealth">&#x1F5C4;&#xFE0F; DB Health</div>
+  <div class="nav-tab" data-nav="incidents">&#x1F6A8; אירועים <span class="count yellow" id="navIncidentCount" style="display:none">0</span></div>
+  <div class="nav-tab" data-nav="audit">&#x1F4CB; Audit</div>
+  <div class="nav-tab" data-nav="notifications">&#x1F4E7; התראות חיצוניות</div>
   <div class="nav-tab" data-nav="logs">&#x1F4DC; Logs <span class="count blue" id="navLogCount">0</span></div>
 </div>
 
@@ -557,9 +562,11 @@ td.log-msg{white-space:pre-wrap;word-break:break-word;max-width:600px;font-famil
     <button class="bi-period" onclick="loadTrends('24h',this)">24 שעות</button>
     <button class="bi-period" onclick="loadTrends('7d',this)">שבוע</button>
     <button class="bi-period" onclick="loadTrends('30d',this)">חודש</button>
+    <button class="bi-period" onclick="loadTrends('90d',this)">90 יום</button>
     <span style="margin-right:auto"></span>
     <button onclick="captureSnapshot()" style="background:var(--green);color:#000;border:none;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600">&#x1F4F8; צלם מצב עכשיו</button>
     <button onclick="loadPerfReport()" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px">&#x1F4CB; דוח ביצועים</button>
+    <button onclick="exportHistoryCsv()" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px">&#x1F4E5; CSV</button>
   </div>
 
   <div class="cards" id="historyKpiCards"><div class="card"><div class="label">טוען מגמות...</div><div class="value"><div class="spinner"></div></div></div></div>
@@ -579,8 +586,10 @@ td.log-msg{white-space:pre-wrap;word-break:break-word;max-width:600px;font-famil
 <!--  PANEL 11: Alerting                                               -->
 <!-- ═══════════════════════════════════════════════════════════════════ -->
 <div class="nav-panel" id="panel-alerting">
-  <div style="display:flex;gap:8px;margin-bottom:12px">
+  <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap">
     <button onclick="loadAlerts()" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px">&#x21BB; בדוק התראות</button>
+    <button onclick="loadAlertHistory()" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px">&#x1F4DC; היסטוריה</button>
+    <button onclick="toggleThresholds()" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px">&#x2699;&#xFE0F; ספים</button>
   </div>
 
   <div class="cards" id="alertKpiCards"><div class="card"><div class="label">טוען התראות...</div><div class="value"><div class="spinner"></div></div></div></div>
@@ -589,8 +598,8 @@ td.log-msg{white-space:pre-wrap;word-break:break-word;max-width:600px;font-famil
     <div class="section-header"><h2>&#x1F514; התראות פעילות</h2></div>
     <div style="overflow-x:auto">
       <table>
-        <thead><tr><th>חומרה</th><th>כותרת</th><th>הודעה</th><th>קטגוריה</th><th>זמן</th></tr></thead>
-        <tbody id="alertBody"><tr class="empty-row"><td colspan="5">לחץ "בדוק התראות"</td></tr></tbody>
+        <thead><tr><th>חומרה</th><th>כותרת</th><th>הודעה</th><th>קטגוריה</th><th>זמן</th><th>פעולות</th></tr></thead>
+        <tbody id="alertBody"><tr class="empty-row"><td colspan="6">לחץ "בדוק התראות"</td></tr></tbody>
       </table>
     </div>
   </div>
@@ -599,10 +608,230 @@ td.log-msg{white-space:pre-wrap;word-break:break-word;max-width:600px;font-famil
     <div class="section-header"><h2>&#x1F4DD; סיכום</h2></div>
     <pre id="alertSummary" style="padding:16px;font-size:14px;color:var(--text);white-space:pre-wrap;direction:rtl">לחץ "בדוק התראות" לקבלת סיכום</pre>
   </div>
+
+  <div class="section" id="alertHistorySection" style="display:none">
+    <div class="section-header"><h2>&#x1F4DC; היסטוריית התראות</h2></div>
+    <div style="overflow-x:auto">
+      <table>
+        <thead><tr><th>חומרה</th><th>כותרת</th><th>הודעה</th><th>קטגוריה</th><th>זמן</th><th>אושר</th><th>מושתק</th></tr></thead>
+        <tbody id="alertHistoryBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="section" id="thresholdsSection" style="display:none">
+    <div class="section-header"><h2>&#x2699;&#xFE0F; הגדרת ספים</h2>
+      <button onclick="saveThresholds()" style="background:var(--green);color:#000;border:none;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600">&#x1F4BE; שמור</button>
+    </div>
+    <div style="padding:16px;display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:12px" id="thresholdsForm"></div>
+  </div>
 </div>
 
 <!-- ═══════════════════════════════════════════════════════════════════ -->
-<!--  PANEL 12: Logs                                                   -->
+<!--  PANEL: SLA Dashboard                                              -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<div class="nav-panel" id="panel-sla">
+  <div style="display:flex;gap:8px;margin-bottom:12px">
+    <button onclick="loadSla()" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px">&#x21BB; רענן SLA</button>
+  </div>
+  <div class="cards" id="slaKpiCards"><div class="card"><div class="label">טוען SLA...</div><div class="value"><div class="spinner"></div></div></div></div>
+  <div class="section">
+    <div class="section-header"><h2>&#x1F4CA; SLA לפי Endpoint</h2></div>
+    <div style="overflow-x:auto">
+      <table>
+        <thead><tr><th>Endpoint</th><th>סטטוס</th><th>Uptime %</th><th>בדיקות</th><th>הצלחות</th><th>כשלונות</th><th>Avg ms</th><th>P95 ms</th><th>P99 ms</th><th>MTTR</th><th>MTTD</th></tr></thead>
+        <tbody id="slaBody"><tr class="empty-row"><td colspan="11">לחץ "רענן SLA" או המתן</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+  <div class="section" id="slaIncidentsSection" style="display:none">
+    <div class="section-header"><h2>&#x1F6A8; אירועי Downtime אחרונים</h2></div>
+    <div style="overflow-x:auto">
+      <table>
+        <thead><tr><th>Endpoint</th><th>התחלה</th><th>סיום</th><th>משך (דקות)</th><th>סוג</th></tr></thead>
+        <tbody id="slaIncidentBody"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!--  PANEL: DB Health                                                  -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<div class="nav-panel" id="panel-dbhealth">
+  <div style="display:flex;gap:8px;margin-bottom:12px">
+    <button onclick="loadDbHealth()" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px">&#x21BB; רענן DB Health</button>
+  </div>
+  <div class="cards" id="dbhKpiCards"><div class="card"><div class="label">טוען DB Health...</div><div class="value"><div class="spinner"></div></div></div></div>
+  <div class="grid2">
+    <div class="section">
+      <div class="section-header"><h2>&#x1F50D; שאילתות ארוכות</h2></div>
+      <div style="overflow-x:auto">
+        <table>
+          <thead><tr><th>Session</th><th>סטטוס</th><th>פקודה</th><th>משך (שניות)</th><th>CPU ms</th><th>Wait</th><th>SQL</th></tr></thead>
+          <tbody id="dbhQueriesBody"><tr class="empty-row"><td colspan="7">לחץ "רענן"</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="section">
+      <div class="section-header"><h2>&#x1F4CA; Top Wait Stats</h2></div>
+      <div style="overflow-x:auto">
+        <table>
+          <thead><tr><th>Wait Type</th><th>Wait Time (ms)</th><th>Tasks</th><th>Signal Wait (ms)</th></tr></thead>
+          <tbody id="dbhWaitBody"><tr class="empty-row"><td colspan="4">לחץ "רענן"</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+  <div class="grid2">
+    <div class="section">
+      <div class="section-header"><h2>&#x1F4C9; אינדקסים מפורקים</h2></div>
+      <div style="overflow-x:auto">
+        <table>
+          <thead><tr><th>טבלה</th><th>אינדקס</th><th>% פירוק</th><th>דפים</th></tr></thead>
+          <tbody id="dbhIndexBody"><tr class="empty-row"><td colspan="4">לחץ "רענן"</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="section">
+      <div class="section-header"><h2>&#x2699;&#xFE0F; Performance Counters</h2></div>
+      <div id="dbhCounters" style="padding:16px;font-size:13px">לחץ "רענן"</div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!--  PANEL: Incidents                                                  -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<div class="nav-panel" id="panel-incidents">
+  <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap">
+    <button onclick="loadIncidents()" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px">&#x21BB; רענן</button>
+    <button onclick="showCreateIncident()" style="background:var(--accent);color:#fff;border:none;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600">+ אירוע חדש</button>
+    <select id="incidentStatusFilter" onchange="loadIncidents()" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);padding:6px 12px;border-radius:6px;font-size:12px">
+      <option value="">כל הסטטוסים</option>
+      <option value="Open">Open</option>
+      <option value="Investigating">Investigating</option>
+      <option value="Identified">Identified</option>
+      <option value="Monitoring">Monitoring</option>
+      <option value="Resolved">Resolved</option>
+    </select>
+  </div>
+  <div class="cards" id="incKpiCards"><div class="card"><div class="label">טוען אירועים...</div><div class="value"><div class="spinner"></div></div></div></div>
+  <div class="section">
+    <div class="section-header"><h2>&#x1F6A8; אירועים</h2></div>
+    <div style="overflow-x:auto">
+      <table>
+        <thead><tr><th>ID</th><th>חומרה</th><th>סטטוס</th><th>כותרת</th><th>תיאור</th><th>מקור</th><th>נוצר</th><th>משך</th><th>פעולות</th></tr></thead>
+        <tbody id="incBody"><tr class="empty-row"><td colspan="9">לחץ "רענן"</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+  <div class="section" id="createIncidentSection" style="display:none">
+    <div class="section-header"><h2>+ יצירת אירוע חדש</h2></div>
+    <div style="padding:16px;display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div><label style="font-size:12px;color:var(--text2)">כותרת</label><input id="incTitle" style="width:100%;padding:8px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:6px;margin-top:4px"></div>
+      <div><label style="font-size:12px;color:var(--text2)">חומרה</label><select id="incSeverity" style="width:100%;padding:8px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:6px;margin-top:4px"><option>Warning</option><option>Critical</option><option>Info</option></select></div>
+      <div style="grid-column:span 2"><label style="font-size:12px;color:var(--text2)">תיאור</label><textarea id="incDesc" rows="3" style="width:100%;padding:8px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:6px;margin-top:4px"></textarea></div>
+      <div><button onclick="createIncident()" style="background:var(--green);color:#000;border:none;padding:8px 20px;border-radius:6px;cursor:pointer;font-weight:600">צור אירוע</button></div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!--  PANEL: Audit Trail                                                -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<div class="nav-panel" id="panel-audit">
+  <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap">
+    <button onclick="loadAudit()" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px">&#x21BB; רענן</button>
+    <input id="auditActionFilter" type="text" placeholder="פילטר פעולה..." style="background:var(--surface2);color:var(--text);border:1px solid var(--border);padding:6px 12px;border-radius:6px;font-size:12px;width:160px">
+    <input id="auditEndpointFilter" type="text" placeholder="פילטר endpoint..." style="background:var(--surface2);color:var(--text);border:1px solid var(--border);padding:6px 12px;border-radius:6px;font-size:12px;width:160px">
+  </div>
+  <div class="cards" id="auditKpiCards"><div class="card"><div class="label">טוען Audit...</div><div class="value"><div class="spinner"></div></div></div></div>
+  <div class="grid2">
+    <div class="section">
+      <div class="section-header"><h2>&#x1F4CB; רשומות אחרונות</h2></div>
+      <div style="overflow-x:auto;max-height:400px;overflow-y:auto">
+        <table>
+          <thead><tr><th>זמן</th><th>פעולה</th><th>Endpoint</th><th>IP</th><th>פרטים</th></tr></thead>
+          <tbody id="auditBody"><tr class="empty-row"><td colspan="5">לחץ "רענן"</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="section">
+      <div class="section-header"><h2>&#x1F4CA; סטטיסטיקות</h2></div>
+      <div id="auditStats" style="padding:16px">לחץ "רענן"</div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!--  PANEL: Notifications Config                                       -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<div class="nav-panel" id="panel-notifications">
+  <div style="display:flex;gap:8px;margin-bottom:12px">
+    <button onclick="loadNotifConfig()" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px">&#x21BB; רענן</button>
+    <button onclick="saveNotifConfig()" style="background:var(--green);color:#000;border:none;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600">&#x1F4BE; שמור</button>
+    <button onclick="testNotification()" style="background:var(--accent);color:#fff;border:none;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600">&#x1F4E7; שלח בדיקה</button>
+  </div>
+  <div class="grid2">
+    <div class="section">
+      <div class="section-header"><h2>&#x2699;&#xFE0F; הגדרות ערוצים</h2></div>
+      <div style="padding:16px" id="notifConfigForm">
+        <div style="margin-bottom:16px">
+          <h3 style="font-size:13px;margin-bottom:8px">Webhook</h3>
+          <label style="font-size:12px;display:flex;align-items:center;gap:6px;margin-bottom:6px"><input type="checkbox" id="nfWebhookEnabled"> מופעל</label>
+          <input id="nfWebhookUrl" placeholder="Webhook URL" style="width:100%;padding:6px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:12px">
+        </div>
+        <div style="margin-bottom:16px">
+          <h3 style="font-size:13px;margin-bottom:8px">Email (SMTP)</h3>
+          <label style="font-size:12px;display:flex;align-items:center;gap:6px;margin-bottom:6px"><input type="checkbox" id="nfEmailEnabled"> מופעל</label>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+            <input id="nfSmtpHost" placeholder="SMTP Host" style="padding:6px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:12px">
+            <input id="nfSmtpPort" placeholder="Port (587)" type="number" style="padding:6px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:12px">
+            <input id="nfSmtpUser" placeholder="Username" style="padding:6px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:12px">
+            <input id="nfSmtpPass" placeholder="Password" type="password" style="padding:6px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:12px">
+          </div>
+          <input id="nfEmailRecipients" placeholder="נמענים (מופרדים בפסיק)" style="width:100%;padding:6px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:12px;margin-top:8px">
+        </div>
+        <div style="margin-bottom:16px">
+          <h3 style="font-size:13px;margin-bottom:8px">Slack</h3>
+          <label style="font-size:12px;display:flex;align-items:center;gap:6px;margin-bottom:6px"><input type="checkbox" id="nfSlackEnabled"> מופעל</label>
+          <input id="nfSlackUrl" placeholder="Slack Webhook URL" style="width:100%;padding:6px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:12px">
+        </div>
+        <div style="margin-bottom:16px">
+          <h3 style="font-size:13px;margin-bottom:8px">Microsoft Teams</h3>
+          <label style="font-size:12px;display:flex;align-items:center;gap:6px;margin-bottom:6px"><input type="checkbox" id="nfTeamsEnabled"> מופעל</label>
+          <input id="nfTeamsUrl" placeholder="Teams Webhook URL" style="width:100%;padding:6px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:12px">
+        </div>
+        <div>
+          <h3 style="font-size:13px;margin-bottom:8px">כללי</h3>
+          <div style="display:flex;gap:12px;align-items:center">
+            <label style="font-size:12px">חומרה מינימלית:</label>
+            <select id="nfMinSeverity" style="padding:6px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:12px">
+              <option value="Info">Info</option>
+              <option value="Warning" selected>Warning</option>
+              <option value="Critical">Critical</option>
+            </select>
+            <label style="font-size:12px">Cooldown (דקות):</label>
+            <input id="nfCooldown" type="number" value="5" style="width:60px;padding:6px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:12px">
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="section">
+      <div class="section-header"><h2>&#x1F4DC; היסטוריית התראות</h2></div>
+      <div style="overflow-x:auto;max-height:500px;overflow-y:auto">
+        <table>
+          <thead><tr><th>זמן</th><th>חומרה</th><th>כותרת</th><th>ערוצים</th></tr></thead>
+          <tbody id="notifHistoryBody"><tr class="empty-row"><td colspan="4">לחץ "רענן"</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!--  PANEL: Logs                                                       -->
 <!-- ═══════════════════════════════════════════════════════════════════ -->
 <div class="nav-panel" id="panel-logs">
   <div style="display:flex;gap:8px;margin-bottom:12px;align-items:center;flex-wrap:wrap">
@@ -625,6 +854,8 @@ td.log-msg{white-space:pre-wrap;word-break:break-word;max-width:600px;font-famil
     </select>
     <button onclick="loadLogs()" style="background:var(--accent);color:#fff;border:none;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600">&#x1F50D; חפש</button>
     <button onclick="loadLogStats()" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px">&#x1F4CA; סטטיסטיקות</button>
+    <button onclick="exportLogsCsv()" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px">&#x1F4E5; CSV</button>
+    <button onclick="exportLogsJson()" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px">&#x1F4E5; JSON</button>
     <label style="font-size:12px;color:var(--text2);display:flex;align-items:center;gap:4px;margin-right:auto"><input type="checkbox" id="logAutoRefresh" checked onchange="toggleLogAutoRefresh()"> Auto-refresh 10s</label>
   </div>
 
@@ -1266,7 +1497,7 @@ async function loadPerfReport() {
 }
 
 // ══════════════════════════════════════════════════════════════════════
-//  RENDER: Alerting Panel
+//  RENDER: Alerting Panel (enhanced)
 // ══════════════════════════════════════════════════════════════════════
 async function loadAlerts() {
   document.getElementById('alertKpiCards').innerHTML = '<div class="card"><div class="label">בודק התראות...</div><div class="value"><div class="spinner"></div></div></div>';
@@ -1275,34 +1506,415 @@ async function loadAlerts() {
     const data = await resp.json();
     const alerts = data.alerts || data || [];
 
-    // KPIs
     const crit = alerts.filter(a => a.severity === 'Critical').length;
     const warn = alerts.filter(a => a.severity === 'Warning').length;
     const info = alerts.filter(a => a.severity === 'Info').length;
+    const acked = alerts.filter(a => a.isAcknowledged).length;
+    const snoozed = alerts.filter(a => a.isSnoozed).length;
     const cards = [];
     cards.push(kpi('סה"כ התראות', alerts.length, alerts.length > 0 ? 'warning' : 'ok'));
     cards.push(kpi('קריטי', crit, crit > 0 ? 'danger' : 'ok'));
     cards.push(kpi('אזהרה', warn, warn > 0 ? 'warning' : 'ok'));
     cards.push(kpi('מידע', info, 'info'));
+    cards.push(kpi('אושרו', acked, 'cyan'));
+    cards.push(kpi('מושתקים', snoozed, 'purple'));
     document.getElementById('alertKpiCards').innerHTML = cards.join('');
 
-    // Table
+    const navCount = document.getElementById('navAlertCount');
+    if (alerts.length > 0) { navCount.style.display = ''; navCount.textContent = alerts.length; }
+    else navCount.style.display = 'none';
+
     document.getElementById('alertBody').innerHTML = alerts.length ? alerts.map(a => {
       const sevCls = a.severity === 'Critical' ? 's-red' : a.severity === 'Warning' ? 's-yellow' : 's-blue';
-      return '<tr><td>' + statusBadge(sevCls, a.severity || 'Info') + '</td>' +
+      let statusExtra = '';
+      if (a.isAcknowledged) statusExtra += ' <span style="color:var(--cyan);font-size:10px">[ACK]</span>';
+      if (a.isSnoozed) statusExtra += ' <span style="color:var(--purple);font-size:10px">[SNOOZE]</span>';
+      return '<tr><td>' + statusBadge(sevCls, a.severity || 'Info') + statusExtra + '</td>' +
         '<td>' + esc(a.title || '') + '</td>' +
         '<td title="' + esc(a.message) + '">' + esc((a.message||'').substring(0,60)) + '</td>' +
         '<td>' + esc(a.category || '') + '</td>' +
-        '<td>' + fmt(a.timestamp) + '</td></tr>';
-    }).join('') : emptyRow(5, 'אין התראות — הכל תקין!');
+        '<td>' + fmt(a.timestamp) + '</td>' +
+        '<td style="white-space:nowrap">' +
+          (!a.isAcknowledged ? '<button onclick="ackAlert(\'' + a.id + '\')" style="background:var(--cyan);color:#000;border:none;padding:2px 8px;border-radius:4px;cursor:pointer;font-size:11px;margin:1px">ACK</button>' : '<button onclick="unackAlert(\'' + a.id + '\')" style="background:var(--surface2);color:var(--text2);border:1px solid var(--border);padding:2px 8px;border-radius:4px;cursor:pointer;font-size:11px;margin:1px">UNACK</button>') +
+          '<button onclick="snoozeAlert(\'' + a.id + '\')" style="background:var(--purple);color:#fff;border:none;padding:2px 8px;border-radius:4px;cursor:pointer;font-size:11px;margin:1px">Snooze</button>' +
+        '</td></tr>';
+    }).join('') : emptyRow(6, 'אין התראות — הכל תקין!');
 
-    // Summary
     const summResp = await fetch('/api/alerts/summary');
     const summData = await summResp.json();
-    document.getElementById('alertSummary').textContent = summData.summary || summData.text || JSON.stringify(summData, null, 2);
+    document.getElementById('alertSummary').textContent = summData.summary || summData.Summary || JSON.stringify(summData, null, 2);
   } catch(err) {
     document.getElementById('alertKpiCards').innerHTML = kpi('שגיאה', err.message, 'danger');
   }
+}
+
+async function ackAlert(id) {
+  try { await fetch('/api/alerts/' + id + '/acknowledge', {method:'POST'}); loadAlerts(); } catch(e) { alert('Error: ' + e.message); }
+}
+async function unackAlert(id) {
+  try { await fetch('/api/alerts/' + id + '/unacknowledge', {method:'POST'}); loadAlerts(); } catch(e) { alert('Error: ' + e.message); }
+}
+async function snoozeAlert(id) {
+  const mins = prompt('כמה דקות להשתיק?', '60');
+  if (!mins) return;
+  try { await fetch('/api/alerts/' + id + '/snooze?minutes=' + mins, {method:'POST'}); loadAlerts(); } catch(e) { alert('Error: ' + e.message); }
+}
+
+async function loadAlertHistory() {
+  const section = document.getElementById('alertHistorySection');
+  section.style.display = '';
+  try {
+    const resp = await fetch('/api/alerts/history?last=100');
+    const data = await resp.json();
+    const alerts = data || [];
+    document.getElementById('alertHistoryBody').innerHTML = alerts.length ? alerts.map(a => {
+      const sevCls = a.severity === 'Critical' ? 's-red' : a.severity === 'Warning' ? 's-yellow' : 's-blue';
+      return '<tr><td>' + statusBadge(sevCls, a.severity) + '</td><td>' + esc(a.title) + '</td>' +
+        '<td>' + esc((a.message||'').substring(0,50)) + '</td><td>' + esc(a.category||'') + '</td>' +
+        '<td>' + fmt(a.timestamp) + '</td><td>' + (a.isAcknowledged?'V':'-') + '</td><td>' + (a.isSnoozed?fmt(a.snoozedUntil):'-') + '</td></tr>';
+    }).join('') : emptyRow(7, 'אין היסטוריה');
+  } catch(e) { document.getElementById('alertHistoryBody').innerHTML = emptyRow(7, 'שגיאה: ' + e.message); }
+}
+
+async function toggleThresholds() {
+  const section = document.getElementById('thresholdsSection');
+  if (section.style.display !== 'none') { section.style.display = 'none'; return; }
+  section.style.display = '';
+  try {
+    const resp = await fetch('/api/alerts/thresholds');
+    const t = await resp.json();
+    const labels = {
+      slowApiThresholdMs: 'API איטי (ms)', avgResponseDegradationMs: 'ממוצע תגובה (ms)',
+      stuckCancellationThreshold: 'ביטולים תקועים', errorSpikeThresholdPerHour: 'שגיאות/שעה',
+      queueErrorThreshold: 'שגיאות Queue', cancelErrorSpikeThreshold: 'שגיאות ביטול',
+      wasteRoomThreshold: 'חדרים לא נמכרו', buyRoomsDownMinutes: 'BuyRooms down (דקות)',
+      pushFailureThreshold: 'Push failures', priceDriftAnomalyThreshold: 'Price Drift anomaly',
+      backOfficeErrorThreshold: 'BackOffice errors'
+    };
+    let html = '';
+    for (const [key, label] of Object.entries(labels)) {
+      html += '<div><label style="font-size:12px;color:var(--text2)">' + label + '</label><input id="th_' + key + '" type="number" value="' + (t[key]||0) + '" style="width:100%;padding:6px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;margin-top:4px"></div>';
+    }
+    document.getElementById('thresholdsForm').innerHTML = html;
+  } catch(e) { document.getElementById('thresholdsForm').innerHTML = '<div style="color:var(--red)">שגיאה: ' + e.message + '</div>'; }
+}
+
+async function saveThresholds() {
+  const t = {};
+  document.querySelectorAll('#thresholdsForm input').forEach(inp => {
+    const key = inp.id.replace('th_', '');
+    t[key] = parseInt(inp.value) || 0;
+  });
+  try {
+    await fetch('/api/alerts/thresholds', {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(t)});
+    alert('ספים נשמרו בהצלחה!');
+  } catch(e) { alert('שגיאה: ' + e.message); }
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  RENDER: SLA Dashboard
+// ══════════════════════════════════════════════════════════════════════
+async function loadSla() {
+  document.getElementById('slaKpiCards').innerHTML = '<div class="card"><div class="label">טוען SLA...</div><div class="value"><div class="spinner"></div></div></div>';
+  try {
+    const resp = await fetch('/api/sla');
+    const data = await resp.json();
+    const cards = [];
+    cards.push(kpi('Uptime כולל', data.overallUptime ? data.overallUptime.toFixed(3) + '%' : '-', data.overallUptime >= 99.9 ? 'ok' : data.overallUptime >= 99 ? 'warning' : 'danger'));
+    cards.push(kpi('MTTR ממוצע', data.overallMTTR ? data.overallMTTR.toFixed(1) + ' דקות' : '-', 'info'));
+    cards.push(kpi('MTTD ממוצע', data.overallMTTD ? data.overallMTTD.toFixed(1) + ' דקות' : '-', 'cyan'));
+    cards.push(kpi('Endpoints', (data.endpoints||[]).length, 'purple'));
+    const down = (data.endpoints||[]).filter(e => !e.isUp).length;
+    if (down > 0) cards.push(kpi('Down', down, 'danger'));
+    document.getElementById('slaKpiCards').innerHTML = cards.join('');
+
+    const endpoints = data.endpoints || [];
+    document.getElementById('slaBody').innerHTML = endpoints.length ? endpoints.map(e => {
+      const cls = e.isUp ? 's-green' : 's-red';
+      const uptCls = e.uptimePercent >= 99.9 ? 'color:var(--green)' : e.uptimePercent >= 99 ? 'color:var(--yellow)' : 'color:var(--red)';
+      return '<tr><td>' + esc(e.endpoint) + '</td>' +
+        '<td>' + statusBadge(cls, e.isUp ? 'UP' : 'DOWN') + (e.currentDowntimeMinutes > 0 ? ' <span style="font-size:10px;color:var(--red)">' + e.currentDowntimeMinutes.toFixed(0) + 'm</span>' : '') + '</td>' +
+        '<td style="' + uptCls + ';font-weight:600">' + e.uptimePercent.toFixed(3) + '%</td>' +
+        '<td>' + e.totalChecks + '</td><td>' + e.successfulChecks + '</td><td>' + e.failedChecks + '</td>' +
+        '<td>' + (e.avgResponseTimeMs||0).toFixed(0) + '</td><td>' + (e.p95ResponseTimeMs||0).toFixed(0) + '</td><td>' + (e.p99ResponseTimeMs||0).toFixed(0) + '</td>' +
+        '<td>' + (e.mttr > 0 ? e.mttr.toFixed(1) + 'm' : '-') + '</td>' +
+        '<td>' + (e.mttd > 0 ? e.mttd.toFixed(1) + 'm' : '-') + '</td></tr>';
+    }).join('') : emptyRow(11, 'אין נתוני SLA עדיין — המערכת צוברת מידע');
+
+    const incidents = data.recentIncidents || [];
+    if (incidents.length) {
+      document.getElementById('slaIncidentsSection').style.display = '';
+      document.getElementById('slaIncidentBody').innerHTML = incidents.map(i =>
+        '<tr><td>' + esc(i.endpoint||i.Endpoint||'') + '</td><td>' + fmt(i.startTime||i.StartTime) + '</td><td>' + fmt(i.endTime||i.EndTime) + '</td>' +
+        '<td>' + (i.durationMinutes||i.DurationMinutes||0).toFixed(1) + '</td><td>' + esc(i.type||i.Type||'') + '</td></tr>'
+      ).join('');
+    }
+  } catch(err) { document.getElementById('slaKpiCards').innerHTML = kpi('שגיאה', err.message, 'danger'); }
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  RENDER: DB Health
+// ══════════════════════════════════════════════════════════════════════
+async function loadDbHealth() {
+  document.getElementById('dbhKpiCards').innerHTML = '<div class="card"><div class="label">טוען DB Health...</div><div class="value"><div class="spinner"></div></div></div>';
+  try {
+    const resp = await fetch('/api/db-health');
+    const d = await resp.json();
+    const cards = [];
+    cards.push(kpi('חיבור', d.isConnected ? 'מחובר' : 'מנותק', d.isConnected ? 'ok' : 'danger'));
+    cards.push(kpi('DB', d.databaseName || '-', 'info'));
+    cards.push(kpi('חיבורים פעילים', d.activeConnections, 'cyan'));
+    cards.push(kpi('Sessions', d.userSessions, 'info'));
+    cards.push(kpi('Running', d.runningRequests, d.runningRequests > 10 ? 'warning' : 'ok'));
+    cards.push(kpi('Blocked', d.blockedRequests, d.blockedRequests > 0 ? 'danger' : 'ok'));
+    cards.push(kpi('Data Size', d.dataSizeMB ? d.dataSizeMB.toFixed(0) + ' MB' : '-', 'purple'));
+    cards.push(kpi('Log Size', d.logSizeMB ? d.logSizeMB.toFixed(0) + ' MB' : '-', 'info'));
+    cards.push(kpi('Deadlocks', d.totalDeadlocks, d.totalDeadlocks > 0 ? 'warning' : 'ok'));
+    document.getElementById('dbhKpiCards').innerHTML = cards.join('');
+
+    // Long queries
+    const queries = d.longRunningQueries || [];
+    document.getElementById('dbhQueriesBody').innerHTML = queries.length ? queries.map(q =>
+      '<tr><td>' + q.sessionId + '</td><td>' + statusBadge(q.status==='running'?'s-green':'s-yellow', q.status) + '</td>' +
+      '<td>' + esc(q.command) + '</td><td>' + q.durationSeconds + '</td><td>' + q.cpuTimeMs + '</td>' +
+      '<td>' + esc(q.waitType||'-') + '</td><td title="' + esc(q.sqlText||'') + '">' + esc((q.sqlText||'-').substring(0,60)) + '</td></tr>'
+    ).join('') : emptyRow(7, 'אין שאילתות ארוכות');
+
+    // Waits
+    const waits = d.topWaits || [];
+    document.getElementById('dbhWaitBody').innerHTML = waits.length ? waits.map(w =>
+      '<tr><td>' + esc(w.waitType) + '</td><td>' + w.waitTimeMs.toLocaleString() + '</td><td>' + w.waitingTasksCount.toLocaleString() + '</td><td>' + w.signalWaitTimeMs.toLocaleString() + '</td></tr>'
+    ).join('') : emptyRow(4, 'אין Wait Stats');
+
+    // Indexes
+    const indexes = d.fragmentedIndexes || [];
+    document.getElementById('dbhIndexBody').innerHTML = indexes.length ? indexes.map(i =>
+      '<tr><td>' + esc(i.tableName) + '</td><td>' + esc(i.indexName) + '</td>' +
+      '<td style="color:' + (i.fragmentationPercent > 30 ? 'var(--red)' : 'var(--yellow)') + '">' + i.fragmentationPercent + '%</td>' +
+      '<td>' + i.pageCount + '</td></tr>'
+    ).join('') : emptyRow(4, 'אין אינדקסים מפורקים');
+
+    // Counters
+    const counters = d.performanceCounters || {};
+    let cHtml = '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px">';
+    for (const [k,v] of Object.entries(counters)) {
+      cHtml += '<div style="padding:8px;background:var(--surface2);border-radius:6px"><div style="font-size:11px;color:var(--text2)">' + esc(k) + '</div><div style="font-size:18px;font-weight:600;color:var(--accent)">' + v.toLocaleString() + '</div></div>';
+    }
+    cHtml += '</div>';
+    document.getElementById('dbhCounters').innerHTML = Object.keys(counters).length ? cHtml : 'אין Performance Counters';
+  } catch(err) { document.getElementById('dbhKpiCards').innerHTML = kpi('שגיאה', err.message, 'danger'); }
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  RENDER: Incidents
+// ══════════════════════════════════════════════════════════════════════
+async function loadIncidents() {
+  document.getElementById('incKpiCards').innerHTML = '<div class="card"><div class="label">טוען אירועים...</div><div class="value"><div class="spinner"></div></div></div>';
+  try {
+    const statusFilter = document.getElementById('incidentStatusFilter').value;
+    let url = '/api/incidents?last=50';
+    if (statusFilter) url += '&status=' + statusFilter;
+    const resp = await fetch(url);
+    const data = await resp.json();
+    const cards = [];
+    cards.push(kpi('סה"כ אירועים', data.totalIncidents || 0, 'info'));
+    cards.push(kpi('פתוחים', data.openIncidents || 0, data.openIncidents > 0 ? 'warning' : 'ok'));
+    cards.push(kpi('נפתרו', data.resolvedIncidents || 0, 'ok'));
+    cards.push(kpi('זמן פתרון ממוצע', data.avgResolutionMinutes ? data.avgResolutionMinutes.toFixed(1) + ' דקות' : '-', 'cyan'));
+    if (data.bySeverity) for (const [k,v] of Object.entries(data.bySeverity)) {
+      cards.push(kpi(k, v, k==='Critical'?'danger':k==='Warning'?'warning':'info'));
+    }
+    document.getElementById('incKpiCards').innerHTML = cards.join('');
+
+    const navCount = document.getElementById('navIncidentCount');
+    if (data.openIncidents > 0) { navCount.style.display = ''; navCount.textContent = data.openIncidents; }
+    else navCount.style.display = 'none';
+
+    const incidents = data.incidents || [];
+    document.getElementById('incBody').innerHTML = incidents.length ? incidents.map(i => {
+      const sevCls = i.severity==='Critical'?'s-red':i.severity==='Warning'?'s-yellow':'s-blue';
+      const stCls = i.status==='Resolved'?'s-green':i.status==='Open'?'s-red':i.status==='Investigating'?'s-yellow':'s-blue';
+      const dur = i.durationMinutes > 0 ? i.durationMinutes.toFixed(0) + 'm' : (i.status !== 'Resolved' ? 'פתוח' : '-');
+      return '<tr><td>' + i.id + '</td><td>' + statusBadge(sevCls, i.severity) + '</td><td>' + statusBadge(stCls, i.status) + '</td>' +
+        '<td>' + esc(i.title) + '</td><td title="' + esc(i.description) + '">' + esc((i.description||'').substring(0,50)) + '</td>' +
+        '<td>' + esc(i.source||'') + '</td><td>' + fmt(i.createdAt) + '</td><td>' + dur + '</td>' +
+        '<td><select onchange="updateIncident(' + i.id + ',this.value)" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);padding:2px 6px;border-radius:4px;font-size:11px">' +
+        '<option value="">עדכן...</option><option value="Investigating">Investigating</option><option value="Identified">Identified</option><option value="Monitoring">Monitoring</option><option value="Resolved">Resolved</option></select></td></tr>';
+    }).join('') : emptyRow(9, 'אין אירועים');
+  } catch(err) { document.getElementById('incKpiCards').innerHTML = kpi('שגיאה', err.message, 'danger'); }
+}
+
+function showCreateIncident() {
+  const s = document.getElementById('createIncidentSection');
+  s.style.display = s.style.display === 'none' ? '' : 'none';
+}
+
+async function createIncident() {
+  const title = document.getElementById('incTitle').value;
+  const desc = document.getElementById('incDesc').value;
+  const sev = document.getElementById('incSeverity').value;
+  if (!title) { alert('נא להזין כותרת'); return; }
+  try {
+    await fetch('/api/incidents', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({title,description:desc,severity:sev})});
+    document.getElementById('incTitle').value = '';
+    document.getElementById('incDesc').value = '';
+    document.getElementById('createIncidentSection').style.display = 'none';
+    loadIncidents();
+  } catch(e) { alert('שגיאה: ' + e.message); }
+}
+
+async function updateIncident(id, status) {
+  if (!status) return;
+  try {
+    await fetch('/api/incidents/' + id, {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify({status, note:null})});
+    loadIncidents();
+  } catch(e) { alert('שגיאה: ' + e.message); }
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  RENDER: Audit
+// ══════════════════════════════════════════════════════════════════════
+async function loadAudit() {
+  document.getElementById('auditKpiCards').innerHTML = '<div class="card"><div class="label">טוען...</div><div class="value"><div class="spinner"></div></div></div>';
+  try {
+    const action = document.getElementById('auditActionFilter').value.trim();
+    const endpoint = document.getElementById('auditEndpointFilter').value.trim();
+    let url = '/api/audit?last=100';
+    if (action) url += '&action=' + encodeURIComponent(action);
+    if (endpoint) url += '&endpoint=' + encodeURIComponent(endpoint);
+    const resp = await fetch(url);
+    const data = await resp.json();
+
+    const cards = [];
+    cards.push(kpi('סה"כ רשומות', data.totalEntries || 0, 'info'));
+    cards.push(kpi('מוצגים', data.filteredCount || 0, 'cyan'));
+    cards.push(kpi('בקשות/דקה', data.requestsPerMinute || 0, 'purple'));
+    cards.push(kpi('בקשות/שעה', data.requestsPerHour || 0, 'info'));
+    document.getElementById('auditKpiCards').innerHTML = cards.join('');
+
+    const entries = data.entries || [];
+    document.getElementById('auditBody').innerHTML = entries.length ? entries.map(e =>
+      '<tr><td style="white-space:nowrap;font-size:11px">' + fmtLog(e.timestamp) + '</td><td>' + esc(e.action) + '</td>' +
+      '<td>' + esc(e.endpoint) + '</td><td>' + esc(e.clientIp) + '</td><td>' + esc(e.detail||'-') + '</td></tr>'
+    ).join('') : emptyRow(5, 'אין רשומות Audit');
+
+    // Stats
+    let statsHtml = '';
+    if (data.topEndpoints && Object.keys(data.topEndpoints).length) {
+      statsHtml += '<h3 style="font-size:13px;margin-bottom:6px">Top Endpoints</h3><div style="margin-bottom:12px">';
+      for (const [k,v] of Object.entries(data.topEndpoints)) statsHtml += '<div style="display:flex;justify-content:space-between;padding:3px 0;font-size:12px"><span>' + esc(k) + '</span><span style="color:var(--accent)">' + v + '</span></div>';
+      statsHtml += '</div>';
+    }
+    if (data.topActions && Object.keys(data.topActions).length) {
+      statsHtml += '<h3 style="font-size:13px;margin-bottom:6px">Top Actions</h3><div style="margin-bottom:12px">';
+      for (const [k,v] of Object.entries(data.topActions)) statsHtml += '<div style="display:flex;justify-content:space-between;padding:3px 0;font-size:12px"><span>' + esc(k) + '</span><span style="color:var(--cyan)">' + v + '</span></div>';
+      statsHtml += '</div>';
+    }
+    if (data.topIps && Object.keys(data.topIps).length) {
+      statsHtml += '<h3 style="font-size:13px;margin-bottom:6px">Top IPs</h3><div>';
+      for (const [k,v] of Object.entries(data.topIps)) statsHtml += '<div style="display:flex;justify-content:space-between;padding:3px 0;font-size:12px"><span>' + esc(k) + '</span><span style="color:var(--purple)">' + v + '</span></div>';
+      statsHtml += '</div>';
+    }
+    document.getElementById('auditStats').innerHTML = statsHtml || 'אין סטטיסטיקות';
+  } catch(err) { document.getElementById('auditKpiCards').innerHTML = kpi('שגיאה', err.message, 'danger'); }
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  RENDER: Notifications Config
+// ══════════════════════════════════════════════════════════════════════
+async function loadNotifConfig() {
+  try {
+    const resp = await fetch('/api/notifications/config');
+    const c = await resp.json();
+    document.getElementById('nfWebhookEnabled').checked = c.webhookEnabled;
+    document.getElementById('nfWebhookUrl').value = c.webhookUrl || '';
+    document.getElementById('nfEmailEnabled').checked = c.emailEnabled;
+    document.getElementById('nfSmtpHost').value = c.smtpHost || '';
+    document.getElementById('nfSmtpPort').value = c.smtpPort || 587;
+    document.getElementById('nfSmtpUser').value = c.smtpUser || '';
+    document.getElementById('nfSmtpPass').value = c.smtpPass || '';
+    document.getElementById('nfEmailRecipients').value = c.emailRecipients || '';
+    document.getElementById('nfSlackEnabled').checked = c.slackEnabled;
+    document.getElementById('nfSlackUrl').value = c.slackWebhookUrl || '';
+    document.getElementById('nfTeamsEnabled').checked = c.teamsEnabled;
+    document.getElementById('nfTeamsUrl').value = c.teamsWebhookUrl || '';
+    document.getElementById('nfMinSeverity').value = c.minSeverity || 'Warning';
+    document.getElementById('nfCooldown').value = c.cooldownMinutes || 5;
+
+    // History
+    const hResp = await fetch('/api/notifications/history?last=50');
+    const history = await hResp.json();
+    document.getElementById('notifHistoryBody').innerHTML = (history||[]).length ? history.map(n => {
+      const sevCls = n.severity==='Critical'?'s-red':n.severity==='Warning'?'s-yellow':'s-blue';
+      const channels = (n.channelResults||[]).map(c => '<span style="color:' + (c.success?'var(--green)':'var(--red)') + ';font-size:11px">' + c.channel + (c.success?'V':'X') + '</span>').join(' ');
+      return '<tr><td style="font-size:11px">' + fmt(n.timestamp) + '</td><td>' + statusBadge(sevCls, n.severity) + '</td><td>' + esc(n.title) + '</td><td>' + channels + '</td></tr>';
+    }).join('') : emptyRow(4, 'אין היסטוריה');
+  } catch(err) { alert('שגיאה בטעינת הגדרות: ' + err.message); }
+}
+
+async function saveNotifConfig() {
+  const config = {
+    webhookEnabled: document.getElementById('nfWebhookEnabled').checked,
+    webhookUrl: document.getElementById('nfWebhookUrl').value,
+    emailEnabled: document.getElementById('nfEmailEnabled').checked,
+    smtpHost: document.getElementById('nfSmtpHost').value,
+    smtpPort: parseInt(document.getElementById('nfSmtpPort').value) || 587,
+    smtpUser: document.getElementById('nfSmtpUser').value,
+    smtpPass: document.getElementById('nfSmtpPass').value,
+    smtpSsl: true,
+    emailRecipients: document.getElementById('nfEmailRecipients').value,
+    slackEnabled: document.getElementById('nfSlackEnabled').checked,
+    slackWebhookUrl: document.getElementById('nfSlackUrl').value,
+    teamsEnabled: document.getElementById('nfTeamsEnabled').checked,
+    teamsWebhookUrl: document.getElementById('nfTeamsUrl').value,
+    minSeverity: document.getElementById('nfMinSeverity').value,
+    cooldownMinutes: parseInt(document.getElementById('nfCooldown').value) || 5
+  };
+  try {
+    await fetch('/api/notifications/config', {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(config)});
+    alert('הגדרות נשמרו!');
+  } catch(e) { alert('שגיאה: ' + e.message); }
+}
+
+async function testNotification() {
+  try {
+    const resp = await fetch('/api/notifications/test', {method:'POST'});
+    const data = await resp.json();
+    const results = (data.channels||[]).map(c => c.channel + ': ' + (c.success ? 'OK' : 'FAIL - ' + (c.detail||''))).join('\n');
+    alert('תוצאת בדיקה:\n' + results);
+    loadNotifConfig();
+  } catch(e) { alert('שגיאה: ' + e.message); }
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  Export Functions
+// ══════════════════════════════════════════════════════════════════════
+function exportHistoryCsv() {
+  const period = document.querySelector('#panel-history .bi-period.active')?.textContent?.trim() || '24h';
+  const periodMap = {'שעה':'1h','6 שעות':'6h','24 שעות':'24h','שבוע':'7d','חודש':'30d','90 יום':'90d'};
+  window.open('/api/history/export/' + (periodMap[period] || '24h'), '_blank');
+}
+
+function exportLogsCsv() {
+  const level = document.getElementById('logLevelFilter').value;
+  const search = document.getElementById('logSearchInput').value.trim();
+  const category = document.getElementById('logCategoryInput').value.trim();
+  let url = '/api/logs/export/csv?';
+  if (level) url += 'level=' + encodeURIComponent(level) + '&';
+  if (search) url += 'search=' + encodeURIComponent(search) + '&';
+  if (category) url += 'category=' + encodeURIComponent(category) + '&';
+  window.open(url, '_blank');
+}
+
+function exportLogsJson() {
+  const level = document.getElementById('logLevelFilter').value;
+  const search = document.getElementById('logSearchInput').value.trim();
+  const category = document.getElementById('logCategoryInput').value.trim();
+  let url = '/api/logs/export/json?';
+  if (level) url += 'level=' + encodeURIComponent(level) + '&';
+  if (search) url += 'search=' + encodeURIComponent(search) + '&';
+  if (category) url += 'category=' + encodeURIComponent(category) + '&';
+  window.open(url, '_blank');
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -1435,11 +2047,13 @@ async function loadData() {
     renderErrors(D);
     renderAlert(D);
 
-    // Auto-load new panels data in background
+    // Auto-load panels data in background
     loadAzureHealth().catch(()=>{});
     loadBI('today').catch(()=>{});
     loadAlerts().catch(()=>{});
     loadLogs().catch(()=>{});
+    loadSla().catch(()=>{});
+    loadIncidents().catch(()=>{});
 
     document.getElementById('lastUpdate').textContent = 'עדכון אחרון: ' + fmtNow() + (D.dbConnected ? '' : ' [DB ERROR]');
   } catch(err) {
