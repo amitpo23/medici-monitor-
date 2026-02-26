@@ -4,7 +4,7 @@ using System.Text.Json;
 namespace MediciMonitor.Services;
 
 /// <summary>
-/// Enhanced Alert rules engine — 15 rules, acknowledge/snooze, history, configurable thresholds,
+/// Enhanced Alert rules engine — 17 rules, acknowledge/snooze, history, configurable thresholds,
 /// notification integration.
 /// </summary>
 public class AlertingService
@@ -162,6 +162,59 @@ public class AlertingService
                         alerts.Add(new AlertInfo { Id = "SO_FAILURES", Title = "SalesOffice Failures", Message = $"{soFails} SalesOffice orders נכשלו", Severity = "Warning", Category = "Business" });
                 }
                 catch { /* table might not exist */ }
+
+                // 16. SalesOffice unprocessed callback backlog
+                try
+                {
+                    int unprocessed = 0;
+                    foreach (var tbl in new[] { "[SalesOffice.Details]", "SalesOfficeDetails", "SalesOffice_Details" })
+                    {
+                        try
+                        {
+                            unprocessed = await ScalarInt(conn, $"SELECT COUNT(*) FROM {tbl} WHERE IsProcessedCallback = 0");
+                            break;
+                        }
+                        catch { /* try next */ }
+                    }
+                    if (unprocessed > Thresholds.SalesOfficeUnprocessedCallbackThreshold)
+                        alerts.Add(new AlertInfo
+                        {
+                            Id = "SO_CALLBACK_BACKLOG",
+                            Title = "SalesOffice Callback Backlog",
+                            Message = $"{unprocessed:N0} callbacks לא מעובדים (סף: {Thresholds.SalesOfficeUnprocessedCallbackThreshold:N0})",
+                            Severity = unprocessed > Thresholds.SalesOfficeUnprocessedCallbackThreshold * 3 ? "Critical" : "Warning",
+                            Category = "Business"
+                        });
+                }
+                catch { /* table might not exist */ }
+
+                // 17. SalesOffice zero-mapping orders
+                try
+                {
+                    string? detTbl = null, ordTbl = null;
+                    foreach (var t in new[] { "[SalesOffice.Details]", "SalesOfficeDetails", "SalesOffice_Details" })
+                    { try { await ScalarInt(conn, $"SELECT TOP 1 1 FROM {t}"); detTbl = t; break; } catch { } }
+                    foreach (var t in new[] { "SalesOfficeOrders", "[SalesOffice.Orders]", "SalesOffice_Orders" })
+                    { try { await ScalarInt(conn, $"SELECT TOP 1 1 FROM {t}"); ordTbl = t; break; } catch { } }
+
+                    if (detTbl != null && ordTbl != null)
+                    {
+                        var zeroMapping = await ScalarInt(conn,
+                            $@"SELECT COUNT(*) FROM {ordTbl} o
+                               LEFT JOIN (SELECT OrderId, COUNT(*) as Cnt FROM {detTbl} GROUP BY OrderId) d ON d.OrderId = o.Id
+                               WHERE o.IsActive = 1 AND o.WebJobStatus LIKE 'Completed%' AND (d.Cnt IS NULL OR d.Cnt = 0)");
+                        if (zeroMapping > Thresholds.SalesOfficeZeroMappingThreshold)
+                            alerts.Add(new AlertInfo
+                            {
+                                Id = "SO_ZERO_MAPPING",
+                                Title = "SalesOffice Zero-Mapping Orders",
+                                Message = $"{zeroMapping} הזמנות הושלמו ללא mapping — ריצות מבוזבזות (סף: {Thresholds.SalesOfficeZeroMappingThreshold})",
+                                Severity = "Warning",
+                                Category = "Business"
+                            });
+                    }
+                }
+                catch { /* tables might not exist */ }
             }
 
             // Set timestamp & active status, filter acknowledged/snoozed
@@ -336,4 +389,6 @@ public class AlertThresholds
     public int PushFailureThreshold { get; set; } = 5;
     public int PriceDriftAnomalyThreshold { get; set; } = 3;
     public int BackOfficeErrorThreshold { get; set; } = 10;
+    public int SalesOfficeUnprocessedCallbackThreshold { get; set; } = 10000;
+    public int SalesOfficeZeroMappingThreshold { get; set; } = 20;
 }

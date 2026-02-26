@@ -39,6 +39,7 @@ public class DataService
             await Safe(() => LoadBackOfficeErrors(conn, s));
             await Safe(() => LoadActiveBookingsByHotel(conn, s));
             await Safe(() => LoadSalesOfficeStatus(conn, s));
+            await Safe(() => LoadSalesOfficeDetails(conn, s));
             await Safe(() => LoadOpportunitiesAndRooms(conn, s));
 
             // NEW features
@@ -385,6 +386,130 @@ public class DataService
                 return;
             }
             catch { /* try next table name pattern */ }
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  SalesOffice Details/Callback Monitoring
+    // ═══════════════════════════════════════════════════════════════
+
+    private async Task LoadSalesOfficeDetails(SqlConnection conn, SystemStatus s)
+    {
+        string[] detailsTablePatterns = ["[SalesOffice.Details]", "SalesOfficeDetails", "SalesOffice_Details"];
+        string[] ordersTablePatterns = ["SalesOfficeOrders", "[SalesOffice.Orders]", "SalesOffice_Orders"];
+
+        string? detailsTable = null;
+        string? ordersTable = null;
+
+        // Resolve Details table name
+        foreach (var name in detailsTablePatterns)
+        {
+            try
+            {
+                using var probe = new SqlCommand($"SELECT TOP 1 1 FROM {name}", conn);
+                probe.CommandTimeout = 3;
+                await probe.ExecuteScalarAsync();
+                detailsTable = name;
+                break;
+            }
+            catch { /* try next */ }
+        }
+
+        // Resolve Orders table name
+        foreach (var name in ordersTablePatterns)
+        {
+            try
+            {
+                using var probe = new SqlCommand($"SELECT TOP 1 1 FROM {name}", conn);
+                probe.CommandTimeout = 3;
+                await probe.ExecuteScalarAsync();
+                ordersTable = name;
+                break;
+            }
+            catch { /* try next */ }
+        }
+
+        if (detailsTable == null) return; // Table not found, skip silently
+
+        // Query 1: Callback KPIs
+        var sql1 = $@"
+            SELECT
+                COUNT(*) as TotalDetails,
+                SUM(CASE WHEN IsProcessedCallback = 0 THEN 1 ELSE 0 END) as Unprocessed,
+                SUM(CASE WHEN IsProcessedCallback = 1 THEN 1 ELSE 0 END) as Processed
+            FROM {detailsTable};
+
+            SELECT
+                (SELECT COUNT(*) FROM {detailsTable}
+                 WHERE IsProcessedCallback = 1
+                 AND DateInsert >= DATEADD(HOUR, -24, GETDATE())) as ProcessedLast24h,
+                (SELECT COUNT(*) FROM {detailsTable}
+                 WHERE IsProcessedCallback = 1
+                 AND DateInsert >= DATEADD(HOUR, -1, GETDATE())) as ProcessedLastHour";
+
+        using var cmd1 = new SqlCommand(sql1, conn) { CommandTimeout = 10 };
+        using var rdr1 = await cmd1.ExecuteReaderAsync();
+
+        if (await rdr1.ReadAsync())
+        {
+            s.SalesOfficeTotalDetails = rdr1.IsDBNull(0) ? 0 : rdr1.GetInt32(0);
+            s.SalesOfficeUnprocessedCallbacks = rdr1.IsDBNull(1) ? 0 : rdr1.GetInt32(1);
+            s.SalesOfficeProcessedCallbacks = rdr1.IsDBNull(2) ? 0 : rdr1.GetInt32(2);
+        }
+
+        await rdr1.NextResultAsync();
+        if (await rdr1.ReadAsync())
+        {
+            s.SalesOfficeCallbacksProcessedLast24h = rdr1.IsDBNull(0) ? 0 : rdr1.GetInt32(0);
+            s.SalesOfficeCallbacksProcessedLastHour = rdr1.IsDBNull(1) ? 0 : rdr1.GetInt32(1);
+            s.SalesOfficeCallbackProcessingRate = s.SalesOfficeCallbacksProcessedLast24h / 24.0;
+        }
+
+        // Query 2: Zero-mapping orders (completed orders with no details)
+        if (ordersTable != null)
+        {
+            var sql2 = $@"
+                SELECT
+                    o.Id as OrderId,
+                    o.WebJobStatus,
+                    o.DateFrom,
+                    o.DateTo,
+                    ISNULL(d.Cnt, 0) as DetailCount,
+                    0 as MappingCount
+                FROM {ordersTable} o
+                LEFT JOIN (SELECT OrderId, COUNT(*) as Cnt FROM {detailsTable} GROUP BY OrderId) d ON d.OrderId = o.Id
+                WHERE o.IsActive = 1 AND o.WebJobStatus LIKE 'Completed%' AND (d.Cnt IS NULL OR d.Cnt = 0)
+                ORDER BY o.Id DESC;
+
+                SELECT
+                    (SELECT COUNT(*) FROM {ordersTable}
+                     WHERE IsActive = 1 AND WebJobStatus LIKE 'Completed%') as TotalCompleted,
+                    (SELECT COUNT(*) FROM {ordersTable} o
+                     LEFT JOIN (SELECT OrderId, COUNT(*) as Cnt FROM {detailsTable} GROUP BY OrderId) d ON d.OrderId = o.Id
+                     WHERE o.IsActive = 1 AND o.WebJobStatus LIKE 'Completed%' AND (d.Cnt IS NULL OR d.Cnt = 0)) as ZeroMapping";
+
+            using var cmd2 = new SqlCommand(sql2, conn) { CommandTimeout = 15 };
+            using var rdr2 = await cmd2.ExecuteReaderAsync();
+
+            while (await rdr2.ReadAsync())
+            {
+                s.SalesOfficeZeroMappingItems.Add(new SalesOfficeZeroMappingInfo
+                {
+                    OrderId = rdr2.GetInt32(0),
+                    WebJobStatus = rdr2.IsDBNull(1) ? null : rdr2.GetString(1),
+                    DateFrom = rdr2.IsDBNull(2) ? null : rdr2.GetDateTime(2),
+                    DateTo = rdr2.IsDBNull(3) ? null : rdr2.GetDateTime(3),
+                    DetailCount = rdr2.GetInt32(4),
+                    MappingCount = rdr2.GetInt32(5)
+                });
+            }
+
+            await rdr2.NextResultAsync();
+            if (await rdr2.ReadAsync())
+            {
+                s.SalesOfficeTotalCompletedOrders = rdr2.IsDBNull(0) ? 0 : rdr2.GetInt32(0);
+                s.SalesOfficeZeroMappingOrders = rdr2.IsDBNull(1) ? 0 : rdr2.GetInt32(1);
+            }
         }
     }
 

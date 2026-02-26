@@ -260,7 +260,7 @@ td.log-msg{white-space:pre-wrap;word-break:break-word;max-width:600px;font-famil
     <!-- SalesOffice -->
     <div class="section">
       <div class="section-header">
-        <h2>&#x1F4CB; SalesOffice Orders</h2>
+        <h2>&#x1F4CB; SalesOffice Orders & Callbacks</h2>
         <div>
           <span class="badge blue" id="soPendingBadge">Pending: 0</span>
           <span class="badge yellow" id="soProgressBadge">In Progress: 0</span>
@@ -268,11 +268,28 @@ td.log-msg{white-space:pre-wrap;word-break:break-word;max-width:600px;font-famil
           <span class="badge red" id="soFailedBadge" style="display:none">Failed: 0</span>
         </div>
       </div>
-      <div style="overflow-x:auto">
-        <table>
-          <thead><tr><th>ID</th><th>סטטוס</th><th>מתאריך</th><th>עד תאריך</th><th>פעיל</th></tr></thead>
-          <tbody id="soBody"></tbody>
-        </table>
+      <!-- Callback KPI Cards -->
+      <div class="cards" id="soCallbackKpis" style="padding:8px 12px"></div>
+      <!-- Sub-tabs: Stuck Orders | Zero-Mapping -->
+      <div style="display:flex;gap:8px;padding:4px 12px;border-bottom:1px solid var(--border)">
+        <button class="btn btn-sm" id="soTabStuck" onclick="soSwitchTab('stuck')" style="font-weight:bold">הזמנות ממתינות</button>
+        <button class="btn btn-sm" id="soTabZeroMap" onclick="soSwitchTab('zeromap')">ללא Mapping <span class="badge red" id="soZeroMapBadge" style="display:none;margin-right:4px">0</span></button>
+      </div>
+      <div id="soStuckPanel">
+        <div style="overflow-x:auto">
+          <table>
+            <thead><tr><th>ID</th><th>סטטוס</th><th>מתאריך</th><th>עד תאריך</th><th>פעיל</th></tr></thead>
+            <tbody id="soBody"></tbody>
+          </table>
+        </div>
+      </div>
+      <div id="soZeroMapPanel" style="display:none">
+        <div style="overflow-x:auto">
+          <table>
+            <thead><tr><th>Order ID</th><th>סטטוס</th><th>מתאריך</th><th>עד תאריך</th><th>Details</th><th>Mapping</th></tr></thead>
+            <tbody id="soZeroMapBody"></tbody>
+          </table>
+        </div>
       </div>
     </div>
   </div>
@@ -960,8 +977,11 @@ function renderOverview(d) {
   c.push(kpi('שגיאות BackOffice 24h', d.backOfficeErrorsLast24h, d.backOfficeErrorsLast24h > 0 ? 'warning' : 'ok'));
   c.push(kpi('Opportunities', d.activeOpportunities, 'info'));
   c.push(kpi('Queue ממתין', d.queuePending, d.queueErrors > 0 ? 'danger' : 'info', d.queueErrors > 0 ? d.queueErrors + ' שגיאות' : ''));
-  c.push(kpi('SalesOffice', d.salesOfficePending, d.salesOfficeFailed > 0 ? 'danger' : 'info',
-    d.salesOfficeFailed > 0 ? d.salesOfficeFailed + ' נכשל!' : d.salesOfficeCompleted + ' הושלם'));
+  c.push(kpi('SalesOffice', d.salesOfficePending, d.salesOfficeFailed > 0 ? 'danger' :
+    d.salesOfficeUnprocessedCallbacks > 10000 ? 'warning' : 'info',
+    d.salesOfficeFailed > 0 ? d.salesOfficeFailed + ' נכשל!' :
+    d.salesOfficeUnprocessedCallbacks > 0 ? (d.salesOfficeUnprocessedCallbacks||0).toLocaleString() + ' callbacks ממתינים' :
+    d.salesOfficeCompleted + ' הושלם'));
   document.getElementById('kpiCards').innerHTML = c.join('');
 
   // Heartbeat
@@ -1020,20 +1040,69 @@ function renderHotelChart(d) {
   }).join('') + '<div style="padding:8px 0;font-size:11px;color:var(--text2)">&#x1F535; פעיל &nbsp; &#x1F534; תקוע &nbsp; &#x1F7E2; נמכר</div>';
 }
 
+function soSwitchTab(tab) {
+  document.getElementById('soStuckPanel').style.display = tab === 'stuck' ? '' : 'none';
+  document.getElementById('soZeroMapPanel').style.display = tab === 'zeromap' ? '' : 'none';
+  document.getElementById('soTabStuck').style.fontWeight = tab === 'stuck' ? 'bold' : '';
+  document.getElementById('soTabZeroMap').style.fontWeight = tab === 'zeromap' ? 'bold' : '';
+}
+
 function renderSalesOffice(d) {
+  // Order status badges
   document.getElementById('soPendingBadge').textContent = 'Pending: ' + d.salesOfficePending;
   document.getElementById('soProgressBadge').textContent = 'In Progress: ' + d.salesOfficeInProgress;
   document.getElementById('soCompleteBadge').textContent = 'Completed: ' + d.salesOfficeCompleted;
   const fb = document.getElementById('soFailedBadge');
   if (d.salesOfficeFailed > 0) { fb.style.display = ''; fb.textContent = 'Failed: ' + d.salesOfficeFailed; } else fb.style.display = 'none';
+
+  // Callback KPI cards
+  var ck = [];
+  var backlogSev = (d.salesOfficeUnprocessedCallbacks||0) > 30000 ? 'danger' :
+                   (d.salesOfficeUnprocessedCallbacks||0) > 10000 ? 'warning' : 'ok';
+  ck.push(kpi('Callbacks ממתינים', (d.salesOfficeUnprocessedCallbacks||0).toLocaleString(), backlogSev,
+    (d.salesOfficeTotalDetails||0) > 0 ? Math.round((d.salesOfficeUnprocessedCallbacks||0) / d.salesOfficeTotalDetails * 100) + '% מהכל' : ''));
+  ck.push(kpi('עובדו (שעה)', d.salesOfficeCallbacksProcessedLastHour || 0,
+    (d.salesOfficeCallbacksProcessedLastHour||0) > 0 ? 'ok' : 'warning',
+    'קצב: ' + ((d.salesOfficeCallbackProcessingRate||0).toFixed(0)) + '/שעה'));
+  ck.push(kpi('עובדו (24h)', (d.salesOfficeCallbacksProcessedLast24h||0).toLocaleString(), 'info'));
+  var zmPct = (d.salesOfficeTotalCompletedOrders||0) > 0
+    ? Math.round((d.salesOfficeZeroMappingOrders||0) / d.salesOfficeTotalCompletedOrders * 100) : 0;
+  ck.push(kpi('ללא Mapping', d.salesOfficeZeroMappingOrders || 0,
+    (d.salesOfficeZeroMappingOrders||0) > 20 ? 'danger' : (d.salesOfficeZeroMappingOrders||0) > 0 ? 'warning' : 'ok',
+    zmPct + '% מ-' + (d.salesOfficeTotalCompletedOrders||0) + ' הושלמו'));
+  document.getElementById('soCallbackKpis').innerHTML = ck.join('');
+
+  // Zero-mapping badge on tab
+  var zmBadge = document.getElementById('soZeroMapBadge');
+  if ((d.salesOfficeZeroMappingOrders||0) > 0) {
+    zmBadge.style.display = ''; zmBadge.textContent = d.salesOfficeZeroMappingOrders;
+  } else zmBadge.style.display = 'none';
+
+  // Stuck orders table
   const body = document.getElementById('soBody');
-  if (!d.salesOfficeStuckOrders?.length) { body.innerHTML = emptyRow(5, 'אין הזמנות ממתינות'); return; }
-  body.innerHTML = d.salesOfficeStuckOrders.map(o =>
-    '<tr><td>' + o.id + '</td>' +
-    '<td>' + statusBadge(!o.webJobStatus ? 's-yellow' : o.webJobStatus.includes('Failed') ? 's-red' : 's-blue', o.webJobStatus || 'Pending') + '</td>' +
-    '<td>' + fmt(o.dateFrom) + '</td><td>' + fmt(o.dateTo) + '</td>' +
-    '<td>' + (o.isActive ? statusBadge('s-green','Yes') : statusBadge('s-red','No')) + '</td></tr>'
-  ).join('');
+  if (!d.salesOfficeStuckOrders?.length) { body.innerHTML = emptyRow(5, 'אין הזמנות ממתינות'); }
+  else {
+    body.innerHTML = d.salesOfficeStuckOrders.map(o =>
+      '<tr><td>' + o.id + '</td>' +
+      '<td>' + statusBadge(!o.webJobStatus ? 's-yellow' : o.webJobStatus.includes('Failed') ? 's-red' : 's-blue', o.webJobStatus || 'Pending') + '</td>' +
+      '<td>' + fmt(o.dateFrom) + '</td><td>' + fmt(o.dateTo) + '</td>' +
+      '<td>' + (o.isActive ? statusBadge('s-green','Yes') : statusBadge('s-red','No')) + '</td></tr>'
+    ).join('');
+  }
+
+  // Zero-mapping table
+  var zmBody = document.getElementById('soZeroMapBody');
+  if (!d.salesOfficeZeroMappingItems?.length) {
+    zmBody.innerHTML = emptyRow(6, 'אין הזמנות ללא mapping');
+  } else {
+    zmBody.innerHTML = d.salesOfficeZeroMappingItems.map(o =>
+      '<tr><td>' + o.orderId + '</td>' +
+      '<td>' + statusBadge('s-green', o.webJobStatus || '-') + '</td>' +
+      '<td>' + fmt(o.dateFrom) + '</td><td>' + fmt(o.dateTo) + '</td>' +
+      '<td>' + o.detailCount + '</td>' +
+      '<td>' + statusBadge('s-red', '' + o.mappingCount) + '</td></tr>'
+    ).join('');
+  }
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -1215,6 +1284,8 @@ function renderAlert(d) {
   if (d.stuckCancellations > 0) alerts.push(d.stuckCancellations + ' ביטולים תקועים!');
   if (d.failedPushOperations > 0) alerts.push(d.failedPushOperations + ' Push failures');
   if (d.salesOfficeFailed > 0) alerts.push(d.salesOfficeFailed + ' SalesOffice failed');
+  if ((d.salesOfficeUnprocessedCallbacks||0) > 10000) alerts.push((d.salesOfficeUnprocessedCallbacks).toLocaleString() + ' SO callbacks backlog!');
+  if ((d.salesOfficeZeroMappingOrders||0) > 20) alerts.push(d.salesOfficeZeroMappingOrders + ' SO orders ללא mapping');
   if (d.queueErrors > 0) alerts.push(d.queueErrors + ' Queue errors');
   if (!d.buyRoomsHealthy) alerts.push('BuyRooms לא פעיל!');
   if (d.wasteExpiring24h > 0) alerts.push(d.wasteExpiring24h + ' חדרים פגי תוקף תוך 24h!');

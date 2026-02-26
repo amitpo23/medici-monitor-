@@ -36,6 +36,16 @@ public class SystemStatus
     public int SalesOfficeCompleted { get; set; }
     public int SalesOfficeFailed { get; set; }
 
+    // ── 4b. SalesOffice Details/Callback ──
+    public int SalesOfficeUnprocessedCallbacks { get; set; }
+    public int SalesOfficeTotalDetails { get; set; }
+    public int SalesOfficeProcessedCallbacks { get; set; }
+    public int SalesOfficeZeroMappingOrders { get; set; }
+    public int SalesOfficeTotalCompletedOrders { get; set; }
+    public int SalesOfficeCallbacksProcessedLast24h { get; set; }
+    public int SalesOfficeCallbacksProcessedLastHour { get; set; }
+    public double SalesOfficeCallbackProcessingRate { get; set; }
+
     // ── 5. NEW: Reservations (Zenith cockpit) ──
     public int ReservationsToday { get; set; }
     public int ReservationsThisWeek { get; set; }
@@ -79,6 +89,7 @@ public class SystemStatus
     public List<QueueErrorInfo> QueueErrorItems { get; set; } = new();
     public List<BackOfficeErrorInfo> RecentBackOfficeErrors { get; set; } = new();
     public List<SalesOfficeOrderInfo> SalesOfficeStuckOrders { get; set; } = new();
+    public List<SalesOfficeZeroMappingInfo> SalesOfficeZeroMappingItems { get; set; } = new();
     public List<ActiveBookingSummary> ActiveBookingsByHotel { get; set; } = new();
     public List<ReservationInfo> RecentReservations { get; set; } = new();
     public List<RoomWasteInfo> WasteRooms { get; set; } = new();
@@ -152,6 +163,16 @@ public class SalesOfficeOrderInfo
     public DateTime? DateFrom { get; set; }
     public DateTime? DateTo { get; set; }
     public bool IsActive { get; set; }
+}
+
+public class SalesOfficeZeroMappingInfo
+{
+    public int OrderId { get; set; }
+    public string? WebJobStatus { get; set; }
+    public DateTime? DateFrom { get; set; }
+    public DateTime? DateTo { get; set; }
+    public int DetailCount { get; set; }
+    public int MappingCount { get; set; }
 }
 
 public class ActiveBookingSummary
