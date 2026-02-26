@@ -46,6 +46,15 @@ public class SystemStatus
     public int SalesOfficeCallbacksProcessedLastHour { get; set; }
     public double SalesOfficeCallbackProcessingRate { get; set; }
 
+    // ── 4c. SalesOffice Deep Mapping Analytics ──
+    public double SalesOfficeAvgDetailsPerOrder { get; set; }
+    public int SalesOfficeMaxDetailsPerOrder { get; set; }
+    public double SalesOfficeAvgTimeToMapMinutes { get; set; }
+    public double SalesOfficeMaxTimeToMapMinutes { get; set; }
+    public int SalesOfficeRetriedOrders { get; set; }
+    public int SalesOfficePartialMappingOrders { get; set; }
+    public int SalesOfficeCallbackErrors { get; set; }
+
     // ── 5. NEW: Reservations (Zenith cockpit) ──
     public int ReservationsToday { get; set; }
     public int ReservationsThisWeek { get; set; }
@@ -90,6 +99,7 @@ public class SystemStatus
     public List<BackOfficeErrorInfo> RecentBackOfficeErrors { get; set; } = new();
     public List<SalesOfficeOrderInfo> SalesOfficeStuckOrders { get; set; } = new();
     public List<SalesOfficeZeroMappingInfo> SalesOfficeZeroMappingItems { get; set; } = new();
+    public List<SalesOfficeMappingDetailInfo> SalesOfficeMappingDetails { get; set; } = new();
     public List<ActiveBookingSummary> ActiveBookingsByHotel { get; set; } = new();
     public List<ReservationInfo> RecentReservations { get; set; } = new();
     public List<RoomWasteInfo> WasteRooms { get; set; } = new();
@@ -173,6 +183,15 @@ public class SalesOfficeZeroMappingInfo
     public DateTime? DateTo { get; set; }
     public int DetailCount { get; set; }
     public int MappingCount { get; set; }
+}
+
+public class SalesOfficeMappingDetailInfo
+{
+    public int OrderId { get; set; }
+    public string? WebJobStatus { get; set; }
+    public int DetailCount { get; set; }
+    public double? TimeToMapMinutes { get; set; }
+    public string? Issue { get; set; } // "Partial", "Slow", "Retried"
 }
 
 public class ActiveBookingSummary

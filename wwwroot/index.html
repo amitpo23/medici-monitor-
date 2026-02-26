@@ -270,10 +270,11 @@ td.log-msg{white-space:pre-wrap;word-break:break-word;max-width:600px;font-famil
       </div>
       <!-- Callback KPI Cards -->
       <div class="cards" id="soCallbackKpis" style="padding:8px 12px"></div>
-      <!-- Sub-tabs: Stuck Orders | Zero-Mapping -->
+      <!-- Sub-tabs: Stuck Orders | Zero-Mapping | Mapping Details -->
       <div style="display:flex;gap:8px;padding:4px 12px;border-bottom:1px solid var(--border)">
         <button class="btn btn-sm" id="soTabStuck" onclick="soSwitchTab('stuck')" style="font-weight:bold">הזמנות ממתינות</button>
         <button class="btn btn-sm" id="soTabZeroMap" onclick="soSwitchTab('zeromap')">ללא Mapping <span class="badge red" id="soZeroMapBadge" style="display:none;margin-right:4px">0</span></button>
+        <button class="btn btn-sm" id="soTabMapDetails" onclick="soSwitchTab('mapdetails')">פרטי Mapping <span class="badge yellow" id="soMapDetailsBadge" style="display:none;margin-right:4px">0</span></button>
       </div>
       <div id="soStuckPanel">
         <div style="overflow-x:auto">
@@ -288,6 +289,14 @@ td.log-msg{white-space:pre-wrap;word-break:break-word;max-width:600px;font-famil
           <table>
             <thead><tr><th>Order ID</th><th>סטטוס</th><th>מתאריך</th><th>עד תאריך</th><th>Details</th><th>Mapping</th></tr></thead>
             <tbody id="soZeroMapBody"></tbody>
+          </table>
+        </div>
+      </div>
+      <div id="soMapDetailsPanel" style="display:none">
+        <div style="overflow-x:auto">
+          <table>
+            <thead><tr><th>Order ID</th><th>סטטוס</th><th>Details</th><th>זמן Mapping (דק')</th><th>בעיה</th></tr></thead>
+            <tbody id="soMapDetailsBody"></tbody>
           </table>
         </div>
       </div>
@@ -1043,8 +1052,10 @@ function renderHotelChart(d) {
 function soSwitchTab(tab) {
   document.getElementById('soStuckPanel').style.display = tab === 'stuck' ? '' : 'none';
   document.getElementById('soZeroMapPanel').style.display = tab === 'zeromap' ? '' : 'none';
+  document.getElementById('soMapDetailsPanel').style.display = tab === 'mapdetails' ? '' : 'none';
   document.getElementById('soTabStuck').style.fontWeight = tab === 'stuck' ? 'bold' : '';
   document.getElementById('soTabZeroMap').style.fontWeight = tab === 'zeromap' ? 'bold' : '';
+  document.getElementById('soTabMapDetails').style.fontWeight = tab === 'mapdetails' ? 'bold' : '';
 }
 
 function renderSalesOffice(d) {
@@ -1070,6 +1081,20 @@ function renderSalesOffice(d) {
   ck.push(kpi('ללא Mapping', d.salesOfficeZeroMappingOrders || 0,
     (d.salesOfficeZeroMappingOrders||0) > 20 ? 'danger' : (d.salesOfficeZeroMappingOrders||0) > 0 ? 'warning' : 'ok',
     zmPct + '% מ-' + (d.salesOfficeTotalCompletedOrders||0) + ' הושלמו'));
+  // Deep mapping analytics KPIs
+  ck.push(kpi('Details ממוצע', (d.salesOfficeAvgDetailsPerOrder||0).toFixed(1), 'info',
+    'מקס: ' + (d.salesOfficeMaxDetailsPerOrder||0)));
+  var avgMap = d.salesOfficeAvgTimeToMapMinutes || 0;
+  ck.push(kpi('זמן Mapping', avgMap > 0 ? avgMap.toFixed(0) + ' דק\'' : 'N/A',
+    avgMap > 120 ? 'danger' : avgMap > 60 ? 'warning' : 'ok',
+    'מקס: ' + ((d.salesOfficeMaxTimeToMapMinutes||0).toFixed(0)) + ' דק\''));
+  ck.push(kpi('Partial', d.salesOfficePartialMappingOrders || 0,
+    (d.salesOfficePartialMappingOrders||0) > 10 ? 'danger' : (d.salesOfficePartialMappingOrders||0) > 0 ? 'warning' : 'ok',
+    'פחות מ-50% מהממוצע'));
+  if ((d.salesOfficeRetriedOrders||0) > 0 || (d.salesOfficeCallbackErrors||0) > 0) {
+    ck.push(kpi('Retries / שגיאות', (d.salesOfficeRetriedOrders||0) + ' / ' + (d.salesOfficeCallbackErrors||0),
+      (d.salesOfficeCallbackErrors||0) > 0 ? 'warning' : 'info'));
+  }
   document.getElementById('soCallbackKpis').innerHTML = ck.join('');
 
   // Zero-mapping badge on tab
@@ -1077,6 +1102,12 @@ function renderSalesOffice(d) {
   if ((d.salesOfficeZeroMappingOrders||0) > 0) {
     zmBadge.style.display = ''; zmBadge.textContent = d.salesOfficeZeroMappingOrders;
   } else zmBadge.style.display = 'none';
+
+  // Mapping details badge on tab
+  var mdBadge = document.getElementById('soMapDetailsBadge');
+  var mdCount = (d.salesOfficeMappingDetails||[]).length;
+  if (mdCount > 0) { mdBadge.style.display = ''; mdBadge.textContent = mdCount; }
+  else mdBadge.style.display = 'none';
 
   // Stuck orders table
   const body = document.getElementById('soBody');
@@ -1102,6 +1133,23 @@ function renderSalesOffice(d) {
       '<td>' + o.detailCount + '</td>' +
       '<td>' + statusBadge('s-red', '' + o.mappingCount) + '</td></tr>'
     ).join('');
+  }
+
+  // Mapping details table (partial/slow orders)
+  var mdBody = document.getElementById('soMapDetailsBody');
+  if (!d.salesOfficeMappingDetails?.length) {
+    mdBody.innerHTML = emptyRow(5, 'אין בעיות Mapping');
+  } else {
+    mdBody.innerHTML = d.salesOfficeMappingDetails.map(o => {
+      var issueBadge = o.issue === 'Partial' ? statusBadge('s-yellow', 'Partial') :
+                       o.issue === 'Slow' ? statusBadge('s-red', 'Slow') :
+                       statusBadge('s-blue', o.issue || '-');
+      return '<tr><td>' + o.orderId + '</td>' +
+        '<td>' + statusBadge('s-green', o.webJobStatus || '-') + '</td>' +
+        '<td>' + o.detailCount + '</td>' +
+        '<td>' + (o.timeToMapMinutes != null ? o.timeToMapMinutes.toFixed(0) : 'N/A') + '</td>' +
+        '<td>' + issueBadge + '</td></tr>';
+    }).join('');
   }
 }
 

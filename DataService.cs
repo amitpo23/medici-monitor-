@@ -475,7 +475,7 @@ public class DataService
                     o.DateFrom,
                     o.DateTo,
                     ISNULL(d.Cnt, 0) as DetailCount,
-                    0 as MappingCount
+                    ISNULL(d.Cnt, 0) as MappingCount
                 FROM {ordersTable} o
                 LEFT JOIN (SELECT OrderId, COUNT(*) as Cnt FROM {detailsTable} GROUP BY OrderId) d ON d.OrderId = o.Id
                 WHERE o.IsActive = 1 AND o.WebJobStatus LIKE 'Completed%' AND (d.Cnt IS NULL OR d.Cnt = 0)
@@ -510,6 +510,145 @@ public class DataService
                 s.SalesOfficeTotalCompletedOrders = rdr2.IsDBNull(0) ? 0 : rdr2.GetInt32(0);
                 s.SalesOfficeZeroMappingOrders = rdr2.IsDBNull(1) ? 0 : rdr2.GetInt32(1);
             }
+
+            // Query 3a: Mapping analytics — avg/max details per order + partial mapping
+            try
+            {
+                var sql3a = $@"
+                    ;WITH DetailCounts AS (
+                        SELECT OrderId, COUNT(*) as Cnt
+                        FROM {detailsTable} GROUP BY OrderId
+                    ),
+                    CompletedWithDetails AS (
+                        SELECT o.Id, d.Cnt
+                        FROM {ordersTable} o
+                        INNER JOIN DetailCounts d ON d.OrderId = o.Id
+                        WHERE o.IsActive = 1 AND o.WebJobStatus LIKE 'Completed%'
+                    )
+                    SELECT
+                        AVG(CAST(Cnt AS FLOAT)) as AvgDetails,
+                        MAX(Cnt) as MaxDetails,
+                        (SELECT COUNT(*) FROM CompletedWithDetails
+                         WHERE Cnt < (SELECT AVG(CAST(Cnt AS FLOAT)) / 2.0 FROM CompletedWithDetails)) as PartialCount
+                    FROM CompletedWithDetails";
+
+                using var cmd3a = new SqlCommand(sql3a, conn) { CommandTimeout = 15 };
+                using var rdr3a = await cmd3a.ExecuteReaderAsync();
+                if (await rdr3a.ReadAsync())
+                {
+                    s.SalesOfficeAvgDetailsPerOrder = rdr3a.IsDBNull(0) ? 0 : Math.Round(rdr3a.GetDouble(0), 1);
+                    s.SalesOfficeMaxDetailsPerOrder = rdr3a.IsDBNull(1) ? 0 : rdr3a.GetInt32(1);
+                    s.SalesOfficePartialMappingOrders = rdr3a.IsDBNull(2) ? 0 : rdr3a.GetInt32(2);
+                }
+            }
+            catch { /* columns might not exist */ }
+
+            // Query 3b: Time-to-map (tries DateInsert on both tables)
+            try
+            {
+                var sql3b = $@"
+                    SELECT
+                        AVG(CAST(DATEDIFF(MINUTE, o.DateInsert, d.FirstDetail) AS FLOAT)) as AvgTimeMin,
+                        MAX(DATEDIFF(MINUTE, o.DateInsert, d.FirstDetail)) as MaxTimeMin
+                    FROM {ordersTable} o
+                    INNER JOIN (SELECT OrderId, MIN(DateInsert) as FirstDetail FROM {detailsTable} GROUP BY OrderId) d ON d.OrderId = o.Id
+                    WHERE o.IsActive = 1 AND o.WebJobStatus LIKE 'Completed%'
+                      AND DATEDIFF(MINUTE, o.DateInsert, d.FirstDetail) >= 0";
+
+                using var cmd3b = new SqlCommand(sql3b, conn) { CommandTimeout = 15 };
+                using var rdr3b = await cmd3b.ExecuteReaderAsync();
+                if (await rdr3b.ReadAsync())
+                {
+                    s.SalesOfficeAvgTimeToMapMinutes = rdr3b.IsDBNull(0) ? 0 : Math.Round(rdr3b.GetDouble(0), 1);
+                    s.SalesOfficeMaxTimeToMapMinutes = rdr3b.IsDBNull(1) ? 0 : rdr3b.GetInt32(1);
+                }
+            }
+            catch { /* DateInsert column might not exist on orders */ }
+
+            // Query 3c: Retry detection (multiple approaches)
+            try
+            {
+                // Try RetryCount column first
+                var sql3c = $"SELECT COUNT(*) FROM {ordersTable} WHERE IsActive = 1 AND RetryCount > 0";
+                using var cmd3c = new SqlCommand(sql3c, conn) { CommandTimeout = 5 };
+                s.SalesOfficeRetriedOrders = Convert.ToInt32(await cmd3c.ExecuteScalarAsync() ?? 0);
+            }
+            catch
+            {
+                // Fallback: count orders with 'Retry' in status
+                try
+                {
+                    var sql3c2 = $"SELECT COUNT(*) FROM {ordersTable} WHERE IsActive = 1 AND WebJobStatus LIKE '%Retry%'";
+                    using var cmd3c2 = new SqlCommand(sql3c2, conn) { CommandTimeout = 5 };
+                    s.SalesOfficeRetriedOrders = Convert.ToInt32(await cmd3c2.ExecuteScalarAsync() ?? 0);
+                }
+                catch { /* no retry info available */ }
+            }
+
+            // Query 3d: Callback errors (tries Error column on Details)
+            try
+            {
+                var sql3d = $"SELECT COUNT(*) FROM {detailsTable} WHERE Error IS NOT NULL AND Error != ''";
+                using var cmd3d = new SqlCommand(sql3d, conn) { CommandTimeout = 5 };
+                s.SalesOfficeCallbackErrors = Convert.ToInt32(await cmd3d.ExecuteScalarAsync() ?? 0);
+            }
+            catch
+            {
+                // Try ErrorMessage column
+                try
+                {
+                    var sql3d2 = $"SELECT COUNT(*) FROM {detailsTable} WHERE ErrorMessage IS NOT NULL AND ErrorMessage != ''";
+                    using var cmd3d2 = new SqlCommand(sql3d2, conn) { CommandTimeout = 5 };
+                    s.SalesOfficeCallbackErrors = Convert.ToInt32(await cmd3d2.ExecuteScalarAsync() ?? 0);
+                }
+                catch { /* no error column available */ }
+            }
+
+            // Query 3e: Build mapping detail items (partial/slow orders for table display)
+            try
+            {
+                var sql3e = $@"
+                    ;WITH DetailCounts AS (
+                        SELECT OrderId, COUNT(*) as Cnt, MIN(DateInsert) as FirstDetail
+                        FROM {detailsTable} GROUP BY OrderId
+                    ),
+                    AvgCnt AS (
+                        SELECT AVG(CAST(d.Cnt AS FLOAT)) as Avg
+                        FROM {ordersTable} o
+                        INNER JOIN DetailCounts d ON d.OrderId = o.Id
+                        WHERE o.IsActive = 1 AND o.WebJobStatus LIKE 'Completed%'
+                    )
+                    SELECT TOP 20
+                        o.Id, o.WebJobStatus, d.Cnt as DetailCount,
+                        DATEDIFF(MINUTE, o.DateInsert, d.FirstDetail) as TimeToMapMin,
+                        CASE
+                            WHEN d.Cnt < (SELECT Avg / 2.0 FROM AvgCnt) THEN 'Partial'
+                            WHEN DATEDIFF(MINUTE, o.DateInsert, d.FirstDetail) > 120 THEN 'Slow'
+                            ELSE 'OK'
+                        END as Issue
+                    FROM {ordersTable} o
+                    INNER JOIN DetailCounts d ON d.OrderId = o.Id
+                    WHERE o.IsActive = 1 AND o.WebJobStatus LIKE 'Completed%'
+                      AND (d.Cnt < (SELECT Avg / 2.0 FROM AvgCnt) OR DATEDIFF(MINUTE, o.DateInsert, d.FirstDetail) > 120)
+                    ORDER BY
+                        CASE WHEN d.Cnt < (SELECT Avg / 2.0 FROM AvgCnt) THEN 0 ELSE 1 END,
+                        d.Cnt ASC";
+
+                using var cmd3e = new SqlCommand(sql3e, conn) { CommandTimeout = 15 };
+                using var rdr3e = await cmd3e.ExecuteReaderAsync();
+                while (await rdr3e.ReadAsync())
+                {
+                    s.SalesOfficeMappingDetails.Add(new SalesOfficeMappingDetailInfo
+                    {
+                        OrderId = rdr3e.GetInt32(0),
+                        WebJobStatus = rdr3e.IsDBNull(1) ? null : rdr3e.GetString(1),
+                        DetailCount = rdr3e.GetInt32(2),
+                        TimeToMapMinutes = rdr3e.IsDBNull(3) ? null : rdr3e.GetInt32(3),
+                        Issue = rdr3e.IsDBNull(4) ? null : rdr3e.GetString(4)
+                    });
+                }
+            }
+            catch { /* DateInsert might not exist — skip detail items */ }
         }
     }
 

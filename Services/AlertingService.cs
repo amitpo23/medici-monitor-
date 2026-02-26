@@ -4,7 +4,7 @@ using System.Text.Json;
 namespace MediciMonitor.Services;
 
 /// <summary>
-/// Enhanced Alert rules engine — 17 rules, acknowledge/snooze, history, configurable thresholds,
+/// Enhanced Alert rules engine — 19 rules, acknowledge/snooze, history, configurable thresholds,
 /// notification integration.
 /// </summary>
 public class AlertingService
@@ -215,6 +215,74 @@ public class AlertingService
                     }
                 }
                 catch { /* tables might not exist */ }
+
+                // 18. SalesOffice slow mapping (avg time-to-map too high)
+                try
+                {
+                    string? detTbl2 = null, ordTbl2 = null;
+                    foreach (var t in new[] { "[SalesOffice.Details]", "SalesOfficeDetails", "SalesOffice_Details" })
+                    { try { await ScalarInt(conn, $"SELECT TOP 1 1 FROM {t}"); detTbl2 = t; break; } catch { } }
+                    foreach (var t in new[] { "SalesOfficeOrders", "[SalesOffice.Orders]", "SalesOffice_Orders" })
+                    { try { await ScalarInt(conn, $"SELECT TOP 1 1 FROM {t}"); ordTbl2 = t; break; } catch { } }
+
+                    if (detTbl2 != null && ordTbl2 != null)
+                    {
+                        var avgTime = await ScalarDouble(conn,
+                            $@"SELECT ISNULL(AVG(CAST(DATEDIFF(MINUTE, o.DateInsert, d.FirstDetail) AS FLOAT)), 0)
+                               FROM {ordTbl2} o
+                               INNER JOIN (SELECT OrderId, MIN(DateInsert) as FirstDetail FROM {detTbl2} GROUP BY OrderId) d ON d.OrderId = o.Id
+                               WHERE o.IsActive = 1 AND o.WebJobStatus LIKE 'Completed%'
+                                 AND DATEDIFF(MINUTE, o.DateInsert, d.FirstDetail) >= 0");
+                        if (avgTime > Thresholds.SalesOfficeSlowMapMinutes)
+                            alerts.Add(new AlertInfo
+                            {
+                                Id = "SO_SLOW_MAPPING",
+                                Title = "SalesOffice Slow Mapping",
+                                Message = $"זמן ממוצע ליצירת Details: {avgTime:F0} דקות (סף: {Thresholds.SalesOfficeSlowMapMinutes} דקות)",
+                                Severity = avgTime > Thresholds.SalesOfficeSlowMapMinutes * 3 ? "Critical" : "Warning",
+                                Category = "Business"
+                            });
+                    }
+                }
+                catch { /* DateInsert might not exist */ }
+
+                // 19. SalesOffice partial mapping (orders with abnormally low details)
+                try
+                {
+                    string? detTbl3 = null, ordTbl3 = null;
+                    foreach (var t in new[] { "[SalesOffice.Details]", "SalesOfficeDetails", "SalesOffice_Details" })
+                    { try { await ScalarInt(conn, $"SELECT TOP 1 1 FROM {t}"); detTbl3 = t; break; } catch { } }
+                    foreach (var t in new[] { "SalesOfficeOrders", "[SalesOffice.Orders]", "SalesOffice_Orders" })
+                    { try { await ScalarInt(conn, $"SELECT TOP 1 1 FROM {t}"); ordTbl3 = t; break; } catch { } }
+
+                    if (detTbl3 != null && ordTbl3 != null)
+                    {
+                        var partial = await ScalarInt(conn,
+                            $@";WITH DetailCounts AS (
+                                SELECT OrderId, COUNT(*) as Cnt FROM {detTbl3} GROUP BY OrderId
+                            ),
+                            AvgCnt AS (
+                                SELECT AVG(CAST(d.Cnt AS FLOAT)) as Avg
+                                FROM {ordTbl3} o INNER JOIN DetailCounts d ON d.OrderId = o.Id
+                                WHERE o.IsActive = 1 AND o.WebJobStatus LIKE 'Completed%'
+                            )
+                            SELECT COUNT(*)
+                            FROM {ordTbl3} o
+                            INNER JOIN DetailCounts d ON d.OrderId = o.Id
+                            WHERE o.IsActive = 1 AND o.WebJobStatus LIKE 'Completed%'
+                              AND d.Cnt < (SELECT Avg / 2.0 FROM AvgCnt)");
+                        if (partial > Thresholds.SalesOfficePartialMappingThreshold)
+                            alerts.Add(new AlertInfo
+                            {
+                                Id = "SO_PARTIAL_MAPPING",
+                                Title = "SalesOffice Partial Mapping",
+                                Message = $"{partial} הזמנות עם Details חלקיים (פחות מ-50% מהממוצע, סף: {Thresholds.SalesOfficePartialMappingThreshold})",
+                                Severity = "Warning",
+                                Category = "Business"
+                            });
+                    }
+                }
+                catch { /* tables/columns might not exist */ }
             }
 
             // Set timestamp & active status, filter acknowledged/snoozed
@@ -391,4 +459,6 @@ public class AlertThresholds
     public int BackOfficeErrorThreshold { get; set; } = 10;
     public int SalesOfficeUnprocessedCallbackThreshold { get; set; } = 10000;
     public int SalesOfficeZeroMappingThreshold { get; set; } = 20;
+    public double SalesOfficeSlowMapMinutes { get; set; } = 120;
+    public int SalesOfficePartialMappingThreshold { get; set; } = 10;
 }
