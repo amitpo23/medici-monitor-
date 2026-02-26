@@ -1243,23 +1243,27 @@ async function loadAzureHealth() {
   try {
     const resp = await fetch('/api/azure/health');
     const data = await resp.json();
-    const endpoints = data.endpoints || [];
+    const endpoints = Array.isArray(data) ? data : (data.endpoints || []);
     const cards = [];
     const healthy = endpoints.filter(e => e.isHealthy).length;
     const total = endpoints.length;
     const cls = healthy === total ? 'ok' : healthy > total/2 ? 'warning' : 'danger';
     cards.push(kpi('APIs בריאים', healthy + '/' + total, cls));
-    cards.push(kpi('SQL חיבור', data.sqlConnected ? 'מחובר' : 'מנותק', data.sqlConnected ? 'ok' : 'danger'));
-    cards.push(kpi('זמן תגובה ממוצע', Math.round(endpoints.reduce((s,e)=>s+e.responseTimeMs,0)/Math.max(total,1)) + 'ms', 'info'));
+    const sqlEndpoint = endpoints.find(e => (e.endpoint||'').toLowerCase().includes('sql'));
+    const sqlOk = sqlEndpoint ? sqlEndpoint.isHealthy : false;
+    cards.push(kpi('SQL חיבור', sqlOk ? 'מחובר' : 'מנותק', sqlOk ? 'ok' : 'danger'));
+    const avgMs = total > 0 ? Math.round(endpoints.filter(e=>e.responseTimeMs>0).reduce((s,e)=>s+e.responseTimeMs,0)/Math.max(endpoints.filter(e=>e.responseTimeMs>0).length,1)) : 0;
+    cards.push(kpi('זמן תגובה ממוצע', avgMs + 'ms', 'info'));
     cards.push(kpi('בדיקה אחרונה', fmtNow(), 'info'));
     document.getElementById('azureKpiCards').innerHTML = cards.join('');
-    document.getElementById('azHealthBody').innerHTML = endpoints.length ? endpoints.map(e =>
-      '<tr><td>' + esc(e.name) + '</td>' +
-      '<td>' + (e.isHealthy ? statusBadge('s-green','תקין') : statusBadge('s-red','נכשל')) + '</td>' +
-      '<td>' + (e.statusCode || '-') + '</td>' +
-      '<td>' + e.responseTimeMs + 'ms</td>' +
-      '<td>' + fmtNow() + '</td></tr>'
-    ).join('') : emptyRow(5, 'אין מידע');
+    document.getElementById('azHealthBody').innerHTML = endpoints.length ? endpoints.map(e => {
+      const name = e.endpoint || e.name || '-';
+      return '<tr><td title="' + esc(name) + '">' + esc(name.length > 60 ? name.substring(0,57) + '...' : name) + '</td>' +
+        '<td>' + (e.isHealthy ? statusBadge('s-green','תקין') : statusBadge('s-red','נכשל')) + '</td>' +
+        '<td>' + (e.statusCode || '-') + '</td>' +
+        '<td>' + (e.responseTimeMs >= 0 ? e.responseTimeMs + 'ms' : '-') + '</td>' +
+        '<td>' + fmtNow() + '</td></tr>';
+    }).join('') : emptyRow(5, 'אין מידע');
   } catch(err) {
     document.getElementById('azureKpiCards').innerHTML = kpi('שגיאה', err.message, 'danger');
     document.getElementById('azHealthBody').innerHTML = emptyRow(5, 'שגיאה: ' + err.message);
@@ -1271,12 +1275,16 @@ async function loadAzureResources() {
   try {
     const resp = await fetch('/api/azure/resources');
     const data = await resp.json();
-    const resources = data.resources || [];
-    document.getElementById('azResourceBody').innerHTML = resources.length ? resources.map(r =>
-      '<tr><td>' + esc(r.name) + '</td><td>' + esc(r.type) + '</td>' +
-      '<td>' + (r.status === 'Online' || r.status === 'Running' ? statusBadge('s-green', r.status) : statusBadge('s-yellow', r.status || 'N/A')) + '</td>' +
-      '<td>' + esc(r.location || '-') + '</td></tr>'
-    ).join('') : emptyRow(4, 'אין משאבים או Azure CLI לא מותקן');
+    const resources = Array.isArray(data) ? data : (data.resources || []);
+    document.getElementById('azResourceBody').innerHTML = resources.length ? resources.map(r => {
+      const name = r.resourceName || r.name || '-';
+      const type = r.resourceType || r.type || '-';
+      const status = r.status || 'N/A';
+      const loc = r.location || '-';
+      return '<tr><td>' + esc(name) + '</td><td>' + esc(type) + '</td>' +
+        '<td>' + (status === 'Online' || status === 'Running' ? statusBadge('s-green', status) : statusBadge('s-yellow', status)) + '</td>' +
+        '<td>' + esc(loc) + '</td></tr>';
+    }).join('') : emptyRow(4, 'אין משאבים או Azure CLI לא מותקן');
   } catch(err) {
     document.getElementById('azResourceBody').innerHTML = emptyRow(4, 'שגיאה: ' + err.message);
   }
@@ -1287,14 +1295,18 @@ async function loadAzureAlerts() {
   try {
     const resp = await fetch('/api/azure/alerts');
     const data = await resp.json();
-    const alerts = data.alerts || [];
-    document.getElementById('azAlertBody').innerHTML = alerts.length ? alerts.map(a =>
-      '<tr><td>' + fmt(a.timestamp) + '</td>' +
-      '<td>' + (a.severity === 'Critical' ? statusBadge('s-red', a.severity) : a.severity === 'Warning' ? statusBadge('s-yellow', a.severity) : statusBadge('s-blue', a.severity || 'Info')) + '</td>' +
-      '<td title="' + esc(a.description) + '">' + esc((a.description||'-').substring(0,60)) + '</td>' +
-      '<td>' + esc(a.source || '-') + '</td>' +
-      '<td>' + esc(a.resourceName || '-') + '</td></tr>'
-    ).join('') : emptyRow(5, 'אין התראות פעילות');
+    const alerts = Array.isArray(data) ? data : (data.alerts || []);
+    document.getElementById('azAlertBody').innerHTML = alerts.length ? alerts.map(a => {
+      const level = a.level || a.severity || 'Info';
+      const msg = a.message || a.description || '-';
+      const src = a.source || a.caller || '-';
+      const res = a.resourceId || a.resourceName || '-';
+      return '<tr><td>' + fmt(a.timestamp) + '</td>' +
+        '<td>' + (level === 'Critical' || level === 'Error' ? statusBadge('s-red', level) : level === 'Warning' ? statusBadge('s-yellow', level) : statusBadge('s-blue', level)) + '</td>' +
+        '<td title="' + esc(msg) + '">' + esc(msg.substring(0,60)) + '</td>' +
+        '<td>' + esc(src) + '</td>' +
+        '<td>' + esc(res) + '</td></tr>';
+    }).join('') : emptyRow(5, 'אין התראות פעילות');
   } catch(err) {
     document.getElementById('azAlertBody').innerHTML = emptyRow(5, 'שגיאה: ' + err.message);
   }
@@ -1320,14 +1332,14 @@ async function loadBI(period, btnEl) {
     cards.push(kpi('סה"כ הזמנות', m.totalBookings ?? 0, 'info'));
     cards.push(kpi('הצלחות', m.successfulBookings ?? 0, 'ok'));
     cards.push(kpi('% הצלחה', pct(m.successRate), m.successRate > 80 ? 'ok' : m.successRate > 50 ? 'warning' : 'danger'));
-    cards.push(kpi('שגיאות הזמנה', m.bookingErrors ?? 0, m.bookingErrors > 0 ? 'danger' : 'ok'));
+    cards.push(kpi('שגיאות הזמנה', m.errorsToday ?? m.bookingErrors ?? 0, (m.errorsToday||m.bookingErrors||0) > 0 ? 'danger' : 'ok'));
     cards.push(kpi('שגיאות ביטול', m.cancelErrors ?? 0, m.cancelErrors > 0 ? 'warning' : 'ok'));
-    cards.push(kpi('הכנסות', money(m.revenue), 'cyan'));
-    cards.push(kpi('ממוצע להזמנה', money(m.avgBookingValue), 'purple'));
+    cards.push(kpi('הכנסות', money(m.revenueThisWeek ?? m.revenue), 'cyan'));
+    cards.push(kpi('שעת שיא', m.peakHour != null ? m.peakHour + ':00' : '-', 'purple'));
     document.getElementById('biKpiCards').innerHTML = cards.join('');
 
     // Hourly chart
-    const hourly = data.hourlyBreakdown || [];
+    const hourly = m.hourlyBreakdown || data.hourlyBreakdown || [];
     if (hourly.length) {
       const maxH = Math.max(...hourly.map(h => Math.max(h.bookings || 0, h.errors || 0)), 1);
       document.getElementById('biHourlyChart').innerHTML =
@@ -1351,13 +1363,15 @@ async function loadBI(period, btnEl) {
     document.getElementById('biInsights').innerHTML = insightHtml || 'אין תובנות לתקופה זו';
 
     // Top errors
-    const topErrors = data.topErrors || [];
-    document.getElementById('biTopErrors').innerHTML = topErrors.length ? topErrors.map(e =>
-      '<tr><td title="' + esc(e.error) + '">' + esc((e.error||'').substring(0,80)) + '</td><td>' + (e.count||0) + '</td></tr>'
-    ).join('') : emptyRow(2, 'אין שגיאות — מצוין!');
+    const topErrors = m.topErrors || data.topErrors || [];
+    document.getElementById('biTopErrors').innerHTML = topErrors.length ? topErrors.map(e => {
+      const errText = typeof e === 'string' ? e : (e.error || '');
+      const errCount = typeof e === 'string' ? '' : (e.count || '');
+      return '<tr><td title="' + esc(errText) + '">' + esc(errText.substring(0,80)) + '</td><td>' + errCount + '</td></tr>';
+    }).join('') : emptyRow(2, 'אין שגיאות — מצוין!');
 
     // Predictions
-    const preds = data.predictions || [];
+    const preds = data.predictiveAlerts || data.predictions || [];
     if (preds.length) {
       document.getElementById('biPredictions').style.display = '';
       document.getElementById('biPredBody').innerHTML = preds.map(p => {
@@ -1382,42 +1396,53 @@ async function loadEmergency() {
   document.getElementById('emergKpiCards').innerHTML = '<div class="card"><div class="label">בודק חירום...</div><div class="value"><div class="spinner"></div></div></div>';
   try {
     const resp = await fetch('/api/emergency/status');
-    const data = await resp.json();
+    const raw = await resp.json();
+    const data = raw.emergencyStatus || raw;
 
     // KPIs
-    const sev = data.overallSeverity ?? 0;
+    const sev = data.severityLevel ?? data.overallSeverity ?? 0;
     const sevLabel = ['תקין','נמוך','בינוני','גבוה','קריטי','חירום'][sev] || sev;
     const sevCls = sev <= 1 ? 'ok' : sev <= 3 ? 'warning' : 'danger';
     const cards = [];
     cards.push(kpi('רמת חומרה', sevLabel + ' (' + sev + '/5)', sevCls));
-    cards.push(kpi('בעיות קריטיות', (data.criticalIssues||[]).length, (data.criticalIssues||[]).length > 0 ? 'danger' : 'ok'));
-    cards.push(kpi('APIs תקינים', data.apiStatuses ? data.apiStatuses.filter(a=>a.isHealthy).length + '/' + data.apiStatuses.length : '-', 'info'));
+    const critIssues = data.criticalIssues || [];
+    cards.push(kpi('בעיות קריטיות', critIssues.length, critIssues.length > 0 ? 'danger' : 'ok'));
+    const apis = data.apiHealth || data.apiStatuses || [];
+    cards.push(kpi('APIs תקינים', apis.length ? apis.filter(a=>a.isHealthy).length + '/' + apis.length : '-', 'info'));
     cards.push(kpi('בדיקה אחרונה', fmtNow(), 'info'));
     document.getElementById('emergKpiCards').innerHTML = cards.join('');
+
+    const navEmerg = document.getElementById('navEmergCount');
+    if (sev >= 3) { navEmerg.style.display = ''; navEmerg.className = 'count red'; }
+    else navEmerg.style.display = 'none';
 
     // Status area
     let statusHtml = '<div class="severity severity-' + sev + '" style="font-size:16px;padding:8px 16px;margin-bottom:12px">' +
       (sev === 0 ? '&#x2705;' : sev <= 2 ? '&#x26A0;&#xFE0F;' : '&#x1F6A8;') + ' ' + sevLabel + '</div>';
-    if (data.criticalIssues?.length) {
+    if (critIssues.length) {
       statusHtml += '<div style="margin-top:8px"><strong style="color:var(--red)">בעיות קריטיות:</strong><ul style="margin:8px 20px">';
-      data.criticalIssues.forEach(i => statusHtml += '<li style="margin:4px 0;color:var(--red)">' + esc(i) + '</li>');
+      critIssues.forEach(i => statusHtml += '<li style="margin:4px 0;color:var(--red)">' + esc(i) + '</li>');
       statusHtml += '</ul></div>';
     }
-    if (data.suggestedActions?.length) {
+    const actions = data.suggestedActions || [];
+    if (actions.length) {
       statusHtml += '<div style="margin-top:8px"><strong>פעולות מומלצות:</strong><ul style="margin:8px 20px">';
-      data.suggestedActions.forEach(a => statusHtml += '<li style="margin:4px 0;color:var(--accent)">' + esc(a) + '</li>');
+      actions.forEach(a => {
+        const desc = typeof a === 'string' ? a : (a.description || a.actionType || '');
+        statusHtml += '<li style="margin:4px 0;color:var(--accent)">' + esc(desc) + '</li>';
+      });
       statusHtml += '</ul></div>';
     }
     document.getElementById('emergStatusArea').innerHTML = statusHtml;
 
     // API health table
-    const apis = data.apiStatuses || [];
-    document.getElementById('emergApiBody').innerHTML = apis.length ? apis.map(a =>
-      '<tr><td>' + esc(a.name) + '</td>' +
-      '<td>' + (a.isHealthy ? statusBadge('s-green','תקין') : statusBadge('s-red','נכשל')) + '</td>' +
-      '<td>' + (a.statusCode || '-') + '</td>' +
-      '<td>' + (a.responseTimeMs || '-') + 'ms</td></tr>'
-    ).join('') : emptyRow(4);
+    document.getElementById('emergApiBody').innerHTML = apis.length ? apis.map(a => {
+      const name = a.endpoint || a.name || '-';
+      return '<tr><td title="' + esc(name) + '">' + esc(name.length > 50 ? name.substring(0,47) + '...' : name) + '</td>' +
+        '<td>' + (a.isHealthy ? statusBadge('s-green','תקין') : statusBadge('s-red','נכשל')) + '</td>' +
+        '<td>' + (a.statusCode || '-') + '</td>' +
+        '<td>' + (a.responseTimeMs >= 0 ? a.responseTimeMs + 'ms' : '-') + '</td></tr>';
+    }).join('') : emptyRow(4);
   } catch(err) {
     document.getElementById('emergKpiCards').innerHTML = kpi('שגיאה', err.message, 'danger');
   }
@@ -1451,15 +1476,20 @@ async function loadTrends(period, btnEl) {
   try {
     const resp = await fetch('/api/history/trends/' + period);
     const data = await resp.json();
-    const summary = data.summary || {};
+    const trend = data.trendData || data;
+    const summary = trend.summary || data.summary || {};
 
     const cards = [];
-    cards.push(kpi('נקודות מדידה', data.dataPointCount ?? 0, 'info'));
-    cards.push(kpi('תקופה', period, 'purple'));
-    if (summary.avgBookings !== undefined) cards.push(kpi('ממוצע הזמנות', summary.avgBookings?.toFixed(1), 'cyan'));
-    if (summary.avgErrors !== undefined) cards.push(kpi('ממוצע שגיאות', summary.avgErrors?.toFixed(1), summary.avgErrors > 5 ? 'warning' : 'ok'));
-    if (summary.maxStuck !== undefined) cards.push(kpi('מקס תקועים', summary.maxStuck, summary.maxStuck > 0 ? 'danger' : 'ok'));
-    if (summary.trend) cards.push(kpi('מגמה', summary.trend, summary.trend === 'improving' ? 'ok' : summary.trend === 'declining' ? 'danger' : 'info'));
+    cards.push(kpi('נקודות מדידה', trend.dataPoints ?? data.dataPointCount ?? 0, 'info'));
+    cards.push(kpi('תקופה', trend.period || period, 'purple'));
+    const avgB = summary.AvgBookings ?? summary.avgBookings;
+    const avgE = summary.AvgErrors ?? summary.avgErrors;
+    const maxS = summary.MaxStuck ?? summary.maxStuck;
+    if (avgB !== undefined) cards.push(kpi('ממוצע הזמנות', Number(avgB).toFixed(1), 'cyan'));
+    if (avgE !== undefined) cards.push(kpi('ממוצע שגיאות', Number(avgE).toFixed(1), avgE > 5 ? 'warning' : 'ok'));
+    if (maxS !== undefined) cards.push(kpi('מקס תקועים', maxS, maxS > 0 ? 'danger' : 'ok'));
+    if (summary.AvgApiHealth) cards.push(kpi('בריאות API ממוצעת', summary.AvgApiHealth, 'info'));
+    if (summary.DbUptime) cards.push(kpi('DB Uptime', summary.DbUptime, 'ok'));
     document.getElementById('historyKpiCards').innerHTML = cards.join('');
 
     // Insights
