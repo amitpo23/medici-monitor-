@@ -21,6 +21,7 @@ builder.Services.AddSingleton<DatabaseHealthService>();
 builder.Services.AddSingleton<SlaTrackingService>();
 builder.Services.AddSingleton<AuditService>();
 builder.Services.AddSingleton<IncidentManagementService>();
+builder.Services.AddHostedService<AlertNotificationService>();
 builder.Services.AddCors(o => o.AddDefaultPolicy(p => p.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader()));
 
 var app = builder.Build();

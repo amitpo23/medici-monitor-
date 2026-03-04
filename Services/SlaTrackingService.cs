@@ -241,7 +241,7 @@ internal class EndpointSla
     public List<double> DetectionTimes { get; set; } = new();   // MTTD minutes
 }
 
-internal class IncidentRecord
+public class IncidentRecord
 {
     public string Endpoint { get; set; } = "";
     public DateTime StartTime { get; set; }
@@ -259,7 +259,7 @@ public class SlaReport
     public double OverallMTTR { get; set; }
     public double OverallMTTD { get; set; }
     public List<SlaEntry> Endpoints { get; set; } = new();
-    public List<object> RecentIncidents { get; set; } = new();
+    public List<IncidentRecord> RecentIncidents { get; set; } = new();
 }
 
 public class SlaEntry

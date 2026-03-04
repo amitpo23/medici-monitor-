@@ -87,10 +87,19 @@ public class AlertingService
                 using var conn = new Microsoft.Data.SqlClient.SqlConnection(_connStr);
                 await conn.OpenAsync();
 
-                // 4. Stuck cancellations
-                var stuck = await ScalarInt(conn, "SELECT COUNT(*) FROM MED_Book WHERE IsActive=1 AND CancellationTo < GETDATE()");
-                if (stuck > Thresholds.StuckCancellationThreshold)
-                    alerts.Add(new AlertInfo { Id = "STUCK_CANCEL", Title = "Stuck Cancellations", Message = $"{stuck} הזמנות תקועות בביטול (סף: {Thresholds.StuckCancellationThreshold})", Severity = "Warning", Category = "Business" });
+                // 4. Stuck cancellations — upgraded to Critical, added IsSold filter
+                var stuck = await ScalarInt(conn, "SELECT COUNT(*) FROM MED_Book WHERE IsActive=1 AND IsSold=1 AND CancellationTo < GETDATE()");
+                if (stuck > 0)
+                    alerts.Add(new AlertInfo { Id = "STUCK_CANCEL", Title = "Stuck Cancellations", Message = $"{stuck} active bookings past cancellation deadline — WebJob may be blocked!", Severity = "Critical", Category = "Business" });
+
+                // 4b. Ghost cancellations — bookings marked inactive WITHOUT actual API cancellation (last 90 days)
+                var ghost = await ScalarInt(conn, @"SELECT COUNT(*) FROM MED_Book b
+                    WHERE b.IsActive = 0 AND b.IsSold = 1
+                      AND b.CancellationTo >= DATEADD(DAY, -90, GETDATE())
+                      AND NOT EXISTS (SELECT 1 FROM MED_CancelBook c WHERE c.PreBookId = b.PreBookId)
+                      AND NOT EXISTS (SELECT 1 FROM MED_CancelBookError e WHERE e.PreBookId = b.PreBookId)");
+                if (ghost > 0)
+                    alerts.Add(new AlertInfo { Id = "GHOST_CANCEL", Title = "Ghost Cancellations", Message = $"{ghost} bookings marked inactive WITHOUT API cancellation — supplier may still charge!", Severity = "Critical", Category = "Business" });
 
                 // 5. Booking error spike
                 var recentErrors = await ScalarInt(conn, "SELECT COUNT(*) FROM MED_BookError WHERE DateInsert >= DATEADD(HOUR, -1, GETDATE())");
