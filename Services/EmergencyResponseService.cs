@@ -7,15 +7,18 @@ namespace MediciMonitor.Services;
 public class EmergencyResponseService
 {
     private readonly AzureMonitoringService _azure;
+    private readonly NotificationService _notifications;
     private readonly string _connStr;
     private readonly ILogger<EmergencyResponseService> _logger;
 
     public EmergencyResponseService(
         AzureMonitoringService azure,
+        NotificationService notifications,
         IConfiguration config,
         ILogger<EmergencyResponseService> logger)
     {
         _azure = azure;
+        _notifications = notifications;
         _connStr = config.GetConnectionString("SqlServer") ?? "";
         _logger = logger;
     }
@@ -108,7 +111,7 @@ public class EmergencyResponseService
                 "HEALTH_CHECK_CYCLE" => await HealthCheckCycle(),
                 "CLEAR_TEMP_CACHE" => ClearCache(),
                 "EMERGENCY_BACKUP" => await EmergencyBackup(),
-                "NOTIFY_ADMIN" => NotifyAdmin(),
+                "NOTIFY_ADMIN" => await NotifyAdmin(),
                 _ => new { Success = false, Error = "Unknown action type" }
             };
         }
@@ -175,10 +178,22 @@ public class EmergencyResponseService
         return new { Success = true, Message = "גיבוי חירום נוצר", File = file };
     }
 
-    private object NotifyAdmin()
+    private async Task<object> NotifyAdmin()
     {
         _logger.LogCritical("EMERGENCY NOTIFICATION: {Time}", DateTime.Now);
-        return new { Success = true, Message = "התראה נשלחה למנהל", Note = "התראה נרשמה ביומן — הגדר email/SMS לעדכונים אמיתיים" };
+        var result = await _notifications.SendAsync(
+            "Emergency escalation",
+            "MediciMonitor reported a MAJOR/CRITICAL emergency status. Immediate operator attention is required.",
+            "Critical",
+            "Emergency");
+
+        var sentChannels = result.Channels.Count(c => c.Success && c.Channel != "Log");
+        return new
+        {
+            Success = sentChannels > 0,
+            Message = sentChannels > 0 ? "התראה נשלחה למנהל" : "לא הוגדר ערוץ התראה פעיל — ההתראה נרשמה בלוג בלבד",
+            Channels = result.Channels
+        };
     }
 
     // ── Helpers ───────────────────────────────────────────────────

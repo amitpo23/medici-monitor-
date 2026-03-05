@@ -33,6 +33,11 @@ var alertingSvc = app.Services.GetRequiredService<AlertingService>();
 var notificationSvc = app.Services.GetRequiredService<NotificationService>();
 alertingSvc.SetNotificationService(notificationSvc);
 
+builder.Configuration.GetSection("Notifications").Bind(notificationSvc.Config);
+var configuredThresholds = builder.Configuration.GetSection("AlertThresholds").Get<AlertThresholds>();
+if (configuredThresholds != null)
+    alertingSvc.Thresholds = configuredThresholds;
+
 // ── Start background services ──
 app.Services.GetRequiredService<HistoricalDataService>().StartAutoCapture(15);
 app.Services.GetRequiredService<SlaTrackingService>().StartTracking(60);
@@ -58,6 +63,18 @@ app.MapGet("/api/status", async (DataService svc, AuditService audit, HttpContex
 {
     audit.RecordFromHttp(ctx, "ViewStatus");
     return Results.Ok(await svc.GetFullStatus());
+});
+
+app.MapGet("/api/salesorder/diagnostics", async (DataService svc, AuditService audit, HttpContext ctx) =>
+{
+    audit.RecordFromHttp(ctx, "SalesOrderDiagnostics");
+    return Results.Ok(await svc.GetSalesOrderDiagnostics());
+});
+
+app.MapGet("/api/salesorder/trace/{orderId:int}", async (DataService svc, AuditService audit, HttpContext ctx, int orderId) =>
+{
+    audit.RecordFromHttp(ctx, "SalesOrderTrace", orderId.ToString());
+    return Results.Ok(await svc.GetSalesOrderTrace(orderId));
 });
 
 // ═══════════════════════════════════════════════════════════════

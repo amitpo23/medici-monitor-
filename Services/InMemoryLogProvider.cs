@@ -218,7 +218,7 @@ public sealed class InMemoryLoggerProvider : ILoggerProvider
                 File.AppendAllText(expected, line + Environment.NewLine);
             }
         }
-        catch { /* don't crash the app for log I/O failures */ }
+        catch { /* log I/O failure — cannot log here to avoid recursion */ }
     }
 }
 

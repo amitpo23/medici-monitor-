@@ -1,5 +1,49 @@
 # MediciMonitor — Changelog
 
+## v2.1.3 — 2026-03-05 — Deep SalesOrder Process Mapping
+
+### מה נוסף
+
+- הרחבת `/api/salesorder/diagnostics` למיפוי רחב ומעמיק של כל ה-flow:
+	- Pipeline stages מלאים עם רמת סיכון לכל שלב.
+	- Breakdown סיבות (Running ללא תוצאה, Stale, Callback issues, Failed/DateRange וכו').
+	- Throughput שעתי 24h (Created/Completed/Failed + Details + Callback errors).
+- endpoint חדש: `/api/salesorder/trace/{orderId}` ל-trace הזמנה בודדת מקצה לקצה.
+- הרחבת לשונית `SalesOrder Monitor` ב-UI עם:
+	- טבלת שלבי תהליך,
+	- טבלת breakdown סיבות,
+	- טבלת throughput 24h,
+	- כלי Trace אינטראקטיבי לפי OrderId.
+
+## v2.1.1 — 2026-03-03 — Alerting Hardening & Ops Runbook
+
+### מה נוסף
+
+- חיבור `Notifications` ו-`AlertThresholds` מ-`appsettings` בזמן Startup.
+- כלל התראה חדש: `CANCEL_RETRY_LOOP` (Critical) לזיהוי לולאות כשל בביטולים.
+- כלל התראה חדש: `SOLD_CANCEL_RISK` (Warning/Critical) להזמנות Sold בסיכון ביטול.
+- פעולת חירום `NOTIFY_ADMIN` שולחת לערוצי התראה פעילים במקום לוג בלבד.
+
+### קבצים חדשים
+
+- `appsettings.Production.template.json` — תבנית Production מלאה עם placeholders.
+- `NOTIFICATIONS_RUNBOOK.md` — מדריך הפעלה ואימות התראות (Email/Slack/Teams/Webhook).
+
+### הערה תפעולית
+
+- בדיקת build מקומית תלויה ב-`.NET SDK` מותקן (בטרמינל הנוכחי `dotnet` לא זמין).
+
+## v2.1.2 — 2026-03-05 — Standalone SalesOrder Monitor
+
+### מה נוסף
+
+- endpoint חדש: `/api/salesorder/diagnostics` עם תמונת מצב מלאה ל-SalesOrder.
+- פאנל עצמאי חדש ב-Dashboard: `SalesOrder Monitor` עם:
+	- Running/Pending מול תוצאות מיפוי בזמן אמת.
+	- Completed ללא Mapping.
+	- Failures + סיבה לכל רשומה.
+- כלל התראה חדש: `SO_RUNNING_NO_RESULT` לזיהוי הזמנות רצות ללא תוצאה מעבר לסף זמן.
+
 ## v2.0.0 — 2026-02-24 — Unified Operations Center
 
 ### מה חדש?

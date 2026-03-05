@@ -13,6 +13,7 @@ public class HistoricalDataService
     private readonly string _connStr;
     private readonly ILogger<HistoricalDataService> _logger;
     private readonly string _storePath;
+    private CancellationTokenSource? _cts;
 
     public HistoricalDataService(
         AzureMonitoringService azure,
@@ -20,7 +21,8 @@ public class HistoricalDataService
         ILogger<HistoricalDataService> logger)
     {
         _azure = azure;
-        _connStr = config.GetConnectionString("SqlServer") ?? "";
+        _connStr = config.GetConnectionString("SqlServer")
+            ?? throw new InvalidOperationException("Missing SqlServer connection string");
         _logger = logger;
         var baseDir = Directory.Exists("/home") ? "/home/MediciMonitor"
             : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MediciMonitor");
@@ -226,16 +228,27 @@ public class HistoricalDataService
 
     public void StartAutoCapture(int intervalMinutes = 15)
     {
+        _cts?.Cancel();
+        _cts = new CancellationTokenSource();
+        var token = _cts.Token;
         _logger.LogInformation("Starting auto-capture every {Min} min", intervalMinutes);
         _ = Task.Run(async () =>
         {
-            while (true)
+            while (!token.IsCancellationRequested)
             {
                 try { await CaptureCurrentSnapshot(); }
                 catch (Exception ex) { _logger.LogError("Auto-capture error: {Err}", ex.Message); }
-                await Task.Delay(TimeSpan.FromMinutes(intervalMinutes));
+                try { await Task.Delay(TimeSpan.FromMinutes(intervalMinutes), token); }
+                catch (OperationCanceledException) { break; }
             }
-        });
+            _logger.LogInformation("Auto-capture stopped");
+        }, token);
+    }
+
+    public void StopAutoCapture()
+    {
+        _cts?.Cancel();
+        _cts = null;
     }
 
     // ── Persistence ──────────────────────────────────────────────
@@ -268,7 +281,7 @@ public class HistoricalDataService
                 var s = JsonSerializer.Deserialize<HistoricalSnapshot>(await File.ReadAllTextAsync(f));
                 if (s != null && s.TimeStamp >= cutoff) list.Add(s);
             }
-            catch { /* skip corrupt */ }
+            catch (Exception ex) { _logger.LogDebug("Skipping corrupt snapshot file: {Err}", ex.Message); }
         }
         return list.OrderBy(s => s.TimeStamp).ToList();
     }
@@ -283,7 +296,7 @@ public class HistoricalDataService
             foreach (var f in old) File.Delete(f.Path);
             if (old.Any()) _logger.LogInformation("Cleaned {Count} old snapshots", old.Count);
         }
-        catch { /* swallow */ }
+        catch (Exception ex) { _logger.LogDebug("Snapshot cleanup failed: {Err}", ex.Message); }
         return Task.CompletedTask;
     }
 

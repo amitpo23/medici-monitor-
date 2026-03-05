@@ -10,6 +10,7 @@ public class SlaTrackingService
     private readonly string _connStr;
     private readonly ILogger<SlaTrackingService> _logger;
     private readonly object _lock = new();
+    private CancellationTokenSource? _cts;
 
     // In-memory SLA data per endpoint
     private readonly Dictionary<string, EndpointSla> _endpoints = new();
@@ -19,7 +20,8 @@ public class SlaTrackingService
     public SlaTrackingService(AzureMonitoringService azure, IConfiguration config, ILogger<SlaTrackingService> logger)
     {
         _azure = azure;
-        _connStr = config.GetConnectionString("SqlServer") ?? "";
+        _connStr = config.GetConnectionString("SqlServer")
+            ?? throw new InvalidOperationException("Missing SqlServer connection string");
         _logger = logger;
     }
 
@@ -27,16 +29,27 @@ public class SlaTrackingService
 
     public void StartTracking(int intervalSeconds = 60)
     {
+        _cts?.Cancel();
+        _cts = new CancellationTokenSource();
+        var token = _cts.Token;
         _logger.LogInformation("Starting SLA tracking every {Sec}s", intervalSeconds);
         _ = Task.Run(async () =>
         {
-            while (true)
+            while (!token.IsCancellationRequested)
             {
                 try { await CheckAll(); }
                 catch (Exception ex) { _logger.LogError("SLA check error: {Err}", ex.Message); }
-                await Task.Delay(TimeSpan.FromSeconds(intervalSeconds));
+                try { await Task.Delay(TimeSpan.FromSeconds(intervalSeconds), token); }
+                catch (OperationCanceledException) { break; }
             }
-        });
+            _logger.LogInformation("SLA tracking stopped");
+        }, token);
+    }
+
+    public void StopTracking()
+    {
+        _cts?.Cancel();
+        _cts = null;
     }
 
     // ── Perform health checks and update SLA data ──
@@ -136,8 +149,9 @@ public class SlaTrackingService
                     dbSla.LastDownTime = null;
                 }
             }
-            catch
+            catch (Exception ex)
             {
+                _logger.LogDebug("SLA DB check failed: {Err}", ex.Message);
                 dbSla.FailedChecks++;
                 if (dbSla.IsCurrentlyUp)
                 {
@@ -191,7 +205,7 @@ public class SlaTrackingService
             }
 
             // Recent incidents
-            report.RecentIncidents = _incidents.OrderByDescending(i => i.StartTime).Take(20).ToList();
+            report.RecentIncidents = _incidents.OrderByDescending(i => i.StartTime).Take(20).Cast<object>().ToList();
 
             return report;
         }

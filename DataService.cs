@@ -9,12 +9,14 @@ namespace MediciMonitor;
 public class DataService
 {
     private readonly string _connStr;
+    private readonly int _soRunningNoResultHours;
     private readonly ILogger<DataService> _logger;
 
     public DataService(IConfiguration config, ILogger<DataService> logger)
     {
         _connStr = config.GetConnectionString("SqlServer")
             ?? throw new InvalidOperationException("Missing SqlServer connection string");
+        _soRunningNoResultHours = config.GetValue<int?>("AlertThresholds:SalesOfficeRunningNoResultHours") ?? 2;
         _logger = logger;
     }
 
@@ -58,6 +60,492 @@ public class DataService
         return s;
     }
 
+    public async Task<SalesOrderDiagnostics> GetSalesOrderDiagnostics()
+    {
+        var r = new SalesOrderDiagnostics { Timestamp = DateTime.UtcNow, StaleRunningThresholdHours = _soRunningNoResultHours };
+
+        try
+        {
+            using var conn = new SqlConnection(_connStr);
+            await conn.OpenAsync();
+            r.DbConnected = true;
+
+            var ordersTable = await ResolveExistingTable(conn, ["SalesOfficeOrders", "[SalesOffice.Orders]", "SalesOffice_Orders"]);
+            var detailsTable = await ResolveExistingTable(conn, ["[SalesOffice.Details]", "SalesOfficeDetails", "SalesOffice_Details"]);
+
+            r.OrdersTable = ordersTable;
+            r.DetailsTable = detailsTable;
+
+            if (ordersTable == null)
+            {
+                r.Error = "SalesOffice orders table not found";
+                return r;
+            }
+
+            var hasOrderDateInsert = await ColumnExists(conn, ordersTable, "DateInsert");
+            var hasDetailsDateInsert = detailsTable != null && await ColumnExists(conn, detailsTable, "DateInsert");
+            var hasProcessedCallback = detailsTable != null && await ColumnExists(conn, detailsTable, "IsProcessedCallback");
+            var hasErrCol = detailsTable != null && await ColumnExists(conn, detailsTable, "Error");
+            var hasErrMsgCol = detailsTable != null && await ColumnExists(conn, detailsTable, "ErrorMessage");
+
+            string detailCte;
+            if (detailsTable != null)
+            {
+                var unprocessedExpr = hasProcessedCallback
+                    ? "SUM(CASE WHEN ISNULL(IsProcessedCallback, 0) = 0 THEN 1 ELSE 0 END)"
+                    : "0";
+                var errorExpr = hasErrCol
+                    ? "SUM(CASE WHEN [Error] IS NOT NULL AND [Error] <> '' THEN 1 ELSE 0 END)"
+                    : hasErrMsgCol
+                        ? "SUM(CASE WHEN [ErrorMessage] IS NOT NULL AND [ErrorMessage] <> '' THEN 1 ELSE 0 END)"
+                        : "0";
+                detailCte = $@";WITH d AS (
+                    SELECT
+                        OrderId,
+                        COUNT(*) AS DetailCount,
+                        {unprocessedExpr} AS UnprocessedCount,
+                        {errorExpr} AS ErrorCount
+                    FROM {detailsTable}
+                    GROUP BY OrderId
+                )";
+            }
+            else
+            {
+                detailCte = ";WITH d AS (SELECT CAST(NULL AS INT) AS OrderId, 0 AS DetailCount, 0 AS UnprocessedCount, 0 AS ErrorCount WHERE 1 = 0)";
+            }
+
+            var stalePredicate = hasOrderDateInsert
+                ? $"AND o.DateInsert <= DATEADD(HOUR, -{r.StaleRunningThresholdHours}, GETDATE())"
+                : "";
+            var minutesExpr = hasOrderDateInsert
+                ? "DATEDIFF(MINUTE, o.DateInsert, GETDATE())"
+                : "NULL";
+            var orderDateSelect = hasOrderDateInsert ? "o.DateInsert" : "NULL";
+
+            var summarySql = $@"
+                {detailCte}
+                SELECT
+                    COUNT(*) AS TotalActive,
+                    SUM(CASE WHEN o.WebJobStatus IS NULL THEN 1 ELSE 0 END) AS PendingCnt,
+                    SUM(CASE WHEN o.WebJobStatus = 'In Progress' THEN 1 ELSE 0 END) AS RunningCnt,
+                    SUM(CASE WHEN o.WebJobStatus LIKE 'Completed%' THEN 1 ELSE 0 END) AS CompletedCnt,
+                    SUM(CASE WHEN o.WebJobStatus LIKE 'Failed%' OR o.WebJobStatus = 'DateRangeError' THEN 1 ELSE 0 END) AS FailedCnt,
+                    ISNULL(SUM(CASE WHEN o.WebJobStatus LIKE 'Completed%' AND ISNULL(d.DetailCount, 0) = 0 THEN 1 ELSE 0 END), 0) AS CompletedNoMap,
+                    ISNULL(SUM(CASE WHEN (o.WebJobStatus IS NULL OR o.WebJobStatus = 'In Progress') AND ISNULL(d.DetailCount, 0) = 0 THEN 1 ELSE 0 END), 0) AS RunningNoResult,
+                    ISNULL(SUM(CASE WHEN (o.WebJobStatus IS NULL OR o.WebJobStatus = 'In Progress') AND ISNULL(d.DetailCount, 0) = 0 {stalePredicate} THEN 1 ELSE 0 END), 0) AS RunningStale,
+                    ISNULL(AVG(CASE WHEN o.WebJobStatus LIKE 'Completed%' THEN CAST(ISNULL(d.DetailCount, 0) AS FLOAT) END), 0) AS AvgDetailsPerCompleted
+                FROM {ordersTable} o
+                LEFT JOIN d ON d.OrderId = o.Id
+                WHERE o.IsActive = 1";
+
+            using (var cmd = new SqlCommand(summarySql, conn) { CommandTimeout = 20 })
+            using (var rdr = await cmd.ExecuteReaderAsync())
+            {
+                if (await rdr.ReadAsync())
+                {
+                    r.TotalActiveOrders = rdr.IsDBNull(0) ? 0 : rdr.GetInt32(0);
+                    r.PendingOrders = rdr.IsDBNull(1) ? 0 : rdr.GetInt32(1);
+                    r.RunningOrders = rdr.IsDBNull(2) ? 0 : rdr.GetInt32(2);
+                    r.CompletedOrders = rdr.IsDBNull(3) ? 0 : rdr.GetInt32(3);
+                    r.FailedOrders = rdr.IsDBNull(4) ? 0 : rdr.GetInt32(4);
+                    r.CompletedWithoutMapping = rdr.IsDBNull(5) ? 0 : rdr.GetInt32(5);
+                    r.RunningWithoutResult = rdr.IsDBNull(6) ? 0 : rdr.GetInt32(6);
+                    r.RunningStaleWithoutResult = rdr.IsDBNull(7) ? 0 : rdr.GetInt32(7);
+                    r.AvgDetailsPerCompletedOrder = rdr.IsDBNull(8) ? 0 : Math.Round(rdr.GetDouble(8), 2);
+                }
+            }
+
+            if (detailsTable != null)
+            {
+                var detailsSql = $@"
+                    SELECT
+                        COUNT(*) AS TotalRows,
+                        {(hasProcessedCallback ? "SUM(CASE WHEN ISNULL(IsProcessedCallback, 0) = 0 THEN 1 ELSE 0 END)" : "0")} AS UnprocessedRows,
+                        {(hasDetailsDateInsert ? "SUM(CASE WHEN DateInsert >= DATEADD(HOUR, -1, GETDATE()) THEN 1 ELSE 0 END)" : "0")} AS LastHourRows,
+                        {(hasErrCol ? "SUM(CASE WHEN [Error] IS NOT NULL AND [Error] <> '' THEN 1 ELSE 0 END)" : hasErrMsgCol ? "SUM(CASE WHEN [ErrorMessage] IS NOT NULL AND [ErrorMessage] <> '' THEN 1 ELSE 0 END)" : "0")} AS CallbackErrRows
+                    FROM {detailsTable}";
+
+                using var dcmd = new SqlCommand(detailsSql, conn) { CommandTimeout = 10 };
+                using var dr = await dcmd.ExecuteReaderAsync();
+                if (await dr.ReadAsync())
+                {
+                    r.TotalDetailsRows = dr.IsDBNull(0) ? 0 : dr.GetInt32(0);
+                    r.UnprocessedDetailsRows = dr.IsDBNull(1) ? 0 : dr.GetInt32(1);
+                    r.DetailsLastHour = dr.IsDBNull(2) ? 0 : dr.GetInt32(2);
+                    r.CallbackErrors = dr.IsDBNull(3) ? 0 : dr.GetInt32(3);
+                }
+            }
+
+            var runningSql = $@"
+                {detailCte}
+                SELECT TOP 100
+                    o.Id,
+                    o.WebJobStatus,
+                    {orderDateSelect} AS DateInsert,
+                    o.DateFrom,
+                    o.DateTo,
+                    ISNULL(d.DetailCount, 0) AS DetailCount,
+                    ISNULL(d.UnprocessedCount, 0) AS UnprocessedCount,
+                    ISNULL(d.ErrorCount, 0) AS ErrorCount,
+                    {minutesExpr} AS MinutesSinceStart,
+                    CASE
+                        WHEN ISNULL(d.DetailCount, 0) = 0 {(hasOrderDateInsert ? $"AND o.DateInsert <= DATEADD(HOUR, -{r.StaleRunningThresholdHours}, GETDATE())" : "")} THEN N'Running בלי תוצאה מעבר לסף זמן'
+                        WHEN ISNULL(d.DetailCount, 0) = 0 THEN N'Running בלי תוצאה עדיין'
+                        WHEN ISNULL(d.UnprocessedCount, 0) > 0 THEN N'יש תוצאות אך callback לא עובד במלואו'
+                        WHEN ISNULL(d.ErrorCount, 0) > 0 THEN N'נוצרו שגיאות callback/מיפוי'
+                        ELSE N'במעקב'
+                    END AS IssueReason
+                FROM {ordersTable} o
+                LEFT JOIN d ON d.OrderId = o.Id
+                WHERE o.IsActive = 1 AND (o.WebJobStatus IS NULL OR o.WebJobStatus = 'In Progress')
+                ORDER BY {(hasOrderDateInsert ? "o.DateInsert ASC" : "o.Id DESC")}";
+
+            using (var cmd = new SqlCommand(runningSql, conn) { CommandTimeout = 20 })
+            using (var rdr = await cmd.ExecuteReaderAsync())
+            {
+                while (await rdr.ReadAsync())
+                {
+                    r.RunningOrderItems.Add(new SalesOrderRuntimeInfo
+                    {
+                        OrderId = rdr.IsDBNull(0) ? 0 : rdr.GetInt32(0),
+                        WebJobStatus = rdr.IsDBNull(1) ? null : rdr.GetString(1),
+                        DateInsert = rdr.IsDBNull(2) ? null : rdr.GetDateTime(2),
+                        DateFrom = rdr.IsDBNull(3) ? null : rdr.GetDateTime(3),
+                        DateTo = rdr.IsDBNull(4) ? null : rdr.GetDateTime(4),
+                        DetailCount = rdr.IsDBNull(5) ? 0 : rdr.GetInt32(5),
+                        UnprocessedDetails = rdr.IsDBNull(6) ? 0 : rdr.GetInt32(6),
+                        ErrorCount = rdr.IsDBNull(7) ? 0 : rdr.GetInt32(7),
+                        MinutesSinceStart = rdr.IsDBNull(8) ? null : rdr.GetInt32(8),
+                        IssueReason = rdr.IsDBNull(9) ? null : rdr.GetString(9)
+                    });
+                }
+            }
+
+            var zeroMapSql = $@"
+                {detailCte}
+                SELECT TOP 100
+                    o.Id,
+                    o.WebJobStatus,
+                    {orderDateSelect} AS DateInsert,
+                    o.DateFrom,
+                    o.DateTo,
+                    ISNULL(d.DetailCount, 0) AS DetailCount,
+                    ISNULL(d.UnprocessedCount, 0) AS UnprocessedCount,
+                    ISNULL(d.ErrorCount, 0) AS ErrorCount,
+                    {minutesExpr} AS MinutesSinceStart,
+                    N'Completed ללא שום תוצאת mapping' AS IssueReason
+                FROM {ordersTable} o
+                LEFT JOIN d ON d.OrderId = o.Id
+                WHERE o.IsActive = 1 AND o.WebJobStatus LIKE 'Completed%' AND ISNULL(d.DetailCount, 0) = 0
+                ORDER BY {(hasOrderDateInsert ? "o.DateInsert DESC" : "o.Id DESC")}";
+
+            using (var cmd = new SqlCommand(zeroMapSql, conn) { CommandTimeout = 20 })
+            using (var rdr = await cmd.ExecuteReaderAsync())
+            {
+                while (await rdr.ReadAsync())
+                {
+                    r.CompletedWithoutMappingItems.Add(new SalesOrderRuntimeInfo
+                    {
+                        OrderId = rdr.IsDBNull(0) ? 0 : rdr.GetInt32(0),
+                        WebJobStatus = rdr.IsDBNull(1) ? null : rdr.GetString(1),
+                        DateInsert = rdr.IsDBNull(2) ? null : rdr.GetDateTime(2),
+                        DateFrom = rdr.IsDBNull(3) ? null : rdr.GetDateTime(3),
+                        DateTo = rdr.IsDBNull(4) ? null : rdr.GetDateTime(4),
+                        DetailCount = rdr.IsDBNull(5) ? 0 : rdr.GetInt32(5),
+                        UnprocessedDetails = rdr.IsDBNull(6) ? 0 : rdr.GetInt32(6),
+                        ErrorCount = rdr.IsDBNull(7) ? 0 : rdr.GetInt32(7),
+                        MinutesSinceStart = rdr.IsDBNull(8) ? null : rdr.GetInt32(8),
+                        IssueReason = rdr.IsDBNull(9) ? null : rdr.GetString(9)
+                    });
+                }
+            }
+
+            var failedSql = $@"
+                {detailCte}
+                SELECT TOP 100
+                    o.Id,
+                    o.WebJobStatus,
+                    {orderDateSelect} AS DateInsert,
+                    o.DateFrom,
+                    o.DateTo,
+                    ISNULL(d.DetailCount, 0) AS DetailCount,
+                    ISNULL(d.UnprocessedCount, 0) AS UnprocessedCount,
+                    ISNULL(d.ErrorCount, 0) AS ErrorCount,
+                    {minutesExpr} AS MinutesSinceStart,
+                    CASE
+                        WHEN o.WebJobStatus = 'DateRangeError' THEN N'טווח תאריכים לא חוקי להזמנה'
+                        WHEN o.WebJobStatus LIKE 'Failed%' THEN N'סטטוס WebJob נכשל'
+                        WHEN ISNULL(d.ErrorCount, 0) > 0 THEN N'נמצאו שגיאות callback/מיפוי'
+                        ELSE N'כשל לא מסווג'
+                    END AS IssueReason
+                FROM {ordersTable} o
+                LEFT JOIN d ON d.OrderId = o.Id
+                WHERE o.IsActive = 1 AND (o.WebJobStatus LIKE 'Failed%' OR o.WebJobStatus = 'DateRangeError')
+                ORDER BY {(hasOrderDateInsert ? "o.DateInsert DESC" : "o.Id DESC")}";
+
+            using (var cmd = new SqlCommand(failedSql, conn) { CommandTimeout = 20 })
+            using (var rdr = await cmd.ExecuteReaderAsync())
+            {
+                while (await rdr.ReadAsync())
+                {
+                    r.FailedOrderItems.Add(new SalesOrderRuntimeInfo
+                    {
+                        OrderId = rdr.IsDBNull(0) ? 0 : rdr.GetInt32(0),
+                        WebJobStatus = rdr.IsDBNull(1) ? null : rdr.GetString(1),
+                        DateInsert = rdr.IsDBNull(2) ? null : rdr.GetDateTime(2),
+                        DateFrom = rdr.IsDBNull(3) ? null : rdr.GetDateTime(3),
+                        DateTo = rdr.IsDBNull(4) ? null : rdr.GetDateTime(4),
+                        DetailCount = rdr.IsDBNull(5) ? 0 : rdr.GetInt32(5),
+                        UnprocessedDetails = rdr.IsDBNull(6) ? 0 : rdr.GetInt32(6),
+                        ErrorCount = rdr.IsDBNull(7) ? 0 : rdr.GetInt32(7),
+                        MinutesSinceStart = rdr.IsDBNull(8) ? null : rdr.GetInt32(8),
+                        IssueReason = rdr.IsDBNull(9) ? null : rdr.GetString(9)
+                    });
+                }
+            }
+
+            r.ProcessMetrics = new List<SalesOrderProcessMetric>
+            {
+                new() { Key = "active", Label = "סה\"כ Active", Count = r.TotalActiveOrders, Severity = "info" },
+                new() { Key = "pending", Label = "Pending", Count = r.PendingOrders, Severity = r.PendingOrders > 0 ? "warning" : "ok" },
+                new() { Key = "running", Label = "In Progress", Count = r.RunningOrders, Severity = r.RunningOrders > 0 ? "info" : "ok" },
+                new() { Key = "running_no_result", Label = "Running/Pending בלי תוצאה", Count = r.RunningWithoutResult, Severity = r.RunningWithoutResult > 0 ? "warning" : "ok" },
+                new() { Key = "running_stale", Label = "Running בלי תוצאה מעל סף", Count = r.RunningStaleWithoutResult, Severity = r.RunningStaleWithoutResult > 0 ? "danger" : "ok", Notes = $"> {r.StaleRunningThresholdHours}h" },
+                new() { Key = "completed", Label = "Completed", Count = r.CompletedOrders, Severity = "ok" },
+                new() { Key = "completed_no_map", Label = "Completed ללא Mapping", Count = r.CompletedWithoutMapping, Severity = r.CompletedWithoutMapping > 0 ? "danger" : "ok" },
+                new() { Key = "failed", Label = "Failed/DateRangeError", Count = r.FailedOrders, Severity = r.FailedOrders > 0 ? "danger" : "ok" },
+                new() { Key = "callback_errors", Label = "Callback Errors", Count = r.CallbackErrors, Severity = r.CallbackErrors > 0 ? "warning" : "ok" },
+                new() { Key = "callback_unprocessed", Label = "Callback Unprocessed", Count = r.UnprocessedDetailsRows, Severity = r.UnprocessedDetailsRows > 0 ? "warning" : "ok" }
+            };
+
+            var issueSql = $@"
+                {detailCte}
+                SELECT Issue, COUNT(*) AS Cnt
+                FROM (
+                    SELECT CASE
+                        WHEN o.WebJobStatus LIKE 'Completed%' AND ISNULL(d.DetailCount, 0) = 0 THEN N'Completed ללא Mapping'
+                        WHEN (o.WebJobStatus IS NULL OR o.WebJobStatus = 'In Progress') AND ISNULL(d.DetailCount, 0) = 0 {(hasOrderDateInsert ? $"AND o.DateInsert <= DATEADD(HOUR, -{r.StaleRunningThresholdHours}, GETDATE())" : "")} THEN N'Running/Pending ללא תוצאה (Stale)'
+                        WHEN (o.WebJobStatus IS NULL OR o.WebJobStatus = 'In Progress') AND ISNULL(d.DetailCount, 0) = 0 THEN N'Running/Pending ללא תוצאה'
+                        WHEN (o.WebJobStatus IS NULL OR o.WebJobStatus = 'In Progress') AND ISNULL(d.UnprocessedCount, 0) > 0 THEN N'Callback לא מעובד'
+                        WHEN (o.WebJobStatus IS NULL OR o.WebJobStatus = 'In Progress') AND ISNULL(d.ErrorCount, 0) > 0 THEN N'Callback עם שגיאה'
+                        WHEN o.WebJobStatus = 'DateRangeError' THEN N'DateRangeError'
+                        WHEN o.WebJobStatus LIKE 'Failed%' THEN N'Failed Status'
+                        WHEN o.WebJobStatus LIKE 'Completed%' THEN N'Completed תקין'
+                        ELSE N'אחר/לא מסווג'
+                    END AS Issue
+                    FROM {ordersTable} o
+                    LEFT JOIN d ON d.OrderId = o.Id
+                    WHERE o.IsActive = 1
+                ) x
+                GROUP BY Issue
+                ORDER BY Cnt DESC";
+
+            using (var cmd = new SqlCommand(issueSql, conn) { CommandTimeout = 20 })
+            using (var rdr = await cmd.ExecuteReaderAsync())
+            {
+                while (await rdr.ReadAsync())
+                {
+                    r.IssueBreakdown.Add(new SalesOrderIssueSummary
+                    {
+                        Issue = rdr.IsDBNull(0) ? "Unknown" : rdr.GetString(0),
+                        Count = rdr.IsDBNull(1) ? 0 : rdr.GetInt32(1)
+                    });
+                }
+            }
+
+            if (hasOrderDateInsert)
+            {
+                var detailsHourlyCte = detailsTable != null && hasDetailsDateInsert
+                    ? $@", d AS (
+                        SELECT
+                            DATEADD(HOUR, DATEDIFF(HOUR, 0, DateInsert), 0) AS Hr,
+                            COUNT(*) AS DetailRows,
+                            {(hasErrCol ? "SUM(CASE WHEN [Error] IS NOT NULL AND [Error] <> '' THEN 1 ELSE 0 END)" : hasErrMsgCol ? "SUM(CASE WHEN [ErrorMessage] IS NOT NULL AND [ErrorMessage] <> '' THEN 1 ELSE 0 END)" : "0")} AS CallbackErrors
+                        FROM {detailsTable}
+                        WHERE DateInsert >= DATEADD(HOUR, -24, GETDATE())
+                        GROUP BY DATEADD(HOUR, DATEDIFF(HOUR, 0, DateInsert), 0)
+                    )"
+                    : ", d AS (SELECT CAST(NULL AS DATETIME) AS Hr, 0 AS DetailRows, 0 AS CallbackErrors WHERE 1 = 0)";
+
+                var throughputSql = $@"
+                    ;WITH h AS (
+                        SELECT DATEADD(HOUR, DATEDIFF(HOUR, 0, DATEADD(HOUR, -23, GETDATE())), 0) AS Hr
+                        UNION ALL
+                        SELECT DATEADD(HOUR, 1, Hr)
+                        FROM h
+                        WHERE Hr < DATEADD(HOUR, DATEDIFF(HOUR, 0, GETDATE()), 0)
+                    ),
+                    o AS (
+                        SELECT
+                            DATEADD(HOUR, DATEDIFF(HOUR, 0, o.DateInsert), 0) AS Hr,
+                            COUNT(*) AS CreatedOrders,
+                            SUM(CASE WHEN o.WebJobStatus LIKE 'Completed%' THEN 1 ELSE 0 END) AS CompletedOrders,
+                            SUM(CASE WHEN o.WebJobStatus LIKE 'Failed%' OR o.WebJobStatus = 'DateRangeError' THEN 1 ELSE 0 END) AS FailedOrders
+                        FROM {ordersTable} o
+                        WHERE o.IsActive = 1
+                          AND o.DateInsert >= DATEADD(HOUR, -24, GETDATE())
+                        GROUP BY DATEADD(HOUR, DATEDIFF(HOUR, 0, o.DateInsert), 0)
+                    )
+                    {detailsHourlyCte}
+                    SELECT
+                        h.Hr,
+                        ISNULL(o.CreatedOrders, 0) AS CreatedOrders,
+                        ISNULL(o.CompletedOrders, 0) AS CompletedOrders,
+                        ISNULL(o.FailedOrders, 0) AS FailedOrders,
+                        ISNULL(d.DetailRows, 0) AS DetailRows,
+                        ISNULL(d.CallbackErrors, 0) AS CallbackErrors
+                    FROM h
+                    LEFT JOIN o ON o.Hr = h.Hr
+                    LEFT JOIN d ON d.Hr = h.Hr
+                    ORDER BY h.Hr ASC
+                    OPTION (MAXRECURSION 25)";
+
+                using var tcmd = new SqlCommand(throughputSql, conn) { CommandTimeout = 20 };
+                using var trdr = await tcmd.ExecuteReaderAsync();
+                while (await trdr.ReadAsync())
+                {
+                    r.Throughput24h.Add(new SalesOrderHourlyPoint
+                    {
+                        Hour = trdr.IsDBNull(0) ? DateTime.UtcNow : trdr.GetDateTime(0),
+                        CreatedOrders = trdr.IsDBNull(1) ? 0 : trdr.GetInt32(1),
+                        CompletedOrders = trdr.IsDBNull(2) ? 0 : trdr.GetInt32(2),
+                        FailedOrders = trdr.IsDBNull(3) ? 0 : trdr.GetInt32(3),
+                        DetailRows = trdr.IsDBNull(4) ? 0 : trdr.GetInt32(4),
+                        CallbackErrors = trdr.IsDBNull(5) ? 0 : trdr.GetInt32(5)
+                    });
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            if (!r.DbConnected) r.DbConnected = false;
+            r.Error = ex.Message;
+        }
+
+        return r;
+    }
+
+    public async Task<SalesOrderOrderTraceResponse> GetSalesOrderTrace(int orderId)
+    {
+        var r = new SalesOrderOrderTraceResponse { Timestamp = DateTime.UtcNow };
+
+        try
+        {
+            using var conn = new SqlConnection(_connStr);
+            await conn.OpenAsync();
+            r.DbConnected = true;
+
+            var ordersTable = await ResolveExistingTable(conn, ["SalesOfficeOrders", "[SalesOffice.Orders]", "SalesOffice_Orders"]);
+            var detailsTable = await ResolveExistingTable(conn, ["[SalesOffice.Details]", "SalesOfficeDetails", "SalesOffice_Details"]);
+
+            r.OrdersTable = ordersTable;
+            r.DetailsTable = detailsTable;
+
+            if (ordersTable == null)
+            {
+                r.Error = "SalesOffice orders table not found";
+                return r;
+            }
+
+            var hasOrderDateInsert = await ColumnExists(conn, ordersTable, "DateInsert");
+            var hasDetailsDateInsert = detailsTable != null && await ColumnExists(conn, detailsTable, "DateInsert");
+            var hasProcessedCallback = detailsTable != null && await ColumnExists(conn, detailsTable, "IsProcessedCallback");
+            var hasErrCol = detailsTable != null && await ColumnExists(conn, detailsTable, "Error");
+            var hasErrMsgCol = detailsTable != null && await ColumnExists(conn, detailsTable, "ErrorMessage");
+            var hasDetailId = detailsTable != null && await ColumnExists(conn, detailsTable, "Id");
+
+            var orderSql = $@"
+                SELECT TOP 1
+                    o.Id,
+                    o.WebJobStatus,
+                    o.IsActive,
+                    {(hasOrderDateInsert ? "o.DateInsert" : "NULL")} AS DateInsert,
+                    o.DateFrom,
+                    o.DateTo
+                FROM {ordersTable} o
+                WHERE o.Id = @id";
+
+            using (var cmd = new SqlCommand(orderSql, conn))
+            {
+                cmd.Parameters.AddWithValue("@id", orderId);
+                using var rdr = await cmd.ExecuteReaderAsync();
+                if (!await rdr.ReadAsync())
+                {
+                    r.Error = $"Order {orderId} not found";
+                    return r;
+                }
+
+                r.Order = new SalesOrderOrderTrace
+                {
+                    OrderId = rdr.IsDBNull(0) ? orderId : rdr.GetInt32(0),
+                    WebJobStatus = rdr.IsDBNull(1) ? null : rdr.GetString(1),
+                    IsActive = !rdr.IsDBNull(2) && rdr.GetBoolean(2),
+                    DateInsert = rdr.IsDBNull(3) ? null : rdr.GetDateTime(3),
+                    DateFrom = rdr.IsDBNull(4) ? null : rdr.GetDateTime(4),
+                    DateTo = rdr.IsDBNull(5) ? null : rdr.GetDateTime(5)
+                };
+            }
+
+            if (detailsTable != null && r.Order != null)
+            {
+                var aggSql = $@"
+                    SELECT
+                        COUNT(*) AS DetailCount,
+                        {(hasProcessedCallback ? "SUM(CASE WHEN ISNULL(IsProcessedCallback,0)=0 THEN 1 ELSE 0 END)" : "0")} AS UnprocessedCount,
+                        {(hasErrCol ? "SUM(CASE WHEN [Error] IS NOT NULL AND [Error] <> '' THEN 1 ELSE 0 END)" : hasErrMsgCol ? "SUM(CASE WHEN [ErrorMessage] IS NOT NULL AND [ErrorMessage] <> '' THEN 1 ELSE 0 END)" : "0")} AS ErrorCount
+                    FROM {detailsTable}
+                    WHERE OrderId = @id";
+
+                using (var acmd = new SqlCommand(aggSql, conn))
+                {
+                    acmd.Parameters.AddWithValue("@id", orderId);
+                    using var ar = await acmd.ExecuteReaderAsync();
+                    if (await ar.ReadAsync())
+                    {
+                        r.Order.DetailCount = ar.IsDBNull(0) ? 0 : ar.GetInt32(0);
+                        r.Order.UnprocessedDetails = ar.IsDBNull(1) ? 0 : ar.GetInt32(1);
+                        r.Order.ErrorCount = ar.IsDBNull(2) ? 0 : ar.GetInt32(2);
+                    }
+                }
+
+                var detailSql = $@"
+                    SELECT TOP 100
+                        {(hasDetailId ? "d.Id" : "NULL")} AS DetailId,
+                        d.OrderId,
+                        {(hasDetailsDateInsert ? "d.DateInsert" : "NULL")} AS DateInsert,
+                        {(hasProcessedCallback ? "d.IsProcessedCallback" : "NULL")} AS IsProcessedCallback,
+                        {(hasErrCol ? "d.[Error]" : "NULL")} AS [Error],
+                        {(hasErrMsgCol ? "d.[ErrorMessage]" : "NULL")} AS [ErrorMessage]
+                    FROM {detailsTable} d
+                    WHERE d.OrderId = @id
+                    ORDER BY {(hasDetailsDateInsert ? "d.DateInsert DESC" : hasDetailId ? "d.Id DESC" : "d.OrderId DESC")}";
+
+                using var dcmd = new SqlCommand(detailSql, conn);
+                dcmd.Parameters.AddWithValue("@id", orderId);
+                using var dr = await dcmd.ExecuteReaderAsync();
+                while (await dr.ReadAsync())
+                {
+                    r.RecentDetails.Add(new SalesOrderTraceDetail
+                    {
+                        DetailId = dr.IsDBNull(0) ? null : dr.GetInt32(0),
+                        OrderId = dr.IsDBNull(1) ? orderId : dr.GetInt32(1),
+                        DateInsert = dr.IsDBNull(2) ? null : dr.GetDateTime(2),
+                        IsProcessedCallback = dr.IsDBNull(3) ? null : dr.GetBoolean(3),
+                        Error = dr.IsDBNull(4) ? null : dr.GetString(4),
+                        ErrorMessage = dr.IsDBNull(5) ? null : dr.GetString(5)
+                    });
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            if (!r.DbConnected) r.DbConnected = false;
+            r.Error = ex.Message;
+        }
+
+        return r;
+    }
+
     private async Task Safe(Func<Task> action, [System.Runtime.CompilerServices.CallerArgumentExpression("action")] string? expr = null)
     {
         try { await action(); }
@@ -71,6 +559,32 @@ public class DataService
             }
             _logger.LogError(ex, "DataService.{Method} failed: {Message}", method, ex.Message);
         }
+    }
+
+    private async Task<string?> ResolveExistingTable(SqlConnection conn, string[] tablePatterns)
+    {
+        foreach (var name in tablePatterns)
+        {
+            if (!IsAllowedTableName(name)) continue;
+            try
+            {
+                using var probe = new SqlCommand($"SELECT TOP 1 1 FROM {name}", conn);
+                probe.CommandTimeout = 3;
+                await probe.ExecuteScalarAsync();
+                return name;
+            }
+            catch { }
+        }
+        return null;
+    }
+
+    private static async Task<bool> ColumnExists(SqlConnection conn, string tableName, string columnName)
+    {
+        var safeTableName = tableName.Replace("'", "''");
+        var safeColumn = columnName.Replace("'", "''");
+        using var cmd = new SqlCommand($"SELECT CASE WHEN COL_LENGTH('{safeTableName}', '{safeColumn}') IS NULL THEN 0 ELSE 1 END", conn);
+        cmd.CommandTimeout = 5;
+        return Convert.ToInt32(await cmd.ExecuteScalarAsync() ?? 0) == 1;
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -347,10 +861,11 @@ public class DataService
 
         foreach (var tableName in tablePatterns)
         {
+            if (!IsAllowedTableName(tableName)) continue;
             try
             {
                 var sql = $@"
-                    SELECT 
+                    SELECT
                         SUM(CASE WHEN WebJobStatus IS NULL THEN 1 ELSE 0 END) as Pending,
                         SUM(CASE WHEN WebJobStatus = 'In Progress' THEN 1 ELSE 0 END) as InProgress,
                         SUM(CASE WHEN WebJobStatus LIKE 'Completed%' THEN 1 ELSE 0 END) as Completed,
@@ -393,6 +908,15 @@ public class DataService
     //  SalesOffice Details/Callback Monitoring
     // ═══════════════════════════════════════════════════════════════
 
+    // Whitelist of allowed dynamic table names to prevent SQL injection
+    private static readonly HashSet<string> AllowedTableNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "[SalesOffice.Details]", "SalesOfficeDetails", "SalesOffice_Details",
+        "SalesOfficeOrders", "[SalesOffice.Orders]", "SalesOffice_Orders"
+    };
+
+    private static bool IsAllowedTableName(string name) => AllowedTableNames.Contains(name);
+
     private async Task LoadSalesOfficeDetails(SqlConnection conn, SystemStatus s)
     {
         string[] detailsTablePatterns = ["[SalesOffice.Details]", "SalesOfficeDetails", "SalesOffice_Details"];
@@ -401,9 +925,10 @@ public class DataService
         string? detailsTable = null;
         string? ordersTable = null;
 
-        // Resolve Details table name
+        // Resolve Details table name (validated against whitelist)
         foreach (var name in detailsTablePatterns)
         {
+            if (!IsAllowedTableName(name)) continue;
             try
             {
                 using var probe = new SqlCommand($"SELECT TOP 1 1 FROM {name}", conn);
@@ -415,9 +940,10 @@ public class DataService
             catch { /* try next */ }
         }
 
-        // Resolve Orders table name
+        // Resolve Orders table name (validated against whitelist)
         foreach (var name in ordersTablePatterns)
         {
+            if (!IsAllowedTableName(name)) continue;
             try
             {
                 using var probe = new SqlCommand($"SELECT TOP 1 1 FROM {name}", conn);
@@ -541,7 +1067,7 @@ public class DataService
                     s.SalesOfficePartialMappingOrders = rdr3a.IsDBNull(2) ? 0 : rdr3a.GetInt32(2);
                 }
             }
-            catch { /* columns might not exist */ }
+            catch (Exception ex) { _logger.LogDebug("Mapping analytics query skipped: {Err}", ex.Message); }
 
             // Query 3b: Time-to-map (tries DateInsert on both tables)
             try
@@ -563,7 +1089,7 @@ public class DataService
                     s.SalesOfficeMaxTimeToMapMinutes = rdr3b.IsDBNull(1) ? 0 : rdr3b.GetInt32(1);
                 }
             }
-            catch { /* DateInsert column might not exist on orders */ }
+            catch (Exception ex) { _logger.LogDebug("Time-to-map query skipped: {Err}", ex.Message); }
 
             // Query 3c: Retry detection (multiple approaches)
             try
@@ -582,7 +1108,7 @@ public class DataService
                     using var cmd3c2 = new SqlCommand(sql3c2, conn) { CommandTimeout = 5 };
                     s.SalesOfficeRetriedOrders = Convert.ToInt32(await cmd3c2.ExecuteScalarAsync() ?? 0);
                 }
-                catch { /* no retry info available */ }
+                catch (Exception ex) { _logger.LogDebug("Retry fallback query skipped: {Err}", ex.Message); }
             }
 
             // Query 3d: Callback errors (tries Error column on Details)
@@ -601,7 +1127,7 @@ public class DataService
                     using var cmd3d2 = new SqlCommand(sql3d2, conn) { CommandTimeout = 5 };
                     s.SalesOfficeCallbackErrors = Convert.ToInt32(await cmd3d2.ExecuteScalarAsync() ?? 0);
                 }
-                catch { /* no error column available */ }
+                catch (Exception ex) { _logger.LogDebug("Error column fallback skipped: {Err}", ex.Message); }
             }
 
             // Query 3e: Build mapping detail items (partial/slow orders for table display)
@@ -648,7 +1174,7 @@ public class DataService
                     });
                 }
             }
-            catch { /* DateInsert might not exist — skip detail items */ }
+            catch (Exception ex) { _logger.LogDebug("Mapping detail items query skipped: {Err}", ex.Message); }
         }
     }
 

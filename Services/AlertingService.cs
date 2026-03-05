@@ -27,7 +27,8 @@ public class AlertingService
     public AlertingService(AzureMonitoringService azure, IConfiguration config, ILogger<AlertingService> logger)
     {
         _azure = azure;
-        _connStr = config.GetConnectionString("SqlServer") ?? "";
+        _connStr = config.GetConnectionString("SqlServer")
+            ?? throw new InvalidOperationException("Missing SqlServer connection string");
         _logger = logger;
     }
 
@@ -46,7 +47,7 @@ public class AlertingService
                 await conn.OpenAsync();
                 dbOk = true;
             }
-            catch { }
+            catch (Exception ex) { _logger.LogWarning("DB connectivity check failed: {Err}", ex.Message); }
 
             if (!dbOk)
                 alerts.Add(new AlertInfo { Id = "DB_DOWN", Title = "Database Down", Message = "לא ניתן להתחבר למסד הנתונים", Severity = "Critical", Category = "Database" });
@@ -101,6 +102,42 @@ public class AlertingService
                 if (ghost > 0)
                     alerts.Add(new AlertInfo { Id = "GHOST_CANCEL", Title = "Ghost Cancellations", Message = $"{ghost} bookings marked inactive WITHOUT API cancellation — supplier may still charge!", Severity = "Critical", Category = "Business" });
 
+                // 4b. Cancel retry loop detection (same bookings failing repeatedly)
+                var retryLoopDistinct = await ScalarInt(conn,
+                    $@"SELECT COUNT(*)
+                        FROM (
+                            SELECT PreBookId
+                            FROM MED_CancelBookError
+                            WHERE DateInsert >= DATEADD(HOUR, -{Thresholds.RetryLoopWindowHours}, GETDATE())
+                              AND PreBookId IS NOT NULL
+                            GROUP BY PreBookId
+                            HAVING COUNT(*) >= {Thresholds.RetryLoopMinErrorsPerBooking}
+                        ) d");
+
+                if (retryLoopDistinct >= Thresholds.RetryLoopDistinctBookingsThreshold)
+                {
+                    var hotIds = await ScalarString(conn,
+                        $@"SELECT STRING_AGG(CAST(PreBookId AS NVARCHAR(20)), ', ')
+                           FROM (
+                                SELECT TOP 5 PreBookId
+                                FROM MED_CancelBookError
+                                WHERE DateInsert >= DATEADD(HOUR, -{Thresholds.RetryLoopWindowHours}, GETDATE())
+                                  AND PreBookId IS NOT NULL
+                                GROUP BY PreBookId
+                                HAVING COUNT(*) >= {Thresholds.RetryLoopMinErrorsPerBooking}
+                                ORDER BY COUNT(*) DESC
+                           ) t");
+
+                    alerts.Add(new AlertInfo
+                    {
+                        Id = "CANCEL_RETRY_LOOP",
+                        Title = "Cancellation Retry Loop",
+                        Message = $"{retryLoopDistinct} הזמנות נכשלות שוב ושוב ב-{Thresholds.RetryLoopWindowHours} השעות האחרונות. דוגמאות: {hotIds ?? "N/A"}",
+                        Severity = "Critical",
+                        Category = "Errors"
+                    });
+                }
+
                 // 5. Booking error spike
                 var recentErrors = await ScalarInt(conn, "SELECT COUNT(*) FROM MED_BookError WHERE DateInsert >= DATEADD(HOUR, -1, GETDATE())");
                 if (recentErrors > Thresholds.ErrorSpikeThresholdPerHour)
@@ -129,6 +166,42 @@ public class AlertingService
                 if (wasteRooms > Thresholds.WasteRoomThreshold)
                     alerts.Add(new AlertInfo { Id = "WASTE_SPIKE", Title = "Room Waste Urgent", Message = $"{wasteRooms} חדרים לא נמכרו פגי תוקף תוך 24h (סף: {Thresholds.WasteRoomThreshold})", Severity = "Warning", Category = "Business" });
 
+                // 9b. Sold bookings at cancellation risk (no cancel success yet)
+                var soldOverdue = await ScalarInt(conn,
+                    "SELECT COUNT(*) FROM MED_Book b WHERE b.IsActive = 1 AND ISNULL(b.IsSold, 0) = 1 AND b.CancellationTo < GETDATE() AND NOT EXISTS (SELECT 1 FROM MED_CancelBook c WHERE c.PreBookId = b.PreBookId)");
+                var soldApproaching = await ScalarInt(conn,
+                    $@"SELECT COUNT(*)
+                       FROM MED_Book b
+                       WHERE b.IsActive = 1
+                         AND ISNULL(b.IsSold, 0) = 1
+                         AND b.CancellationTo >= GETDATE()
+                         AND b.CancellationTo <= DATEADD(HOUR, {Thresholds.SoldBookingRiskLookaheadHours}, GETDATE())
+                         AND NOT EXISTS (SELECT 1 FROM MED_CancelBook c WHERE c.PreBookId = b.PreBookId)");
+
+                if (soldOverdue > 0 || soldApproaching >= Thresholds.SoldBookingRiskThreshold)
+                {
+                    var soldExamples = await ScalarString(conn,
+                        $@"SELECT STRING_AGG(CAST(PreBookId AS NVARCHAR(20)), ', ')
+                           FROM (
+                                SELECT TOP 5 b.PreBookId
+                                FROM MED_Book b
+                                WHERE b.IsActive = 1
+                                  AND ISNULL(b.IsSold, 0) = 1
+                                  AND b.CancellationTo <= DATEADD(HOUR, {Thresholds.SoldBookingRiskLookaheadHours}, GETDATE())
+                                  AND NOT EXISTS (SELECT 1 FROM MED_CancelBook c WHERE c.PreBookId = b.PreBookId)
+                                ORDER BY b.CancellationTo ASC
+                           ) x");
+
+                    alerts.Add(new AlertInfo
+                    {
+                        Id = "SOLD_CANCEL_RISK",
+                        Title = "Sold Booking Cancellation Risk",
+                        Message = $"{soldOverdue} sold הזמנות כבר עברו deadline ו-{soldApproaching} נוספות מתקרבות ב-{Thresholds.SoldBookingRiskLookaheadHours} שעות (דוגמאות: {soldExamples ?? "N/A"})",
+                        Severity = soldOverdue > 0 ? "Critical" : "Warning",
+                        Category = "Business"
+                    });
+                }
+
                 // 10. BuyRooms system health
                 var lastBook = await ScalarDateTime(conn, "SELECT MAX(DateInsert) FROM MED_Book");
                 if (lastBook.HasValue)
@@ -151,7 +224,7 @@ public class AlertingService
                     if (yesterdayRevenue > 0 && DateTime.Now.Hour >= 12 && todayRevenue < yesterdayRevenue * 0.3)
                         alerts.Add(new AlertInfo { Id = "REVENUE_DROP", Title = "Revenue Drop", Message = $"הכנסות היום ${todayRevenue:N0} — ירידה משמעותית מאתמול (${yesterdayRevenue:N0})", Severity = "Warning", Category = "Business" });
                 }
-                catch { /* optional */ }
+                catch (Exception ex) { _logger.LogDebug("Revenue comparison skipped: {Err}", ex.Message); }
 
                 // 13. Price drift anomaly
                 var driftCount = await ScalarInt(conn, "SELECT COUNT(*) FROM MED_Book WHERE IsActive = 1 AND LastPrice IS NOT NULL AND Price IS NOT NULL AND ABS(LastPrice - Price) > Price * 0.2");
@@ -170,7 +243,7 @@ public class AlertingService
                     if (soFails > 0)
                         alerts.Add(new AlertInfo { Id = "SO_FAILURES", Title = "SalesOffice Failures", Message = $"{soFails} SalesOffice orders נכשלו", Severity = "Warning", Category = "Business" });
                 }
-                catch { /* table might not exist */ }
+                catch (Exception ex) { _logger.LogDebug("SalesOffice failures check skipped: {Err}", ex.Message); }
 
                 // 16. SalesOffice unprocessed callback backlog
                 try
@@ -195,7 +268,7 @@ public class AlertingService
                             Category = "Business"
                         });
                 }
-                catch { /* table might not exist */ }
+                catch (Exception ex) { _logger.LogDebug("SalesOffice callback backlog check skipped: {Err}", ex.Message); }
 
                 // 17. SalesOffice zero-mapping orders
                 try
@@ -223,7 +296,7 @@ public class AlertingService
                             });
                     }
                 }
-                catch { /* tables might not exist */ }
+                catch (Exception ex) { _logger.LogDebug("SalesOffice zero-mapping check skipped: {Err}", ex.Message); }
 
                 // 18. SalesOffice slow mapping (avg time-to-map too high)
                 try
@@ -253,7 +326,7 @@ public class AlertingService
                             });
                     }
                 }
-                catch { /* DateInsert might not exist */ }
+                catch (Exception ex) { _logger.LogDebug("SalesOffice slow mapping check skipped: {Err}", ex.Message); }
 
                 // 19. SalesOffice partial mapping (orders with abnormally low details)
                 try
@@ -291,7 +364,54 @@ public class AlertingService
                             });
                     }
                 }
-                catch { /* tables/columns might not exist */ }
+                catch (Exception ex) { _logger.LogDebug("SalesOffice partial mapping check skipped: {Err}", ex.Message); }
+
+                // 20. SalesOffice running without result (possible stuck execution)
+                try
+                {
+                    string? ordTbl = null, detTbl = null;
+                    foreach (var t in new[] { "SalesOfficeOrders", "[SalesOffice.Orders]", "SalesOffice_Orders" })
+                    { try { await ScalarInt(conn, $"SELECT TOP 1 1 FROM {t}"); ordTbl = t; break; } catch { } }
+                    foreach (var t in new[] { "[SalesOffice.Details]", "SalesOfficeDetails", "SalesOffice_Details" })
+                    { try { await ScalarInt(conn, $"SELECT TOP 1 1 FROM {t}"); detTbl = t; break; } catch { } }
+
+                    if (ordTbl != null)
+                    {
+                        var hasDateInsert = await ScalarInt(conn,
+                            $"SELECT CASE WHEN COL_LENGTH('{ordTbl.Replace("'", "''")}', 'DateInsert') IS NULL THEN 0 ELSE 1 END");
+
+                        var staleDateFilter = hasDateInsert == 1
+                            ? $"AND o.DateInsert <= DATEADD(HOUR, -{Thresholds.SalesOfficeRunningNoResultHours}, GETDATE())"
+                            : "";
+
+                        var runningNoResult = detTbl != null
+                            ? await ScalarInt(conn,
+                                $@"SELECT COUNT(*)
+                                   FROM {ordTbl} o
+                                   LEFT JOIN (SELECT OrderId, COUNT(*) as Cnt FROM {detTbl} GROUP BY OrderId) d ON d.OrderId = o.Id
+                                   WHERE o.IsActive = 1
+                                     AND (o.WebJobStatus IS NULL OR o.WebJobStatus = 'In Progress')
+                                     AND ISNULL(d.Cnt, 0) = 0
+                                     {staleDateFilter}")
+                            : await ScalarInt(conn,
+                                $@"SELECT COUNT(*)
+                                   FROM {ordTbl} o
+                                   WHERE o.IsActive = 1
+                                     AND (o.WebJobStatus IS NULL OR o.WebJobStatus = 'In Progress')
+                                     {staleDateFilter}");
+
+                        if (runningNoResult >= Thresholds.SalesOfficeRunningNoResultThreshold)
+                            alerts.Add(new AlertInfo
+                            {
+                                Id = "SO_RUNNING_NO_RESULT",
+                                Title = "SalesOffice Running Without Result",
+                                Message = $"{runningNoResult} הזמנות SalesOffice רצות ללא תוצאת mapping מעבר לסף זמן ({Thresholds.SalesOfficeRunningNoResultHours}h)",
+                                Severity = runningNoResult >= Thresholds.SalesOfficeRunningNoResultThreshold * 3 ? "Critical" : "Warning",
+                                Category = "Business"
+                            });
+                    }
+                }
+                catch (Exception ex) { _logger.LogDebug("SalesOffice running-without-result check skipped: {Err}", ex.Message); }
             }
 
             // Set timestamp & active status, filter acknowledged/snoozed
@@ -443,6 +563,13 @@ public class AlertingService
         return Convert.ToDouble(await cmd.ExecuteScalarAsync() ?? 0.0);
     }
 
+    private static async Task<string?> ScalarString(Microsoft.Data.SqlClient.SqlConnection conn, string sql)
+    {
+        using var cmd = new Microsoft.Data.SqlClient.SqlCommand(sql, conn) { CommandTimeout = 10 };
+        var result = await cmd.ExecuteScalarAsync();
+        return result == null || result == DBNull.Value ? null : Convert.ToString(result);
+    }
+
     private static async Task<DateTime?> ScalarDateTime(Microsoft.Data.SqlClient.SqlConnection conn, string sql)
     {
         using var cmd = new Microsoft.Data.SqlClient.SqlCommand(sql, conn) { CommandTimeout = 10 };
@@ -466,8 +593,15 @@ public class AlertThresholds
     public int PushFailureThreshold { get; set; } = 5;
     public int PriceDriftAnomalyThreshold { get; set; } = 3;
     public int BackOfficeErrorThreshold { get; set; } = 10;
+    public int RetryLoopWindowHours { get; set; } = 24;
+    public int RetryLoopMinErrorsPerBooking { get; set; } = 4;
+    public int RetryLoopDistinctBookingsThreshold { get; set; } = 10;
+    public int SoldBookingRiskLookaheadHours { get; set; } = 24;
+    public int SoldBookingRiskThreshold { get; set; } = 1;
     public int SalesOfficeUnprocessedCallbackThreshold { get; set; } = 10000;
     public int SalesOfficeZeroMappingThreshold { get; set; } = 20;
     public double SalesOfficeSlowMapMinutes { get; set; } = 120;
     public int SalesOfficePartialMappingThreshold { get; set; } = 10;
+    public int SalesOfficeRunningNoResultHours { get; set; } = 2;
+    public int SalesOfficeRunningNoResultThreshold { get; set; } = 5;
 }

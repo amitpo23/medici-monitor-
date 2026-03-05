@@ -194,6 +194,113 @@ public class SalesOfficeMappingDetailInfo
     public string? Issue { get; set; } // "Partial", "Slow", "Retried"
 }
 
+public class SalesOrderDiagnostics
+{
+    public DateTime Timestamp { get; set; }
+    public bool DbConnected { get; set; }
+    public string? Error { get; set; }
+    public string? OrdersTable { get; set; }
+    public string? DetailsTable { get; set; }
+    public int StaleRunningThresholdHours { get; set; } = 2;
+
+    public int TotalActiveOrders { get; set; }
+    public int PendingOrders { get; set; }
+    public int RunningOrders { get; set; }
+    public int CompletedOrders { get; set; }
+    public int FailedOrders { get; set; }
+
+    public int TotalDetailsRows { get; set; }
+    public int UnprocessedDetailsRows { get; set; }
+    public int DetailsLastHour { get; set; }
+    public int CallbackErrors { get; set; }
+
+    public int CompletedWithoutMapping { get; set; }
+    public int RunningWithoutResult { get; set; }
+    public int RunningStaleWithoutResult { get; set; }
+    public double AvgDetailsPerCompletedOrder { get; set; }
+
+    public List<SalesOrderProcessMetric> ProcessMetrics { get; set; } = new();
+    public List<SalesOrderIssueSummary> IssueBreakdown { get; set; } = new();
+    public List<SalesOrderHourlyPoint> Throughput24h { get; set; } = new();
+
+    public List<SalesOrderRuntimeInfo> RunningOrderItems { get; set; } = new();
+    public List<SalesOrderRuntimeInfo> CompletedWithoutMappingItems { get; set; } = new();
+    public List<SalesOrderRuntimeInfo> FailedOrderItems { get; set; } = new();
+}
+
+public class SalesOrderProcessMetric
+{
+    public string Key { get; set; } = "";
+    public string Label { get; set; } = "";
+    public int Count { get; set; }
+    public string? Severity { get; set; }
+    public string? Notes { get; set; }
+}
+
+public class SalesOrderIssueSummary
+{
+    public string Issue { get; set; } = "";
+    public int Count { get; set; }
+}
+
+public class SalesOrderHourlyPoint
+{
+    public DateTime Hour { get; set; }
+    public int CreatedOrders { get; set; }
+    public int CompletedOrders { get; set; }
+    public int FailedOrders { get; set; }
+    public int DetailRows { get; set; }
+    public int CallbackErrors { get; set; }
+}
+
+public class SalesOrderRuntimeInfo
+{
+    public int OrderId { get; set; }
+    public string? WebJobStatus { get; set; }
+    public DateTime? DateInsert { get; set; }
+    public DateTime? DateFrom { get; set; }
+    public DateTime? DateTo { get; set; }
+    public int DetailCount { get; set; }
+    public int UnprocessedDetails { get; set; }
+    public int ErrorCount { get; set; }
+    public double? MinutesSinceStart { get; set; }
+    public string? IssueReason { get; set; }
+}
+
+public class SalesOrderOrderTraceResponse
+{
+    public DateTime Timestamp { get; set; }
+    public bool DbConnected { get; set; }
+    public string? Error { get; set; }
+    public string? OrdersTable { get; set; }
+    public string? DetailsTable { get; set; }
+    public SalesOrderOrderTrace? Order { get; set; }
+    public List<SalesOrderTraceDetail> RecentDetails { get; set; } = new();
+}
+
+public class SalesOrderOrderTrace
+{
+    public int OrderId { get; set; }
+    public string? WebJobStatus { get; set; }
+    public bool IsActive { get; set; }
+    public DateTime? DateInsert { get; set; }
+    public DateTime? DateFrom { get; set; }
+    public DateTime? DateTo { get; set; }
+    public int DetailCount { get; set; }
+    public int UnprocessedDetails { get; set; }
+    public int ErrorCount { get; set; }
+}
+
+public class SalesOrderTraceDetail
+{
+    public int? DetailId { get; set; }
+    public int OrderId { get; set; }
+    public DateTime? DateInsert { get; set; }
+    public bool? IsProcessedCallback { get; set; }
+    public string? Error { get; set; }
+    public string? ErrorMessage { get; set; }
+}
+
 public class ActiveBookingSummary
 {
     public int? HotelId { get; set; }

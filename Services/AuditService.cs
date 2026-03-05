@@ -23,7 +23,7 @@ public class AuditService
             Directory.CreateDirectory(dir);
             _auditFilePath = Path.Combine(dir, $"audit-{DateTime.UtcNow:yyyyMMdd}.log");
         }
-        catch { _auditFilePath = null; }
+        catch (Exception ex) { _logger.LogWarning("Failed to init audit directory: {Err}", ex.Message); _auditFilePath = null; }
     }
 
     // ── Record an audit entry ──
@@ -54,7 +54,7 @@ public class AuditService
                 var line = $"{entry.Timestamp:yyyy-MM-dd HH:mm:ss.fff} | {entry.Action,-20} | {entry.Endpoint,-40} | {entry.ClientIp,-15} | {entry.Detail}";
                 File.AppendAllText(_auditFilePath, line + Environment.NewLine);
             }
-            catch { /* don't crash for audit I/O */ }
+            catch (Exception ex) { _logger.LogDebug("Audit file write failed: {Err}", ex.Message); }
         }
     }
 

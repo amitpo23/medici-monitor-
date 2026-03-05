@@ -214,6 +214,7 @@ td.log-msg{white-space:pre-wrap;word-break:break-word;max-width:600px;font-famil
 <!-- ═══ Nav Tabs ═══ -->
 <div class="nav-tabs">
   <div class="nav-tab active" data-nav="overview">&#x1F4CA; סקירה כללית</div>
+  <div class="nav-tab" data-nav="salesorder">&#x1F9ED; SalesOrder Monitor <span class="count red" id="navSoDiagCount" style="display:none">0</span></div>
   <div class="nav-tab" data-nav="reservations">&#x1F4E5; הזמנות Zenith <span class="count blue" id="navResCount">0</span></div>
   <div class="nav-tab" data-nav="waste">&#x1F4B8; חדרים לא נמכרו <span class="count yellow" id="navWasteCount">0</span></div>
   <div class="nav-tab" data-nav="conversion">&#x1F4B0; המרה ורווחיות</div>
@@ -322,6 +323,95 @@ td.log-msg{white-space:pre-wrap;word-break:break-word;max-width:600px;font-famil
     <div class="bar-chart" id="hotelChart"></div>
   </div>
 
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!--  PANEL: SalesOrder Monitor                                         -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<div class="nav-panel" id="panel-salesorder">
+  <div style="display:flex;gap:8px;margin-bottom:12px;align-items:center;flex-wrap:wrap">
+    <button onclick="loadSalesOrderDiagnostics()" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px">&#x21BB; רענן</button>
+    <input id="soDiagTraceOrderId" type="number" min="1" placeholder="OrderId ל-trace" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);padding:6px 10px;border-radius:6px;font-size:12px;min-width:160px" />
+    <button onclick="loadSalesOrderTrace()" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px">&#x1F50D; Trace להזמנה</button>
+    <span id="soDiagMeta" style="font-size:12px;color:var(--text2)">טוען...</span>
+  </div>
+
+  <div class="cards" id="soDiagKpiCards"><div class="card"><div class="label">טוען SalesOrder...</div><div class="value"><div class="spinner"></div></div></div></div>
+
+  <div class="section">
+    <div class="section-header"><h2>&#x23F3; Running / Pending מול תוצאות</h2></div>
+    <div style="overflow-x:auto">
+      <table>
+        <thead><tr><th>Order ID</th><th>סטטוס</th><th>נוצר</th><th>דקות ריצה</th><th>Results</th><th>Unprocessed</th><th>Errors</th><th>סיבה/אבחון</th></tr></thead>
+        <tbody id="soDiagRunningBody"><tr class="empty-row"><td colspan="8">טוען...</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="grid2">
+    <div class="section">
+      <div class="section-header"><h2>&#x1F6A6; מיפוי שלבי תהליך (Pipeline)</h2></div>
+      <div style="overflow-x:auto">
+        <table>
+          <thead><tr><th>שלב</th><th>כמות</th><th>סיכון</th><th>הערה</th></tr></thead>
+          <tbody id="soDiagProcessBody"><tr class="empty-row"><td colspan="4">טוען...</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-header"><h2>&#x1F9EA; Breakdown תקלות וסיבות</h2></div>
+      <div style="overflow-x:auto">
+        <table>
+          <thead><tr><th>סיבה</th><th>כמות</th></tr></thead>
+          <tbody id="soDiagIssueBody"><tr class="empty-row"><td colspan="2">טוען...</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-header"><h2>&#x1F4C8; Throughput 24h (Orders + Details)</h2></div>
+    <div style="overflow-x:auto">
+      <table>
+        <thead><tr><th>שעה</th><th>Created</th><th>Completed</th><th>Failed</th><th>Details</th><th>Callback Errors</th></tr></thead>
+        <tbody id="soDiagThroughputBody"><tr class="empty-row"><td colspan="6">טוען...</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-header"><h2>&#x1F50D; Trace להזמנה בודדת</h2></div>
+    <div id="soDiagTraceSummary" style="font-size:12px;color:var(--text2);margin-bottom:8px">הכנס OrderId כדי למשוך trace מלא של ההזמנה וה־callbacks.</div>
+    <div style="overflow-x:auto">
+      <table>
+        <thead><tr><th>DetailId</th><th>OrderId</th><th>DateInsert</th><th>Processed</th><th>Error</th><th>ErrorMessage</th></tr></thead>
+        <tbody id="soDiagTraceBody"><tr class="empty-row"><td colspan="6">אין נתונים עדיין</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="grid2">
+    <div class="section">
+      <div class="section-header"><h2>&#x274C; Completed ללא Mapping</h2></div>
+      <div style="overflow-x:auto">
+        <table>
+          <thead><tr><th>Order ID</th><th>סטטוס</th><th>נוצר</th><th>DateFrom</th><th>DateTo</th><th>סיבה</th></tr></thead>
+          <tbody id="soDiagNoMapBody"><tr class="empty-row"><td colspan="6">טוען...</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-header"><h2>&#x26A0;&#xFE0F; Failures / DateRangeError</h2></div>
+      <div style="overflow-x:auto">
+        <table>
+          <thead><tr><th>Order ID</th><th>סטטוס</th><th>נוצר</th><th>Results</th><th>Errors</th><th>סיבה</th></tr></thead>
+          <tbody id="soDiagFailedBody"><tr class="empty-row"><td colspan="6">טוען...</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
 </div>
 
 <!-- ═══════════════════════════════════════════════════════════════════ -->
@@ -1154,6 +1244,196 @@ function renderSalesOffice(d) {
 }
 
 // ══════════════════════════════════════════════════════════════════════
+//  RENDER: SalesOrder Standalone Diagnostics
+// ══════════════════════════════════════════════════════════════════════
+async function loadSalesOrderDiagnostics() {
+  document.getElementById('soDiagKpiCards').innerHTML = '<div class="card"><div class="label">טוען SalesOrder...</div><div class="value"><div class="spinner"></div></div></div>';
+  try {
+    const resp = await fetch('/api/salesorder/diagnostics');
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const d = await resp.json();
+
+    const anomalyCount = (d.completedWithoutMapping||0) + (d.runningStaleWithoutResult||0) + (d.failedOrders||0) + (d.callbackErrors||0);
+    const nav = document.getElementById('navSoDiagCount');
+    if (anomalyCount > 0) { nav.style.display = ''; nav.textContent = anomalyCount; } else nav.style.display = 'none';
+
+    document.getElementById('soDiagMeta').textContent =
+      'Orders: ' + (d.ordersTable || '-') + ' | Details: ' + (d.detailsTable || '-') + ' | עודכן: ' + fmtNow();
+
+    const cards = [];
+    cards.push(kpi('Active Orders', d.totalActiveOrders || 0, 'info'));
+    cards.push(kpi('Pending', d.pendingOrders || 0, 'cyan'));
+    cards.push(kpi('Running', d.runningOrders || 0, (d.runningStaleWithoutResult||0) > 0 ? 'warning' : 'ok'));
+    cards.push(kpi('Completed', d.completedOrders || 0, 'ok'));
+    cards.push(kpi('Failed', d.failedOrders || 0, (d.failedOrders||0) > 0 ? 'danger' : 'ok'));
+    cards.push(kpi('Completed ללא Mapping', d.completedWithoutMapping || 0,
+      (d.completedWithoutMapping||0) > 0 ? 'danger' : 'ok'));
+    cards.push(kpi('Running ללא תוצאה', d.runningWithoutResult || 0,
+      (d.runningStaleWithoutResult||0) > 0 ? 'danger' : (d.runningWithoutResult||0) > 0 ? 'warning' : 'ok',
+      'Stale: ' + (d.runningStaleWithoutResult||0) + ' (>' + (d.staleRunningThresholdHours||2) + 'h)'));
+    cards.push(kpi('Details שורה כוללת', (d.totalDetailsRows||0).toLocaleString(), 'purple',
+      'Unprocessed: ' + (d.unprocessedDetailsRows||0).toLocaleString()));
+    cards.push(kpi('Details בשעה אחרונה', (d.detailsLastHour||0).toLocaleString(),
+      (d.detailsLastHour||0) > 0 ? 'ok' : 'warning'));
+    cards.push(kpi('Callback Errors', d.callbackErrors || 0,
+      (d.callbackErrors||0) > 0 ? 'warning' : 'ok'));
+    cards.push(kpi('Avg Mapping/Order', (d.avgDetailsPerCompletedOrder||0).toFixed(2), 'info'));
+    document.getElementById('soDiagKpiCards').innerHTML = cards.join('');
+
+    const processBody = document.getElementById('soDiagProcessBody');
+    if (!d.processMetrics?.length) {
+      processBody.innerHTML = emptyRow(4, 'אין מיפוי שלבים זמין');
+    } else {
+      processBody.innerHTML = d.processMetrics.map(m => {
+        const sev = (m.severity || 'info').toLowerCase();
+        const cls = sev === 'danger' ? 's-red' : sev === 'warning' ? 's-yellow' : sev === 'ok' ? 's-green' : 's-blue';
+        return '<tr><td>' + esc(m.label || m.key || '-') + '</td>' +
+          '<td><b>' + (m.count || 0) + '</b></td>' +
+          '<td>' + statusBadge(cls, sev.toUpperCase()) + '</td>' +
+          '<td>' + esc(m.notes || '-') + '</td></tr>';
+      }).join('');
+    }
+
+    const issueBody = document.getElementById('soDiagIssueBody');
+    if (!d.issueBreakdown?.length) {
+      issueBody.innerHTML = emptyRow(2, 'אין breakdown סיבות');
+    } else {
+      issueBody.innerHTML = d.issueBreakdown.map(i =>
+        '<tr><td>' + statusBadge((i.issue || '').includes('Failed') || (i.issue || '').includes('Stale') || (i.issue || '').includes('DateRange') ? 's-red' :
+                                  (i.issue || '').includes('ללא תוצאה') || (i.issue || '').includes('שגיאה') || (i.issue || '').includes('לא מעובד') ? 's-yellow' : 's-blue',
+                                  esc(i.issue || '-')) + '</td>' +
+        '<td><b>' + (i.count || 0) + '</b></td></tr>'
+      ).join('');
+    }
+
+    const throughputBody = document.getElementById('soDiagThroughputBody');
+    if (!d.throughput24h?.length) {
+      throughputBody.innerHTML = emptyRow(6, 'אין נתוני throughput (כנראה חסר DateInsert בטבלה)');
+    } else {
+      throughputBody.innerHTML = d.throughput24h.map(p =>
+        '<tr><td>' + fmt(p.hour) + '</td>' +
+        '<td>' + (p.createdOrders || 0) + '</td>' +
+        '<td>' + (p.completedOrders || 0) + '</td>' +
+        '<td>' + (p.failedOrders || 0) + '</td>' +
+        '<td>' + (p.detailRows || 0) + '</td>' +
+        '<td>' + (p.callbackErrors || 0) + '</td></tr>'
+      ).join('');
+    }
+
+    const runningBody = document.getElementById('soDiagRunningBody');
+    if (!d.runningOrderItems?.length) {
+      runningBody.innerHTML = emptyRow(8, 'אין Running/Pending כרגע');
+    } else {
+      runningBody.innerHTML = d.runningOrderItems.map(o => {
+        const status = o.webJobStatus || 'Pending';
+        const statusCls = !o.webJobStatus ? 's-yellow' : o.webJobStatus === 'In Progress' ? 's-blue' : 's-yellow';
+        const reasonCls = (o.issueReason||'').includes('מעבר') ? 's-red' : (o.issueReason||'').includes('בלי תוצאה') ? 's-yellow' : 's-blue';
+        return '<tr><td>' + o.orderId + '</td>' +
+          '<td>' + statusBadge(statusCls, status) + '</td>' +
+          '<td>' + fmt(o.dateInsert) + '</td>' +
+          '<td>' + (o.minutesSinceStart != null ? o.minutesSinceStart.toFixed(0) : '-') + '</td>' +
+          '<td>' + o.detailCount + '</td>' +
+          '<td>' + o.unprocessedDetails + '</td>' +
+          '<td>' + o.errorCount + '</td>' +
+          '<td>' + statusBadge(reasonCls, esc(o.issueReason || '-')) + '</td></tr>';
+      }).join('');
+    }
+
+    const noMapBody = document.getElementById('soDiagNoMapBody');
+    if (!d.completedWithoutMappingItems?.length) {
+      noMapBody.innerHTML = emptyRow(6, 'אין הזמנות Completed ללא Mapping');
+    } else {
+      noMapBody.innerHTML = d.completedWithoutMappingItems.map(o =>
+        '<tr><td>' + o.orderId + '</td>' +
+        '<td>' + statusBadge('s-green', o.webJobStatus || 'Completed') + '</td>' +
+        '<td>' + fmt(o.dateInsert) + '</td>' +
+        '<td>' + fmtDate(o.dateFrom) + '</td>' +
+        '<td>' + fmtDate(o.dateTo) + '</td>' +
+        '<td>' + statusBadge('s-red', esc(o.issueReason || 'Completed ללא Mapping')) + '</td></tr>'
+      ).join('');
+    }
+
+    const failedBody = document.getElementById('soDiagFailedBody');
+    if (!d.failedOrderItems?.length) {
+      failedBody.innerHTML = emptyRow(6, 'אין Failures כרגע');
+    } else {
+      failedBody.innerHTML = d.failedOrderItems.map(o =>
+        '<tr><td>' + o.orderId + '</td>' +
+        '<td>' + statusBadge('s-red', o.webJobStatus || 'Failed') + '</td>' +
+        '<td>' + fmt(o.dateInsert) + '</td>' +
+        '<td>' + o.detailCount + '</td>' +
+        '<td>' + o.errorCount + '</td>' +
+        '<td>' + statusBadge('s-yellow', esc(o.issueReason || 'כשל לא מסווג')) + '</td></tr>'
+      ).join('');
+    }
+  } catch (err) {
+    document.getElementById('soDiagKpiCards').innerHTML = kpi('שגיאה', err.message, 'danger');
+    document.getElementById('soDiagMeta').textContent = 'שגיאה בטעינה';
+    document.getElementById('soDiagProcessBody').innerHTML = emptyRow(4, 'שגיאה: ' + err.message);
+    document.getElementById('soDiagIssueBody').innerHTML = emptyRow(2, 'שגיאה: ' + err.message);
+    document.getElementById('soDiagThroughputBody').innerHTML = emptyRow(6, 'שגיאה: ' + err.message);
+    document.getElementById('soDiagRunningBody').innerHTML = emptyRow(8, 'שגיאה: ' + err.message);
+    document.getElementById('soDiagNoMapBody').innerHTML = emptyRow(6, 'שגיאה: ' + err.message);
+    document.getElementById('soDiagFailedBody').innerHTML = emptyRow(6, 'שגיאה: ' + err.message);
+  }
+}
+
+async function loadSalesOrderTrace() {
+  const idRaw = (document.getElementById('soDiagTraceOrderId').value || '').trim();
+  const orderId = Number(idRaw);
+  if (!orderId || orderId < 1) {
+    document.getElementById('soDiagTraceSummary').textContent = 'יש להזין OrderId חוקי (מספר חיובי).';
+    document.getElementById('soDiagTraceBody').innerHTML = emptyRow(6, 'לא בוצע trace');
+    return;
+  }
+
+  document.getElementById('soDiagTraceSummary').textContent = 'טוען trace עבור OrderId=' + orderId + '...';
+  document.getElementById('soDiagTraceBody').innerHTML = '<tr class="empty-row"><td colspan="6"><div class="spinner"></div></td></tr>';
+
+  try {
+    const resp = await fetch('/api/salesorder/trace/' + encodeURIComponent(orderId));
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const d = await resp.json();
+
+    if (d.error) {
+      document.getElementById('soDiagTraceSummary').textContent = 'Trace נכשל: ' + d.error;
+      document.getElementById('soDiagTraceBody').innerHTML = emptyRow(6, d.error);
+      return;
+    }
+
+    if (d.order) {
+      document.getElementById('soDiagTraceSummary').textContent =
+        'Order ' + d.order.orderId +
+        ' | Status=' + (d.order.webJobStatus || 'Pending') +
+        ' | Active=' + (d.order.isActive ? 'Yes' : 'No') +
+        ' | Details=' + (d.order.detailCount || 0) +
+        ' | Unprocessed=' + (d.order.unprocessedDetails || 0) +
+        ' | Errors=' + (d.order.errorCount || 0) +
+        ' | Updated=' + fmtNow();
+    } else {
+      document.getElementById('soDiagTraceSummary').textContent = 'Order לא נמצא';
+    }
+
+    if (!d.recentDetails?.length) {
+      document.getElementById('soDiagTraceBody').innerHTML = emptyRow(6, 'אין rows ב-Details עבור ההזמנה');
+      return;
+    }
+
+    document.getElementById('soDiagTraceBody').innerHTML = d.recentDetails.map(x =>
+      '<tr><td>' + (x.detailId ?? '-') + '</td>' +
+      '<td>' + (x.orderId ?? '-') + '</td>' +
+      '<td>' + fmt(x.dateInsert) + '</td>' +
+      '<td>' + (x.isProcessedCallback == null ? '-' : x.isProcessedCallback ? statusBadge('s-green', 'Yes') : statusBadge('s-yellow', 'No')) + '</td>' +
+      '<td>' + esc(x.error || '-') + '</td>' +
+      '<td>' + esc(x.errorMessage || '-') + '</td></tr>'
+    ).join('');
+  } catch (err) {
+    document.getElementById('soDiagTraceSummary').textContent = 'שגיאה בטעינת trace: ' + err.message;
+    document.getElementById('soDiagTraceBody').innerHTML = emptyRow(6, 'שגיאה: ' + err.message);
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════════
 //  RENDER: Reservations Panel
 // ══════════════════════════════════════════════════════════════════════
 function renderReservations(d) {
@@ -1738,7 +2018,9 @@ async function toggleThresholds() {
       queueErrorThreshold: 'שגיאות Queue', cancelErrorSpikeThreshold: 'שגיאות ביטול',
       wasteRoomThreshold: 'חדרים לא נמכרו', buyRoomsDownMinutes: 'BuyRooms down (דקות)',
       pushFailureThreshold: 'Push failures', priceDriftAnomalyThreshold: 'Price Drift anomaly',
-      backOfficeErrorThreshold: 'BackOffice errors'
+      backOfficeErrorThreshold: 'BackOffice errors',
+      salesOfficeRunningNoResultHours: 'SO running ללא תוצאה (שעות)',
+      salesOfficeRunningNoResultThreshold: 'SO running ללא תוצאה (כמות)'
     };
     let html = '';
     for (const [key, label] of Object.entries(labels)) {
@@ -2198,6 +2480,7 @@ async function loadData() {
 
     // Auto-load panels data in background
     loadAzureHealth().catch(()=>{});
+    loadSalesOrderDiagnostics().catch(()=>{});
     loadBI('today').catch(()=>{});
     loadAlerts().catch(()=>{});
     loadLogs().catch(()=>{});

@@ -13,7 +13,8 @@ public class DatabaseHealthService
 
     public DatabaseHealthService(IConfiguration config, ILogger<DatabaseHealthService> logger)
     {
-        _connStr = config.GetConnectionString("SqlServer") ?? "";
+        _connStr = config.GetConnectionString("SqlServer")
+            ?? throw new InvalidOperationException("Missing SqlServer connection string");
         _logger = logger;
     }
 
@@ -120,7 +121,7 @@ public class DatabaseHealthService
                 LogicalReads = rdr.IsDBNull(5) ? 0 : rdr.GetInt64(5),
                 LogicalWrites = rdr.IsDBNull(6) ? 0 : rdr.GetInt64(6),
                 WaitType = rdr.IsDBNull(7) ? null : rdr.GetString(7),
-                SqlText = rdr.IsDBNull(8) ? null : rdr.GetString(8)?.Substring(0, Math.Min(rdr.GetString(8)?.Length ?? 0, 200))
+                SqlText = rdr.IsDBNull(8) ? null : TruncateSqlText(rdr.GetString(8), 200)
             });
         }
     }
@@ -223,6 +224,12 @@ public class DatabaseHealthService
             var value = rdr.IsDBNull(1) ? 0 : rdr.GetInt64(1);
             r.PerformanceCounters[name] = value;
         }
+    }
+
+    private static string? TruncateSqlText(string? text, int maxLength)
+    {
+        if (text == null) return null;
+        return text.Length <= maxLength ? text : text.Substring(0, maxLength);
     }
 
     private async Task Safe(Func<Task> action)

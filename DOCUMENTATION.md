@@ -32,7 +32,7 @@
 - **ניטור Azure** — Health checks לכל ה-APIs, סטטוס משאבים, התראות
 - **חירום** — הערכת סיכונים, פעולות חירום
 - **היסטוריה** — Snapshots כל 15 דקות, מגמות, דוחות ביצועים
-- **התראות** — 7 כללי התראה אוטומטיים
+- **התראות** — מנוע התראות מורחב עם חוקים עסקיים + שליחה לערוצי התראה
 - **Logging** — In-memory ring buffer + rolling file
 
 **קריאה בלבד** — המערכת רק קוראת מ-DB, לא כותבת, ולא משפיעה על הקוד הקיים.
@@ -56,7 +56,8 @@
 │  queries)   │  checks)  │  analytics│                   │
 ├─────────────┼───────────┼───────────┼───────────────────┤
 │ Historical  │ Alerting  │ InMemory  │                   │
-│ (Snapshots) │ (7 Rules) │ LogProv.  │                   │
+│ (Snapshots) │ (Rules +  │ LogProv.  │                   │
+│             │ Notify)   │           │                   │
 └──────┬──────┴─────┬─────┴───────────┴───────────────────┘
        │            │
        ▼            ▼
@@ -209,7 +210,7 @@ MediciMonitor/
 
 ### 4.6 AlertingService (Services/AlertingService.cs)
 
-> **תפקיד:** 7 כללי התראה עם severity.
+> **תפקיד:** מנוע כללי התראה עם severity + ניתוב התראות ל-Email/Slack/Teams/Webhook.
 
 | Rule ID | Title | Condition | Severity |
 |---------|-------|-----------|----------|
@@ -217,7 +218,9 @@ MediciMonitor/
 | API_DOWN | API Down | Endpoints לא פעילים | Critical |
 | SLOW_API | Slow APIs | Response > 5 שניות | Warning |
 | STUCK_CANCEL | Stuck | > 10 תקועות | Warning |
+| CANCEL_RETRY_LOOP | Retry Loop | אותה קבוצה נכשלת שוב ושוב בטווח זמן קצר | Critical |
 | ERR_SPIKE | Error Spike | > 5 שגיאות/שעה | Warning |
+| SOLD_CANCEL_RISK | Sold Cancel Risk | הזמנות Sold שמגיעות/עברו Deadline ללא Cancel | Warning/Critical |
 | NO_BOOKINGS | No Bookings | 0 הזמנות בשעות עבודה | Info |
 | QUEUE_ERR | Queue Errors | > 3 שגיאות Queue/שעה | Warning |
 
@@ -241,6 +244,8 @@ MediciMonitor/
 | Method | Route | תיאור |
 |--------|-------|--------|
 | GET | `/api/status` | **Main endpoint** — כל ה-KPIs + רשימות מפורטות (16 queries) |
+| GET | `/api/salesorder/diagnostics` | מודול עצמאי ומלא ל-SalesOrder: Pipeline stages, Mapping gaps, breakdown סיבות, Throughput 24h |
+| GET | `/api/salesorder/trace/{orderId}` | Trace מלא להזמנה בודדת: סטטוס הזמנה, counters, ורשומות callbacks אחרונות |
 
 ### Azure Monitoring
 | Method | Route | תיאור |
@@ -273,6 +278,13 @@ MediciMonitor/
 |--------|-------|--------|
 | GET | `/api/alerts` | כל ההתראות הפעילות |
 | GET | `/api/alerts/summary` | התראות + סיכום טקסט |
+
+### Notifications
+| Method | Route | תיאור |
+|--------|-------|--------|
+| GET | `/api/notifications/config` | קבלת קונפיגורציית ערוצי התראה |
+| PUT | `/api/notifications/config` | עדכון ערוצי התראה (SMTP/Slack/Teams/Webhook) |
+| POST | `/api/notifications/test` | שליחת הודעת בדיקה לכל ערוץ פעיל |
 
 ### Logs
 | Method | Route | תיאור |

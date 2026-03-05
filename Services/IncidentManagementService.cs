@@ -19,7 +19,7 @@ public class IncidentManagementService
         var baseDir = Directory.Exists("/home") ? "/home/MediciMonitor"
             : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MediciMonitor");
         _storePath = Path.Combine(baseDir, "Incidents");
-        try { Directory.CreateDirectory(_storePath); } catch { _storePath = Path.GetTempPath(); }
+        try { Directory.CreateDirectory(_storePath); } catch (Exception ex) { _logger.LogWarning("Failed to create incident store: {Err}, using temp", ex.Message); _storePath = Path.GetTempPath(); }
         LoadFromDisk();
     }
 
@@ -201,11 +201,11 @@ public class IncidentManagementService
                         if (incident.Id >= _nextId) _nextId = incident.Id + 1;
                     }
                 }
-                catch { /* skip corrupt */ }
+                catch (Exception ex) { _logger.LogDebug("Skipping corrupt incident file: {Err}", ex.Message); }
             }
             _logger.LogInformation("Loaded {Count} incidents from disk", _incidents.Count);
         }
-        catch { /* no history */ }
+        catch (Exception ex) { _logger.LogDebug("No incident history loaded: {Err}", ex.Message); }
     }
 }
 

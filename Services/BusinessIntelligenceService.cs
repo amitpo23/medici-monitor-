@@ -111,7 +111,7 @@ public class BusinessIntelligenceService
                 if (c > max) { max = c; m.PeakHour = h; }
             }
         }
-        catch { /* swallow */ }
+        catch (Exception ex) { _logger.LogDebug("Hourly breakdown query failed: {Err}", ex.Message); }
     }
 
     private async Task GatherTopErrors(SqlConnection conn, DateTime start, DateTime end, BIMetrics m)
@@ -130,7 +130,7 @@ public class BusinessIntelligenceService
             while (await rdr.ReadAsync())
                 m.TopErrors.Add($"{rdr.GetString(0)}: {rdr.GetInt32(1)}x");
         }
-        catch { /* swallow */ }
+        catch (Exception ex) { _logger.LogDebug("Top errors query failed: {Err}", ex.Message); }
     }
 
     // ── Predictions ──────────────────────────────────────────────
