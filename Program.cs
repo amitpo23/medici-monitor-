@@ -21,6 +21,7 @@ builder.Services.AddSingleton<DatabaseHealthService>();
 builder.Services.AddSingleton<SlaTrackingService>();
 builder.Services.AddSingleton<AuditService>();
 builder.Services.AddSingleton<IncidentManagementService>();
+builder.Services.AddSingleton<FailSafeService>();
 builder.Services.AddHostedService<AlertNotificationService>();
 builder.Services.AddCors(o => o.AddDefaultPolicy(p => p.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader()));
 
@@ -331,6 +332,93 @@ app.MapGet("/api/logs/export/json", (HttpContext ctx) =>
     var search = ctx.Request.Query["search"].FirstOrDefault();
     int? last = int.TryParse(ctx.Request.Query["last"].FirstOrDefault(), out var n) ? n : null;
     return Results.Text(buf.ExportJson(level, category, search, last), "application/json");
+});
+
+// ═══════════════════════════════════════════════════════════════
+//  Fail-Safe & Kill-Switch
+// ═══════════════════════════════════════════════════════════════
+app.MapGet("/api/failsafe/scan", async (FailSafeService svc, AuditService audit, HttpContext ctx) =>
+{
+    audit.RecordFromHttp(ctx, "FailSafeScan");
+    return Results.Ok(await svc.ScanAsync());
+});
+
+app.MapGet("/api/failsafe/status", (FailSafeService svc) =>
+{
+    var last = svc.GetLastScan();
+    if (last != null) return Results.Ok(last);
+    return Results.Ok(new { status = "NO_SCAN_YET", message = "No scan has been performed yet" });
+});
+
+app.MapGet("/api/failsafe/breakers", (FailSafeService svc) =>
+    Results.Ok(svc.GetBreakers()));
+
+app.MapPost("/api/failsafe/breaker/{name}/trip", (FailSafeService svc, string name, HttpContext ctx) =>
+{
+    var reason = ctx.Request.Query["reason"].FirstOrDefault() ?? "Manual trip";
+    var actor = ctx.Request.Query["actor"].FirstOrDefault() ?? "Operator";
+    var result = svc.TripBreaker(name, reason, actor);
+    return result != null ? Results.Ok(result) : Results.NotFound(new { error = $"Breaker '{name}' not found" });
+});
+
+app.MapPost("/api/failsafe/breaker/{name}/reset", (FailSafeService svc, string name, HttpContext ctx) =>
+{
+    var actor = ctx.Request.Query["actor"].FirstOrDefault() ?? "Operator";
+    var result = svc.ResetBreaker(name, actor);
+    return result != null ? Results.Ok(result) : Results.NotFound(new { error = $"Breaker '{name}' not found" });
+});
+
+app.MapPost("/api/failsafe/kill-switch", (FailSafeService svc, HttpContext ctx) =>
+{
+    var reason = ctx.Request.Query["reason"].FirstOrDefault() ?? "Emergency kill switch";
+    var actor = ctx.Request.Query["actor"].FirstOrDefault() ?? "Operator";
+    svc.TripAll(reason, actor);
+    return Results.Ok(new { success = true, message = "ALL circuit breakers tripped", reason, actor });
+});
+
+app.MapPost("/api/failsafe/reset-all", (FailSafeService svc, HttpContext ctx) =>
+{
+    var actor = ctx.Request.Query["actor"].FirstOrDefault() ?? "Operator";
+    svc.ResetAll(actor);
+    return Results.Ok(new { success = true, message = "All circuit breakers reset", actor });
+});
+
+app.MapGet("/api/failsafe/flagged", (FailSafeService svc, HttpContext ctx) =>
+{
+    var status = ctx.Request.Query["status"].FirstOrDefault();
+    return Results.Ok(svc.GetFlaggedItems(status));
+});
+
+app.MapPost("/api/failsafe/flagged/{id:int}/approve", (FailSafeService svc, int id, HttpContext ctx) =>
+{
+    var actor = ctx.Request.Query["actor"].FirstOrDefault() ?? "Operator";
+    var result = svc.ApproveFlag(id, actor);
+    return result != null ? Results.Ok(result) : Results.NotFound(new { error = "Flag not found" });
+});
+
+app.MapPost("/api/failsafe/flagged/{id:int}/reject", (FailSafeService svc, int id, HttpContext ctx) =>
+{
+    var actor = ctx.Request.Query["actor"].FirstOrDefault() ?? "Operator";
+    var note = ctx.Request.Query["note"].FirstOrDefault();
+    var result = svc.RejectFlag(id, actor, note);
+    return result != null ? Results.Ok(result) : Results.NotFound(new { error = "Flag not found" });
+});
+
+app.MapGet("/api/failsafe/history", (FailSafeService svc, HttpContext ctx) =>
+{
+    int last = int.TryParse(ctx.Request.Query["last"].FirstOrDefault(), out var n) ? n : 100;
+    return Results.Ok(svc.GetTriggerHistory(last));
+});
+
+app.MapGet("/api/failsafe/config", (FailSafeService svc) =>
+    Results.Ok(svc.Config));
+
+app.MapPut("/api/failsafe/config", async (FailSafeService svc, HttpContext ctx) =>
+{
+    var config = await ctx.Request.ReadFromJsonAsync<FailSafeConfig>();
+    if (config == null) return Results.BadRequest("Invalid config");
+    svc.Config = config;
+    return Results.Ok(new { success = true, config = svc.Config });
 });
 
 // ── Dashboard ──

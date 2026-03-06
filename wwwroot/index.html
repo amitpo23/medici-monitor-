@@ -230,6 +230,7 @@ td.log-msg{white-space:pre-wrap;word-break:break-word;max-width:600px;font-famil
   <div class="nav-tab" data-nav="incidents">&#x1F6A8; אירועים <span class="count yellow" id="navIncidentCount" style="display:none">0</span></div>
   <div class="nav-tab" data-nav="audit">&#x1F4CB; Audit</div>
   <div class="nav-tab" data-nav="notifications">&#x1F4E7; התראות חיצוניות</div>
+  <div class="nav-tab" data-nav="failsafe">&#x1F6D1; Kill Switch <span class="count red" id="navFailSafeCount" style="display:none">0</span></div>
   <div class="nav-tab" data-nav="logs">&#x1F4DC; Logs <span class="count blue" id="navLogCount">0</span></div>
 </div>
 
@@ -1027,6 +1028,85 @@ td.log-msg{white-space:pre-wrap;word-break:break-word;max-width:600px;font-famil
         <thead style="position:sticky;top:0;z-index:1"><tr><th style="width:160px">זמן</th><th style="width:90px">Level</th><th style="width:140px">קטגוריה</th><th>הודעה</th></tr></thead>
         <tbody id="logBody"><tr class="empty-row"><td colspan="4">לחץ "חפש" או המתן...</td></tr></tbody>
       </table>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!--  PANEL: Fail-Safe & Kill Switch                                   -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<div class="nav-panel" id="panel-failsafe">
+
+  <!-- Kill Switch Banner -->
+  <div id="fsKillBanner" style="display:none;background:linear-gradient(135deg,#b71c1c,#d32f2f);border-radius:12px;padding:20px;margin-bottom:16px;text-align:center">
+    <div style="font-size:28px;font-weight:800;margin-bottom:8px">🚨 KILL SWITCH ACTIVE</div>
+    <div style="font-size:14px;opacity:.9" id="fsKillBannerMsg">כל הפעולות מוקפאות — דרוש אישור ידני</div>
+  </div>
+
+  <!-- Status + Big Buttons -->
+  <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px;align-items:center">
+    <button onclick="failsafeScan()" style="background:var(--blue);color:#fff;border:none;padding:10px 20px;border-radius:8px;cursor:pointer;font-weight:700;font-size:14px">🔍 סרוק עכשיו</button>
+    <button onclick="if(confirm('⚠️ האם להפעיל KILL SWITCH? כל הפעולות ייעצרו!'))failsafeKillAll()" style="background:#b71c1c;color:#fff;border:none;padding:10px 20px;border-radius:8px;cursor:pointer;font-weight:700;font-size:14px">🛑 KILL SWITCH — עצור הכל</button>
+    <button onclick="if(confirm('שחרר את כל ה-breakers?'))failsafeResetAll()" style="background:var(--green);color:#000;border:none;padding:10px 20px;border-radius:8px;cursor:pointer;font-weight:700;font-size:14px">✅ שחרר הכל</button>
+    <span style="flex:1"></span>
+    <span id="fsScanStatus" style="font-size:12px;color:var(--text2)">לא נסרק עדיין</span>
+  </div>
+
+  <!-- Circuit Breakers -->
+  <div class="section">
+    <div class="section-header"><h2>⚡ Circuit Breakers</h2></div>
+    <div id="fsBreakersGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;padding:16px">
+      <div class="card"><div class="label">טוען...</div><div class="value"><div class="spinner"></div></div></div>
+    </div>
+  </div>
+
+  <!-- Violations -->
+  <div class="section">
+    <div class="section-header"><h2>🚨 הפרות Fail-Safe</h2> <span id="fsViolationCount" style="font-size:12px;color:var(--text2)">0 הפרות</span></div>
+    <div id="fsViolationsArea" style="padding:16px">
+      <div style="color:var(--text2);font-size:13px">לחץ "סרוק עכשיו" לבדיקת כללים</div>
+    </div>
+  </div>
+
+  <!-- Flagged Items (Pending Approval) -->
+  <div class="section">
+    <div class="section-header"><h2>⏳ ממתינים לאישור</h2> <span id="fsPendingCount" style="font-size:12px;color:var(--yellow)">0 ממתינים</span></div>
+    <div style="overflow-x:auto;max-height:500px;overflow-y:auto">
+      <table>
+        <thead style="position:sticky;top:0;z-index:1">
+          <tr><th style="width:50px">#</th><th>כלל</th><th>הזמנה</th><th>סיבה</th><th>סכום</th><th>מלון</th><th>זמן</th><th style="width:140px">פעולה</th></tr>
+        </thead>
+        <tbody id="fsFlaggedBody"><tr class="empty-row"><td colspan="8">אין פריטים ממתינים</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Trigger History -->
+  <div class="section">
+    <div class="section-header"><h2>📋 היסטוריית פעולות</h2>
+      <button onclick="loadFailsafeHistory()" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);padding:4px 12px;border-radius:6px;cursor:pointer;font-size:12px">↻ רענן</button>
+    </div>
+    <div style="overflow-x:auto;max-height:400px;overflow-y:auto">
+      <table>
+        <thead style="position:sticky;top:0;z-index:1">
+          <tr><th style="width:150px">זמן</th><th>פעולה</th><th>יעד</th><th>פרטים</th><th>מבצע</th></tr>
+        </thead>
+        <tbody id="fsHistoryBody"><tr class="empty-row"><td colspan="5">אין היסטוריה</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Configuration -->
+  <div class="section">
+    <div class="section-header"><h2>⚙️ הגדרות Fail-Safe</h2>
+      <button onclick="toggleFsConfig()" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);padding:4px 12px;border-radius:6px;cursor:pointer;font-size:12px">הצג/הסתר</button>
+    </div>
+    <div id="fsConfigArea" style="display:none;padding:16px">
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px" id="fsConfigGrid"></div>
+      <div style="margin-top:12px;display:flex;gap:8px">
+        <button onclick="saveFailsafeConfig()" style="background:var(--blue);color:#fff;border:none;padding:8px 16px;border-radius:6px;cursor:pointer;font-weight:600">💾 שמור הגדרות</button>
+        <span id="fsConfigStatus" style="font-size:12px;color:var(--green);align-self:center"></span>
+      </div>
     </div>
   </div>
 </div>
@@ -2669,6 +2749,232 @@ function fmtLog(d) {
 toggleLogAutoRefresh();
 
 // ══════════════════════════════════════════════════════════════════════
+//  FAIL-SAFE & KILL SWITCH
+// ══════════════════════════════════════════════════════════════════════
+let FS_DATA = null;
+
+async function failsafeScan() {
+  document.getElementById('fsScanStatus').textContent = 'סורק...';
+  try {
+    const resp = await fetch('/api/failsafe/scan');
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    FS_DATA = await resp.json();
+    renderFailsafe(FS_DATA);
+    document.getElementById('fsScanStatus').textContent = 'סריקה אחרונה: ' + new Date(FS_DATA.timestamp).toLocaleTimeString('he-IL');
+  } catch(e) {
+    document.getElementById('fsScanStatus').textContent = 'שגיאה: ' + e.message;
+  }
+}
+
+async function failsafeKillAll() {
+  try {
+    await fetch('/api/failsafe/kill-switch', {method:'POST'});
+    failsafeScan();
+  } catch(e) { alert('שגיאה: ' + e.message); }
+}
+
+async function failsafeResetAll() {
+  try {
+    await fetch('/api/failsafe/reset-all', {method:'POST'});
+    failsafeScan();
+  } catch(e) { alert('שגיאה: ' + e.message); }
+}
+
+async function fsTrip(name) {
+  var reason = prompt('סיבת הקפאה:');
+  if (!reason) return;
+  await fetch('/api/failsafe/breaker/' + name + '/trip?reason=' + encodeURIComponent(reason), {method:'POST'});
+  failsafeScan();
+}
+
+async function fsReset(name) {
+  await fetch('/api/failsafe/breaker/' + name + '/reset', {method:'POST'});
+  failsafeScan();
+}
+
+async function fsApprove(id) {
+  await fetch('/api/failsafe/flagged/' + id + '/approve', {method:'POST'});
+  failsafeScan();
+}
+
+async function fsReject(id) {
+  var note = prompt('סיבת דחייה (אופציונלי):') || '';
+  await fetch('/api/failsafe/flagged/' + id + '/reject?note=' + encodeURIComponent(note), {method:'POST'});
+  failsafeScan();
+}
+
+async function loadFailsafeHistory() {
+  try {
+    const resp = await fetch('/api/failsafe/history?last=100');
+    const data = await resp.json();
+    renderFsHistory(data);
+  } catch(e) {}
+}
+
+function toggleFsConfig() {
+  var el = document.getElementById('fsConfigArea');
+  el.style.display = el.style.display === 'none' ? 'block' : 'none';
+  if (el.style.display === 'block' && FS_DATA && FS_DATA.config) renderFsConfig(FS_DATA.config);
+}
+
+async function saveFailsafeConfig() {
+  var cfg = {};
+  document.querySelectorAll('#fsConfigGrid input, #fsConfigGrid select').forEach(inp => {
+    var k = inp.dataset.key;
+    if (!k) return;
+    if (inp.type === 'checkbox') cfg[k] = inp.checked;
+    else if (inp.type === 'number') cfg[k] = parseFloat(inp.value) || 0;
+    else cfg[k] = inp.value;
+  });
+  try {
+    const resp = await fetch('/api/failsafe/config', {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(cfg)});
+    if (resp.ok) document.getElementById('fsConfigStatus').textContent = '✅ נשמר!';
+    else document.getElementById('fsConfigStatus').textContent = '❌ שגיאה';
+    setTimeout(()=>{document.getElementById('fsConfigStatus').textContent='';},3000);
+  } catch(e) { document.getElementById('fsConfigStatus').textContent = '❌ ' + e.message; }
+}
+
+function renderFailsafe(d) {
+  // Kill banner
+  var openBreakers = (d.breakers || []).filter(b => b.isOpen);
+  var banner = document.getElementById('fsKillBanner');
+  if (openBreakers.length === (d.breakers||[]).length && openBreakers.length > 0) {
+    banner.style.display = 'block';
+    document.getElementById('fsKillBannerMsg').textContent = (openBreakers[0] && openBreakers[0].reason) || 'כל הפעולות מוקפאות';
+  } else {
+    banner.style.display = 'none';
+  }
+
+  // Nav badge
+  var violations = d.violations || [];
+  var pending = (d.flaggedItems || []).filter(f => f.status === 'Pending');
+  var badgeCount = violations.length + openBreakers.length;
+  var navBadge = document.getElementById('navFailSafeCount');
+  if (badgeCount > 0) { navBadge.textContent = badgeCount; navBadge.style.display = 'inline'; }
+  else navBadge.style.display = 'none';
+
+  // Circuit Breakers
+  var grid = document.getElementById('fsBreakersGrid');
+  grid.innerHTML = (d.breakers || []).map(b => {
+    var statusColor = b.isOpen ? 'var(--red)' : 'var(--green)';
+    var statusText = b.isOpen ? '🔴 מוקפא' : '🟢 פעיל';
+    var btnHtml = b.isOpen
+      ? '<button onclick="fsReset(\'' + b.name + '\')" style="background:var(--green);color:#000;border:none;padding:4px 12px;border-radius:4px;cursor:pointer;font-size:11px;font-weight:600">שחרר</button>'
+      : '<button onclick="fsTrip(\'' + b.name + '\')" style="background:var(--red);color:#fff;border:none;padding:4px 12px;border-radius:4px;cursor:pointer;font-size:11px;font-weight:600">הקפא</button>';
+    var infoHtml = '';
+    if (b.isOpen && b.reason) infoHtml = '<div style="font-size:10px;color:var(--yellow);margin-top:4px">' + esc(b.reason) + '</div>';
+    if (b.isOpen && b.openedAt) infoHtml += '<div style="font-size:10px;color:var(--text2)">מאז: ' + new Date(b.openedAt).toLocaleTimeString('he-IL') + '</div>';
+
+    return '<div style="background:var(--surface2);border:2px solid ' + statusColor + ';border-radius:10px;padding:14px;text-align:center">' +
+      '<div style="font-size:13px;font-weight:700;margin-bottom:4px">' + esc(b.label) + '</div>' +
+      '<div style="font-size:16px;font-weight:800;color:' + statusColor + '">' + statusText + '</div>' +
+      infoHtml +
+      '<div style="margin-top:8px">' + btnHtml + '</div></div>';
+  }).join('');
+
+  // Violations
+  var vArea = document.getElementById('fsViolationsArea');
+  document.getElementById('fsViolationCount').textContent = violations.length + ' הפרות';
+  if (!violations.length) {
+    vArea.innerHTML = '<div style="color:var(--green);font-size:14px;text-align:center;padding:20px">✅ אין הפרות — המערכת בטווח בטוח</div>';
+  } else {
+    vArea.innerHTML = violations.map(v => {
+      var sevColor = v.severity === 'Critical' ? 'var(--red)' : 'var(--yellow)';
+      var sevIcon = v.severity === 'Critical' ? '🚨' : '⚠️';
+      var detailsHtml = (v.details || []).map(d =>
+        '<div style="font-size:12px;padding:4px 0;border-bottom:1px solid var(--border)">' + esc(d.detail) + '</div>'
+      ).join('');
+      return '<div style="background:var(--surface2);border-right:4px solid ' + sevColor + ';border-radius:8px;padding:14px;margin-bottom:10px">' +
+        '<div style="display:flex;justify-content:space-between;align-items:center">' +
+          '<div><span style="font-size:16px">' + sevIcon + '</span> <strong>' + esc(v.ruleName) + '</strong> <span style="font-size:11px;background:' + sevColor + ';color:#000;padding:2px 6px;border-radius:4px;font-weight:700">' + v.severity + '</span></div>' +
+          '<div style="font-size:12px;color:var(--text2)">' + v.count + ' פריטים</div>' +
+        '</div>' +
+        '<div style="font-size:13px;margin-top:6px;color:var(--text)">' + esc(v.description) + '</div>' +
+        (v.suggestedAction ? '<div style="font-size:11px;margin-top:4px;color:var(--blue)">פעולה מומלצת: ' + esc(v.suggestedAction) + '</div>' : '') +
+        (detailsHtml ? '<div style="margin-top:8px;max-height:200px;overflow-y:auto">' + detailsHtml + '</div>' : '') +
+      '</div>';
+    }).join('');
+  }
+
+  // Flagged items
+  var flagBody = document.getElementById('fsFlaggedBody');
+  document.getElementById('fsPendingCount').textContent = pending.length + ' ממתינים';
+  if (!pending.length) {
+    flagBody.innerHTML = '<tr class="empty-row"><td colspan="8">אין פריטים ממתינים לאישור</td></tr>';
+  } else {
+    flagBody.innerHTML = pending.map(f => {
+      return '<tr>' +
+        '<td>' + f.id + '</td>' +
+        '<td><span style="font-size:11px;background:var(--surface2);padding:2px 6px;border-radius:4px">' + esc(f.ruleId) + '</span></td>' +
+        '<td>' + (f.preBookId || '-') + '</td>' +
+        '<td style="font-size:12px">' + esc(f.reason) + '</td>' +
+        '<td style="font-weight:600">' + (f.amount ? '$' + Math.round(f.amount).toLocaleString() : '-') + '</td>' +
+        '<td>' + esc(f.hotelName || '-') + '</td>' +
+        '<td style="font-size:11px">' + new Date(f.flaggedAt).toLocaleTimeString('he-IL') + '</td>' +
+        '<td>' +
+          '<button onclick="fsApprove(' + f.id + ')" style="background:var(--green);color:#000;border:none;padding:3px 8px;border-radius:4px;cursor:pointer;font-size:11px;font-weight:600;margin-left:4px">✅ אשר</button>' +
+          '<button onclick="fsReject(' + f.id + ')" style="background:var(--red);color:#fff;border:none;padding:3px 8px;border-radius:4px;cursor:pointer;font-size:11px;font-weight:600">❌ דחה</button>' +
+        '</td></tr>';
+    }).join('');
+  }
+
+  // Load history too
+  loadFailsafeHistory();
+}
+
+function renderFsHistory(data) {
+  var body = document.getElementById('fsHistoryBody');
+  if (!data || !data.length) { body.innerHTML = '<tr class="empty-row"><td colspan="5">אין היסטוריה</td></tr>'; return; }
+  body.innerHTML = data.map(t => {
+    var actionColor = t.action.includes('TRIP') || t.action.includes('KILL') ? 'var(--red)' :
+                     t.action.includes('RESET') || t.action.includes('APPROVED') ? 'var(--green)' :
+                     t.action.includes('REJECT') ? 'var(--yellow)' : 'var(--text)';
+    return '<tr>' +
+      '<td style="font-size:11px">' + new Date(t.timestamp).toLocaleString('he-IL') + '</td>' +
+      '<td style="color:' + actionColor + ';font-weight:600;font-size:12px">' + esc(t.action) + '</td>' +
+      '<td>' + esc(t.target) + '</td>' +
+      '<td style="font-size:12px">' + esc(t.detail) + '</td>' +
+      '<td>' + esc(t.actor) + '</td></tr>';
+  }).join('');
+}
+
+function renderFsConfig(cfg) {
+  var grid = document.getElementById('fsConfigGrid');
+  var fields = [
+    {key:'enabled', label:'מערכת מופעלת', type:'checkbox'},
+    {key:'autoTriggerBreakers', label:'הפעלה אוטומטית של breakers', type:'checkbox'},
+    {key:'highValueBookingThreshold', label:'סף הזמנה גבוהה ($)', type:'number'},
+    {key:'autoFlagHighValue', label:'סמן אוטומטית הזמנות גבוהות', type:'checkbox'},
+    {key:'sellBelowCostEnabled', label:'בדוק מכירה מתחת לעלות', type:'checkbox'},
+    {key:'sellBelowCostMinLoss', label:'הפסד מינימלי לסימון ($)', type:'number'},
+    {key:'sellBelowCostCriticalLoss', label:'הפסד קריטי ($)', type:'number'},
+    {key:'autoFlagSellBelowCost', label:'סמן אוטומטית מכירות בהפסד', type:'checkbox'},
+    {key:'spendSpikeThreshold', label:'סף זינוק הוצאות ($)', type:'number'},
+    {key:'spendSpikeWindowHours', label:'חלון זמן הוצאות (שעות)', type:'number'},
+    {key:'revenueLossStreakEnabled', label:'בדוק רצף הפסדים', type:'checkbox'},
+    {key:'revenueLossStreakDays', label:'ימים לבדיקת הפסדים', type:'number'},
+    {key:'revenueLossStreakMinCount', label:'מינימום מכירות בהפסד', type:'number'},
+    {key:'revenueLossStreakMinPercent', label:'אחוז הפסד מינימלי (%)', type:'number'},
+    {key:'priceDriftDangerPercent', label:'סחיפת מחיר מסוכנת (%)', type:'number'},
+    {key:'priceDriftDangerAbsolute', label:'סחיפה מוחלטת ($)', type:'number'},
+    {key:'runawayQueueThreshold', label:'סף תור חריג', type:'number'},
+    {key:'cancelStormThreshold', label:'סף סופת ביטולים', type:'number'},
+    {key:'cancelStormWindowHours', label:'חלון ביטולים (שעות)', type:'number'},
+    {key:'duplicateBookingEnabled', label:'בדוק הזמנות כפולות', type:'checkbox'}
+  ];
+  grid.innerHTML = fields.map(f => {
+    var val = cfg[f.key];
+    var inputHtml = '';
+    if (f.type === 'checkbox') {
+      inputHtml = '<input type="checkbox" data-key="' + f.key + '" ' + (val ? 'checked' : '') + ' style="width:18px;height:18px">';
+    } else {
+      inputHtml = '<input type="number" data-key="' + f.key + '" value="' + (val||0) + '" style="background:var(--bg);color:var(--text);border:1px solid var(--border);padding:6px 10px;border-radius:6px;width:120px;font-size:13px">';
+    }
+    return '<div style="display:flex;align-items:center;gap:8px;padding:6px 0">' + inputHtml + '<span style="font-size:12px">' + f.label + '</span></div>';
+  }).join('');
+}
+
+// ══════════════════════════════════════════════════════════════════════
 //  MAIN: Load Data
 // ══════════════════════════════════════════════════════════════════════
 async function loadData() {
@@ -2693,6 +2999,7 @@ async function loadData() {
     loadLogs().catch(()=>{});
     loadSla().catch(()=>{});
     loadIncidents().catch(()=>{});
+    failsafeScan().catch(()=>{});
 
     document.getElementById('lastUpdate').textContent = 'עדכון אחרון: ' + fmtNow() + (D.dbConnected ? '' : ' [DB ERROR]');
   } catch(err) {
