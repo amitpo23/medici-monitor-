@@ -15,8 +15,12 @@ public class DataService
 
     public DataService(IConfiguration config, ILogger<DataService> logger)
     {
-        _connStr = config.GetConnectionString("SqlServer")
+        var cs = config.GetConnectionString("SqlServer")
             ?? throw new InvalidOperationException("Missing SqlServer connection string");
+        // Ensure MARS is enabled for multiple queries on same connection
+        if (!cs.Contains("MultipleActiveResultSets", StringComparison.OrdinalIgnoreCase))
+            cs += ";MultipleActiveResultSets=true";
+        _connStr = cs;
         _soRunningNoResultHours = config.GetValue<int?>("AlertThresholds:SalesOfficeRunningNoResultHours") ?? 2;
         _soScanStuckMinutes = config.GetValue<int?>("AlertThresholds:SalesOfficeScanStuckMinutes") ?? 30;
         _logger = logger;
@@ -102,9 +106,12 @@ public class DataService
             var roomColumn = detailsTable != null
                 ? await ResolveFirstExistingColumn(conn, detailsTable, ["RoomTypeCode", "RoomType", "RoomName", "Room", "RoomId"])
                 : null;
+            var detailOrderFk = detailsTable != null
+                ? await ResolveFirstExistingColumn(conn, detailsTable, ["OrderId", "SalesOfficeOrderId", "Order_Id", "SalesOrderId", "FK_OrderId"])
+                : null;
 
             string detailCte;
-            if (detailsTable != null)
+            if (detailsTable != null && detailOrderFk != null)
             {
                 var unprocessedExpr = hasProcessedCallback
                     ? "SUM(CASE WHEN ISNULL(IsProcessedCallback, 0) = 0 THEN 1 ELSE 0 END)"
@@ -116,12 +123,12 @@ public class DataService
                         : "0";
                 detailCte = $@";WITH d AS (
                     SELECT
-                        OrderId,
+                        [{detailOrderFk}] AS OrderId,
                         COUNT(*) AS DetailCount,
                         {unprocessedExpr} AS UnprocessedCount,
                         {errorExpr} AS ErrorCount
                     FROM {detailsTable}
-                    GROUP BY OrderId
+                    GROUP BY [{detailOrderFk}]
                 )";
             }
             else
@@ -136,11 +143,11 @@ public class DataService
                 ? "DATEDIFF(MINUTE, o.DateInsert, GETDATE())"
                 : "NULL";
             var orderDateSelect = hasOrderDateInsert ? "o.DateInsert" : "NULL";
-            var supplierExpr = detailsTable != null && supplierColumn != null
-                ? $"(SELECT TOP 1 CAST(x.[{supplierColumn}] AS NVARCHAR(200)) FROM {detailsTable} x WHERE x.OrderId = o.Id AND x.[{supplierColumn}] IS NOT NULL AND LTRIM(RTRIM(CAST(x.[{supplierColumn}] AS NVARCHAR(200)))) <> '' GROUP BY CAST(x.[{supplierColumn}] AS NVARCHAR(200)) ORDER BY COUNT(*) DESC, CAST(x.[{supplierColumn}] AS NVARCHAR(200)))"
+            var supplierExpr = detailsTable != null && supplierColumn != null && detailOrderFk != null
+                ? $"(SELECT TOP 1 CAST(x.[{supplierColumn}] AS NVARCHAR(200)) FROM {detailsTable} x WHERE x.[{detailOrderFk}] = o.Id AND x.[{supplierColumn}] IS NOT NULL AND LTRIM(RTRIM(CAST(x.[{supplierColumn}] AS NVARCHAR(200)))) <> '' GROUP BY CAST(x.[{supplierColumn}] AS NVARCHAR(200)) ORDER BY COUNT(*) DESC, CAST(x.[{supplierColumn}] AS NVARCHAR(200)))"
                 : "NULL";
-            var roomExpr = detailsTable != null && roomColumn != null
-                ? $"(SELECT TOP 1 CAST(x.[{roomColumn}] AS NVARCHAR(200)) FROM {detailsTable} x WHERE x.OrderId = o.Id AND x.[{roomColumn}] IS NOT NULL AND LTRIM(RTRIM(CAST(x.[{roomColumn}] AS NVARCHAR(200)))) <> '' GROUP BY CAST(x.[{roomColumn}] AS NVARCHAR(200)) ORDER BY COUNT(*) DESC, CAST(x.[{roomColumn}] AS NVARCHAR(200)))"
+            var roomExpr = detailsTable != null && roomColumn != null && detailOrderFk != null
+                ? $"(SELECT TOP 1 CAST(x.[{roomColumn}] AS NVARCHAR(200)) FROM {detailsTable} x WHERE x.[{detailOrderFk}] = o.Id AND x.[{roomColumn}] IS NOT NULL AND LTRIM(RTRIM(CAST(x.[{roomColumn}] AS NVARCHAR(200)))) <> '' GROUP BY CAST(x.[{roomColumn}] AS NVARCHAR(200)) ORDER BY COUNT(*) DESC, CAST(x.[{roomColumn}] AS NVARCHAR(200)))"
                 : "NULL";
 
             var summarySql = $@"
@@ -210,16 +217,17 @@ public class DataService
                     if (lastProc != null && lastProc != DBNull.Value) r.LastProcessedCallbackAt = Convert.ToDateTime(lastProc);
                 }
 
+                var orderByFallback = hasDetailsDateInsert ? "DateInsert DESC" : hasDetailId ? "Id DESC" : detailOrderFk != null ? $"[{detailOrderFk}] DESC" : "1";
                 var scanLogSql = $@"
                     SELECT TOP 120
                         {(hasDetailId ? "Id" : "NULL")} AS DetailId,
-                        OrderId,
+                        {(detailOrderFk != null ? $"[{detailOrderFk}]" : "NULL")} AS OrderId,
                         {(hasDetailsDateInsert ? "DateInsert" : "NULL")} AS DateInsert,
                         {(hasProcessedCallback ? "IsProcessedCallback" : "NULL")} AS IsProcessedCallback,
                         {(hasErrCol ? "[Error]" : "NULL")} AS [Error],
                         {(hasErrMsgCol ? "[ErrorMessage]" : "NULL")} AS [ErrorMessage]
                     FROM {detailsTable}
-                    ORDER BY {(hasDetailsDateInsert ? "DateInsert DESC" : hasDetailId ? "Id DESC" : "OrderId DESC")}";
+                    ORDER BY {orderByFallback}";
 
                 using (var slcmd = new SqlCommand(scanLogSql, conn) { CommandTimeout = 15 })
                 using (var slr = await slcmd.ExecuteReaderAsync())
@@ -258,7 +266,7 @@ public class DataService
                             SELECT TOP 60
                                 d.HotelId,
                                 ISNULL(h.Name, N'Hotel ' + CAST(d.HotelId AS NVARCHAR(20))) AS HotelName,
-                                COUNT(DISTINCT d.OrderId) AS OrdersCount,
+                                COUNT(DISTINCT d.[{detailOrderFk}]) AS OrdersCount,
                                 COUNT(*) AS DetailsCount,
                                 {(hasProcessedCallback ? "SUM(CASE WHEN ISNULL(d.IsProcessedCallback,0)=0 THEN 1 ELSE 0 END)" : "0")} AS UnprocessedCount,
                                 {(hasErrCol ? "SUM(CASE WHEN d.[Error] IS NOT NULL AND d.[Error] <> '' THEN 1 ELSE 0 END)" : hasErrMsgCol ? "SUM(CASE WHEN d.[ErrorMessage] IS NOT NULL AND d.[ErrorMessage] <> '' THEN 1 ELSE 0 END)" : "0")} AS ErrorCount,
@@ -628,6 +636,9 @@ public class DataService
             var roomColumn = detailsTable != null
                 ? await ResolveFirstExistingColumn(conn, detailsTable, ["RoomTypeCode", "RoomType", "RoomName", "Room", "RoomId"])
                 : null;
+            var detailOrderFk = detailsTable != null
+                ? await ResolveFirstExistingColumn(conn, detailsTable, ["OrderId", "SalesOfficeOrderId", "Order_Id", "SalesOrderId", "FK_OrderId"])
+                : null;
 
             var orderSql = $@"
                 SELECT TOP 1
@@ -669,7 +680,7 @@ public class DataService
                         {(hasProcessedCallback ? "SUM(CASE WHEN ISNULL(IsProcessedCallback,0)=0 THEN 1 ELSE 0 END)" : "0")} AS UnprocessedCount,
                         {(hasErrCol ? "SUM(CASE WHEN [Error] IS NOT NULL AND [Error] <> '' THEN 1 ELSE 0 END)" : hasErrMsgCol ? "SUM(CASE WHEN [ErrorMessage] IS NOT NULL AND [ErrorMessage] <> '' THEN 1 ELSE 0 END)" : "0")} AS ErrorCount
                     FROM {detailsTable}
-                    WHERE OrderId = @id";
+                    WHERE {(detailOrderFk != null ? $"[{detailOrderFk}]" : "OrderId")} = @id";
 
                 using (var acmd = new SqlCommand(aggSql, conn))
                 {
@@ -686,7 +697,7 @@ public class DataService
                 var detailSql = $@"
                     SELECT TOP 100
                         {(hasDetailId ? "d.Id" : "NULL")} AS DetailId,
-                        d.OrderId,
+                        {(detailOrderFk != null ? $"d.[{detailOrderFk}]" : "NULL")} AS OrderId,
                         {(hasDetailsDateInsert ? "d.DateInsert" : "NULL")} AS DateInsert,
                         {(hasProcessedCallback ? "d.IsProcessedCallback" : "NULL")} AS IsProcessedCallback,
                         {(supplierColumn != null ? $"CAST(d.[{supplierColumn}] AS NVARCHAR(200))" : "NULL")} AS SupplierInfo,
@@ -694,8 +705,8 @@ public class DataService
                         {(hasErrCol ? "d.[Error]" : "NULL")} AS [Error],
                         {(hasErrMsgCol ? "d.[ErrorMessage]" : "NULL")} AS [ErrorMessage]
                     FROM {detailsTable} d
-                    WHERE d.OrderId = @id
-                    ORDER BY {(hasDetailsDateInsert ? "d.DateInsert DESC" : hasDetailId ? "d.Id DESC" : "d.OrderId DESC")}";
+                    WHERE d.{(detailOrderFk != null ? $"[{detailOrderFk}]" : "OrderId")} = @id
+                    ORDER BY {(hasDetailsDateInsert ? "d.DateInsert DESC" : hasDetailId ? "d.Id DESC" : detailOrderFk != null ? $"d.[{detailOrderFk}] DESC" : "1")}";
 
                 using var dcmd = new SqlCommand(detailSql, conn);
                 dcmd.Parameters.AddWithValue("@id", orderId);

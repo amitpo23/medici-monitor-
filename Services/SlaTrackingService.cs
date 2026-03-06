@@ -205,7 +205,7 @@ public class SlaTrackingService
             }
 
             // Recent incidents
-            report.RecentIncidents = _incidents.OrderByDescending(i => i.StartTime).Take(20).Cast<object>().ToList();
+            report.RecentIncidents = _incidents.OrderByDescending(i => i.StartTime).Take(20).ToList();
 
             return report;
         }
