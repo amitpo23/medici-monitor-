@@ -47,9 +47,34 @@ public class FailSafeService
     private readonly List<FailSafeTriggerEvent> _triggerHistory = new();
     private const int MaxTriggerHistory = 1000;
 
+    // ── Notification Cooldown ──
+    private readonly Dictionary<string, DateTime> _lastNotifiedPerRule = new();
+
+    // ── Daily Summary Counters ──
+    private int _dailyScans;
+    private int _dailyCritical;
+    private int _dailyWarning;
+    private int _dailyTrips;
+    private int _dailyFlagged;
+    private int _dailyApproved;
+    private int _dailyRejected;
+    private double _dailyAmountFlagged;
+    private readonly Dictionary<string, int> _dailyByRule = new();
+    private DateTime _dailyResetDate = DateTime.UtcNow.Date;
+    private DateTime _lastDailySummarySent = DateTime.MinValue;
+
+    // ── State Persistence ──
+    private readonly string _stateFilePath;
+    private DateTime _lastStateSave = DateTime.MinValue;
+    private static readonly TimeSpan StateSaveInterval = TimeSpan.FromMinutes(1);
+
     // ── Last scan cache ──
     private FailSafeScanResult? _lastScan;
     private DateTime _lastScanTime = DateTime.MinValue;
+
+    // ── Scan counter for background ──
+    public int ScanCount { get; private set; }
+    public DateTime? LastBackgroundScanTime { get; set; }
 
     public FailSafeService(IConfiguration config, ILogger<FailSafeService> logger, NotificationService? notifications = null)
     {
@@ -65,7 +90,88 @@ public class FailSafeService
         var section = config.GetSection("FailSafe");
         if (section.Exists())
             section.Bind(Config);
+
+        // State persistence file
+        _stateFilePath = Path.Combine(AppContext.BaseDirectory, "failsafe-state.json");
+        LoadPersistedState();
     }
+
+    // ── State Persistence Methods ──
+
+    private void LoadPersistedState()
+    {
+        try
+        {
+            if (!File.Exists(_stateFilePath)) return;
+            var json = File.ReadAllText(_stateFilePath);
+            var state = JsonSerializer.Deserialize<FailSafePersistedState>(json);
+            if (state == null) return;
+
+            lock (_lock)
+            {
+                // Restore breakers
+                foreach (var (name, saved) in state.Breakers)
+                {
+                    if (_breakers.TryGetValue(name, out var breaker))
+                    {
+                        breaker.IsOpen = saved.IsOpen;
+                        breaker.OpenedAt = saved.OpenedAt;
+                        breaker.ClosedAt = saved.ClosedAt;
+                        breaker.Reason = saved.Reason;
+                        breaker.TriggeredBy = saved.TriggeredBy;
+                        breaker.ApprovedBy = saved.ApprovedBy;
+                    }
+                }
+
+                // Restore flagged items
+                _flaggedItems.Clear();
+                _flaggedItems.AddRange(state.FlaggedItems);
+                _nextFlagId = state.NextFlagId > 0 ? state.NextFlagId : _flaggedItems.Count + 1;
+
+                // Restore history
+                _triggerHistory.Clear();
+                _triggerHistory.AddRange(state.TriggerHistory);
+            }
+
+            _logger.LogInformation("Fail-safe state restored: {Breakers} breakers, {Flags} flagged items, {History} history events",
+                state.Breakers.Count(b => b.Value.IsOpen), state.FlaggedItems.Count, state.TriggerHistory.Count);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("Could not load fail-safe state: {Err}", ex.Message);
+        }
+    }
+
+    public void SaveState(bool force = false)
+    {
+        if (!force && DateTime.UtcNow - _lastStateSave < StateSaveInterval) return;
+        try
+        {
+            FailSafePersistedState state;
+            lock (_lock)
+            {
+                state = new FailSafePersistedState
+                {
+                    Breakers = _breakers.ToDictionary(kv => kv.Key, kv => kv.Value.Clone()),
+                    FlaggedItems = _flaggedItems.ToList(),
+                    TriggerHistory = _triggerHistory.TakeLast(200).ToList(),
+                    NextFlagId = _nextFlagId,
+                    LastSaved = DateTime.UtcNow
+                };
+            }
+            var json = JsonSerializer.Serialize(state, new JsonSerializerOptions { WriteIndented = true });
+            File.WriteAllText(_stateFilePath, json);
+            _lastStateSave = DateTime.UtcNow;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("Could not save fail-safe state: {Err}", ex.Message);
+        }
+    }
+
+    // ── PIN Validation ──
+
+    public bool ValidatePin(string? pin) => !string.IsNullOrEmpty(pin) && pin == Config.OperatorPin;
 
     // ════════════════════════════════════════════════════════════════
     //  MAIN: Scan all fail-safe rules
@@ -150,12 +256,37 @@ public class FailSafeService
                         ? $"🔒 {openBreakers} circuit breakers פתוחים ידנית"
                         : "✅ המערכת פועלת בטווח בטוח";
 
-            // Send notifications for new critical violations
+            // Send notifications for new critical violations (with cooldown)
             if (criticalCount > 0 && _notifications != null)
             {
+                var cooldown = TimeSpan.FromMinutes(Config.NotificationCooldownMinutes);
                 var critViolations = result.Violations.Where(v => v.Severity == "Critical").ToList();
-                var msg = string.Join("\n", critViolations.Select(v => $"• {v.RuleName}: {v.Description}"));
-                _ = _notifications.SendAsync("🚨 Fail-Safe CRITICAL", msg, "Critical", "FailSafe");
+                var newViolations = new List<FailSafeViolation>();
+
+                foreach (var v in critViolations)
+                {
+                    if (_lastNotifiedPerRule.TryGetValue(v.RuleId, out var lastNotif) && DateTime.UtcNow - lastNotif < cooldown)
+                        continue;  // Still in cooldown
+                    newViolations.Add(v);
+                    _lastNotifiedPerRule[v.RuleId] = DateTime.UtcNow;
+                }
+
+                if (newViolations.Any())
+                {
+                    var msg = string.Join("\n", newViolations.Select(v => $"• {v.RuleName}: {v.Description}"));
+                    _ = _notifications.SendAsync("🚨 Fail-Safe CRITICAL", msg, "Critical", "FailSafe");
+                }
+            }
+
+            // Update daily counters
+            ResetDailyIfNeeded();
+            _dailyScans++;
+            _dailyCritical += criticalCount;
+            _dailyWarning += warningCount;
+            foreach (var v in result.Violations)
+            {
+                if (!_dailyByRule.ContainsKey(v.RuleId)) _dailyByRule[v.RuleId] = 0;
+                _dailyByRule[v.RuleId] += v.Count;
             }
         }
         catch (Exception ex)
@@ -168,6 +299,8 @@ public class FailSafeService
         result.FlaggedItems = GetFlaggedItems();
         _lastScan = result;
         _lastScanTime = DateTime.UtcNow;
+        ScanCount++;
+        SaveState();
         return result;
     }
 
@@ -580,6 +713,8 @@ public class FailSafeService
             if (_notifications != null)
                 _ = _notifications.SendAsync($"🔴 Circuit Breaker: {breaker.Label}", $"Breaker {name} הופעל: {reason}", "Critical", "FailSafe");
 
+            SaveState(true);
+            _dailyTrips++;
             return breaker.Clone();
         }
     }
@@ -599,6 +734,7 @@ public class FailSafeService
             if (_notifications != null)
                 _ = _notifications.SendAsync($"🟢 Circuit Breaker: {breaker.Label}", $"Breaker {name} שוחרר ע\"י {approvedBy}", "Info", "FailSafe");
 
+            SaveState(true);
             return breaker.Clone();
         }
     }
@@ -620,6 +756,8 @@ public class FailSafeService
             if (_notifications != null)
                 _ = _notifications.SendAsync("🚨 KILL SWITCH — כל הפעולות הוקפאו", reason, "Critical", "FailSafe");
 
+            SaveState(true);
+            _dailyTrips += _breakers.Count;
             return true;
         }
     }
@@ -636,6 +774,7 @@ public class FailSafeService
             }
             RecordTrigger("RESET_ALL", "ALL", $"All breakers reset by {approvedBy}", approvedBy);
             _logger.LogInformation("All circuit breakers RESET by {By}", approvedBy);
+            SaveState(true);
             return true;
         }
     }
@@ -665,6 +804,8 @@ public class FailSafeService
             });
 
             while (_flaggedItems.Count > MaxFlaggedItems) _flaggedItems.RemoveAt(0);
+            _dailyFlagged++;
+            _dailyAmountFlagged += amount ?? 0;
         }
     }
 
@@ -678,6 +819,8 @@ public class FailSafeService
             item.ReviewedBy = approvedBy;
             item.ReviewedAt = DateTime.UtcNow;
             RecordTrigger("ITEM_APPROVED", item.RuleId, $"Flag #{flagId} approved: {item.Reason}", approvedBy);
+            SaveState(true);
+            _dailyApproved++;
             return item;
         }
     }
@@ -693,6 +836,8 @@ public class FailSafeService
             item.ReviewedAt = DateTime.UtcNow;
             item.ReviewNote = note;
             RecordTrigger("ITEM_REJECTED", item.RuleId, $"Flag #{flagId} rejected: {item.Reason} — {note}", rejectedBy);
+            SaveState(true);
+            _dailyRejected++;
             return item;
         }
     }
@@ -785,6 +930,68 @@ public class FailSafeService
         using var cmd = new SqlCommand(sql, conn) { CommandTimeout = 15 };
         return Convert.ToDouble(await cmd.ExecuteScalarAsync() ?? 0.0);
     }
+
+    // ════════════════════════════════════════════════════════════════
+    //  DAILY SUMMARY
+    // ════════════════════════════════════════════════════════════════
+
+    private void ResetDailyIfNeeded()
+    {
+        var today = DateTime.UtcNow.Date;
+        if (_dailyResetDate < today)
+        {
+            _dailyScans = 0; _dailyCritical = 0; _dailyWarning = 0;
+            _dailyTrips = 0; _dailyFlagged = 0; _dailyApproved = 0;
+            _dailyRejected = 0; _dailyAmountFlagged = 0;
+            _dailyByRule.Clear();
+            _dailyResetDate = today;
+        }
+    }
+
+    public FailSafeDailySummary GetDailySummary()
+    {
+        ResetDailyIfNeeded();
+        return new FailSafeDailySummary
+        {
+            Date = _dailyResetDate,
+            TotalScans = _dailyScans,
+            CriticalViolations = _dailyCritical,
+            WarningViolations = _dailyWarning,
+            BreakerTrips = _dailyTrips,
+            ItemsFlagged = _dailyFlagged,
+            ItemsApproved = _dailyApproved,
+            ItemsRejected = _dailyRejected,
+            TotalAmountFlagged = _dailyAmountFlagged,
+            ViolationsByRule = new Dictionary<string, int>(_dailyByRule)
+        };
+    }
+
+    public async Task SendDailySummaryIfDueAsync()
+    {
+        if (!Config.DailySummaryEnabled || _notifications == null) return;
+        var now = DateTime.UtcNow;
+        if (now.Hour != Config.DailySummaryHourUtc) return;
+        if (_lastDailySummarySent.Date == now.Date) return;  // Already sent today
+
+        var summary = GetDailySummary();
+        var sb = new StringBuilder();
+        sb.AppendLine($"📊 סיכום יומי Fail-Safe — {summary.Date:dd/MM/yyyy}");
+        sb.AppendLine($"סריקות: {summary.TotalScans}");
+        sb.AppendLine($"הפרות קריטיות: {summary.CriticalViolations} | אזהרות: {summary.WarningViolations}");
+        sb.AppendLine($"Breaker trips: {summary.BreakerTrips}");
+        sb.AppendLine($"פריטים מסומנים: {summary.ItemsFlagged} (${summary.TotalAmountFlagged:N0})");
+        sb.AppendLine($"אושרו: {summary.ItemsApproved} | נדחו: {summary.ItemsRejected}");
+        if (summary.ViolationsByRule.Any())
+        {
+            sb.AppendLine("── הפרות לפי כלל ──");
+            foreach (var kv in summary.ViolationsByRule.OrderByDescending(x => x.Value))
+                sb.AppendLine($"  {kv.Key}: {kv.Value}");
+        }
+
+        await _notifications.SendAsync("📊 Fail-Safe Daily Summary", sb.ToString(), "Info", "FailSafe");
+        _lastDailySummarySent = now;
+        _logger.LogInformation("Daily fail-safe summary sent");
+    }
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -795,6 +1002,18 @@ public class FailSafeConfig
 {
     public bool Enabled { get; set; } = true;
     public bool AutoTriggerBreakers { get; set; } = false; // Manual by default for safety
+
+    // Background scan settings
+    public int ScanIntervalSeconds { get; set; } = 300;  // 5 minutes
+    public bool ScanOnStartup { get; set; } = true;
+
+    // Notification cooldown (prevent spam)
+    public int NotificationCooldownMinutes { get; set; } = 60;  // 1 hour cooldown per rule
+    public bool DailySummaryEnabled { get; set; } = true;
+    public int DailySummaryHourUtc { get; set; } = 6;  // 6 AM UTC = ~9 AM Israel
+
+    // PIN protection for critical operations
+    public string OperatorPin { get; set; } = "7743";  // Default PIN, change in config
 
     // Rule 1: High value booking
     public double HighValueBookingThreshold { get; set; } = 3000;
@@ -909,4 +1128,27 @@ public class FailSafeTriggerEvent
     public string Target { get; set; } = "";
     public string Detail { get; set; } = "";
     public string Actor { get; set; } = "";
+}
+
+public class FailSafeDailySummary
+{
+    public DateTime Date { get; set; }
+    public int TotalScans { get; set; }
+    public int CriticalViolations { get; set; }
+    public int WarningViolations { get; set; }
+    public int BreakerTrips { get; set; }
+    public int ItemsFlagged { get; set; }
+    public int ItemsApproved { get; set; }
+    public int ItemsRejected { get; set; }
+    public double TotalAmountFlagged { get; set; }
+    public Dictionary<string, int> ViolationsByRule { get; set; } = new();
+}
+
+public class FailSafePersistedState
+{
+    public Dictionary<string, CircuitBreaker> Breakers { get; set; } = new();
+    public List<FailSafeFlaggedItem> FlaggedItems { get; set; } = new();
+    public List<FailSafeTriggerEvent> TriggerHistory { get; set; } = new();
+    public int NextFlagId { get; set; } = 1;
+    public DateTime LastSaved { get; set; }
 }

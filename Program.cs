@@ -22,6 +22,7 @@ builder.Services.AddSingleton<SlaTrackingService>();
 builder.Services.AddSingleton<AuditService>();
 builder.Services.AddSingleton<IncidentManagementService>();
 builder.Services.AddSingleton<FailSafeService>();
+builder.Services.AddHostedService<FailSafeBackgroundService>();
 builder.Services.AddHostedService<AlertNotificationService>();
 builder.Services.AddCors(o => o.AddDefaultPolicy(p => p.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader()));
 
@@ -355,6 +356,8 @@ app.MapGet("/api/failsafe/breakers", (FailSafeService svc) =>
 
 app.MapPost("/api/failsafe/breaker/{name}/trip", (FailSafeService svc, string name, HttpContext ctx) =>
 {
+    var pin = ctx.Request.Query["pin"].FirstOrDefault();
+    if (!svc.ValidatePin(pin)) return Results.Json(new { error = "PIN שגוי" }, statusCode: 403);
     var reason = ctx.Request.Query["reason"].FirstOrDefault() ?? "Manual trip";
     var actor = ctx.Request.Query["actor"].FirstOrDefault() ?? "Operator";
     var result = svc.TripBreaker(name, reason, actor);
@@ -363,6 +366,8 @@ app.MapPost("/api/failsafe/breaker/{name}/trip", (FailSafeService svc, string na
 
 app.MapPost("/api/failsafe/breaker/{name}/reset", (FailSafeService svc, string name, HttpContext ctx) =>
 {
+    var pin = ctx.Request.Query["pin"].FirstOrDefault();
+    if (!svc.ValidatePin(pin)) return Results.Json(new { error = "PIN שגוי" }, statusCode: 403);
     var actor = ctx.Request.Query["actor"].FirstOrDefault() ?? "Operator";
     var result = svc.ResetBreaker(name, actor);
     return result != null ? Results.Ok(result) : Results.NotFound(new { error = $"Breaker '{name}' not found" });
@@ -370,6 +375,8 @@ app.MapPost("/api/failsafe/breaker/{name}/reset", (FailSafeService svc, string n
 
 app.MapPost("/api/failsafe/kill-switch", (FailSafeService svc, HttpContext ctx) =>
 {
+    var pin = ctx.Request.Query["pin"].FirstOrDefault();
+    if (!svc.ValidatePin(pin)) return Results.Json(new { error = "PIN שגוי" }, statusCode: 403);
     var reason = ctx.Request.Query["reason"].FirstOrDefault() ?? "Emergency kill switch";
     var actor = ctx.Request.Query["actor"].FirstOrDefault() ?? "Operator";
     svc.TripAll(reason, actor);
@@ -378,6 +385,8 @@ app.MapPost("/api/failsafe/kill-switch", (FailSafeService svc, HttpContext ctx) 
 
 app.MapPost("/api/failsafe/reset-all", (FailSafeService svc, HttpContext ctx) =>
 {
+    var pin = ctx.Request.Query["pin"].FirstOrDefault();
+    if (!svc.ValidatePin(pin)) return Results.Json(new { error = "PIN שגוי" }, statusCode: 403);
     var actor = ctx.Request.Query["actor"].FirstOrDefault() ?? "Operator";
     svc.ResetAll(actor);
     return Results.Ok(new { success = true, message = "All circuit breakers reset", actor });
@@ -391,6 +400,8 @@ app.MapGet("/api/failsafe/flagged", (FailSafeService svc, HttpContext ctx) =>
 
 app.MapPost("/api/failsafe/flagged/{id:int}/approve", (FailSafeService svc, int id, HttpContext ctx) =>
 {
+    var pin = ctx.Request.Query["pin"].FirstOrDefault();
+    if (!svc.ValidatePin(pin)) return Results.Json(new { error = "PIN שגוי" }, statusCode: 403);
     var actor = ctx.Request.Query["actor"].FirstOrDefault() ?? "Operator";
     var result = svc.ApproveFlag(id, actor);
     return result != null ? Results.Ok(result) : Results.NotFound(new { error = "Flag not found" });
@@ -398,6 +409,8 @@ app.MapPost("/api/failsafe/flagged/{id:int}/approve", (FailSafeService svc, int 
 
 app.MapPost("/api/failsafe/flagged/{id:int}/reject", (FailSafeService svc, int id, HttpContext ctx) =>
 {
+    var pin = ctx.Request.Query["pin"].FirstOrDefault();
+    if (!svc.ValidatePin(pin)) return Results.Json(new { error = "PIN שגוי" }, statusCode: 403);
     var actor = ctx.Request.Query["actor"].FirstOrDefault() ?? "Operator";
     var note = ctx.Request.Query["note"].FirstOrDefault();
     var result = svc.RejectFlag(id, actor, note);
@@ -415,10 +428,21 @@ app.MapGet("/api/failsafe/config", (FailSafeService svc) =>
 
 app.MapPut("/api/failsafe/config", async (FailSafeService svc, HttpContext ctx) =>
 {
+    var pin = ctx.Request.Query["pin"].FirstOrDefault();
+    if (!svc.ValidatePin(pin)) return Results.Json(new { error = "PIN שגוי" }, statusCode: 403);
     var config = await ctx.Request.ReadFromJsonAsync<FailSafeConfig>();
     if (config == null) return Results.BadRequest("Invalid config");
     svc.Config = config;
     return Results.Ok(new { success = true, config = svc.Config });
+});
+
+app.MapGet("/api/failsafe/daily-summary", (FailSafeService svc) =>
+    Results.Ok(svc.GetDailySummary()));
+
+app.MapPost("/api/failsafe/verify-pin", (FailSafeService svc, HttpContext ctx) =>
+{
+    var pin = ctx.Request.Query["pin"].FirstOrDefault();
+    return Results.Ok(new { valid = svc.ValidatePin(pin) });
 });
 
 // ── Dashboard ──

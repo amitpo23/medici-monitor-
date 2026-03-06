@@ -2752,6 +2752,98 @@ toggleLogAutoRefresh();
 //  FAIL-SAFE & KILL SWITCH
 // ══════════════════════════════════════════════════════════════════════
 let FS_DATA = null;
+let FS_PIN = null;  // Cached PIN for this session
+let fsAutoRefreshTimer = null;
+let fsPrevStatus = null;
+
+// Audio alert for critical state changes
+function fsPlayAlert() {
+  try {
+    var ctx = new (window.AudioContext || window.webkitAudioContext)();
+    [0, 0.3, 0.6].forEach(delay => {
+      var osc = ctx.createOscillator();
+      var gain = ctx.createGain();
+      osc.connect(gain); gain.connect(ctx.destination);
+      osc.frequency.value = 880;
+      osc.type = 'square';
+      gain.gain.value = 0.15;
+      osc.start(ctx.currentTime + delay);
+      osc.stop(ctx.currentTime + delay + 0.15);
+    });
+  } catch(e) {}
+}
+
+// Flash the browser tab title on critical
+let fsTitleFlashInterval = null;
+function fsFlashTitle(msg) {
+  if (fsTitleFlashInterval) return; // Already flashing
+  var orig = document.title;
+  var flip = false;
+  fsTitleFlashInterval = setInterval(() => {
+    document.title = flip ? orig : '🚨 ' + msg;
+    flip = !flip;
+  }, 1000);
+  setTimeout(() => { clearInterval(fsTitleFlashInterval); fsTitleFlashInterval = null; document.title = orig; }, 30000);
+}
+
+function fsStopFlash() {
+  if (fsTitleFlashInterval) { clearInterval(fsTitleFlashInterval); fsTitleFlashInterval = null; document.title = 'Medici Monitor'; }
+}
+
+// PIN management
+function fsGetPin() {
+  if (FS_PIN) return FS_PIN;
+  var pin = prompt('🔒 הכנס PIN (4 ספרות):');
+  if (!pin) return null;
+  FS_PIN = pin;
+  return pin;
+}
+
+async function fsVerifyPin(pin) {
+  try {
+    var resp = await fetch('/api/failsafe/verify-pin?pin=' + encodeURIComponent(pin), {method:'POST'});
+    var data = await resp.json();
+    if (!data.valid) { FS_PIN = null; alert('❌ PIN שגוי!'); return false; }
+    return true;
+  } catch(e) { return false; }
+}
+
+async function fsPinnedPost(url) {
+  var pin = fsGetPin();
+  if (!pin) return null;
+  var resp = await fetch(url + (url.includes('?') ? '&' : '?') + 'pin=' + encodeURIComponent(pin), {method:'POST'});
+  if (resp.status === 403) { FS_PIN = null; alert('❌ PIN שגוי!'); return null; }
+  return resp;
+}
+
+// Auto-refresh: poll /api/failsafe/status every 60s
+function fsStartAutoRefresh() {
+  if (fsAutoRefreshTimer) return;
+  fsAutoRefreshTimer = setInterval(async () => {
+    try {
+      var resp = await fetch('/api/failsafe/status');
+      if (!resp.ok) return;
+      var data = await resp.json();
+      if (data.status === 'NO_SCAN_YET') return;
+      FS_DATA = data;
+      renderFailsafe(FS_DATA);
+
+      // Check for status change → alert
+      if (fsPrevStatus && fsPrevStatus !== 'CRITICAL' && data.status === 'CRITICAL') {
+        fsPlayAlert();
+        fsFlashTitle('CRITICAL ALERT');
+      }
+      if (data.status !== 'CRITICAL') fsStopFlash();
+      fsPrevStatus = data.status;
+
+      document.getElementById('fsScanStatus').textContent = '🔄 אוטומטי: ' + new Date(data.timestamp).toLocaleTimeString('he-IL');
+    } catch(e) {}
+  }, 60000);
+}
+
+function fsStopAutoRefresh() {
+  if (fsAutoRefreshTimer) { clearInterval(fsAutoRefreshTimer); fsAutoRefreshTimer = null; }
+}
 
 async function failsafeScan() {
   document.getElementById('fsScanStatus').textContent = 'סורק...';
@@ -2760,47 +2852,53 @@ async function failsafeScan() {
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
     FS_DATA = await resp.json();
     renderFailsafe(FS_DATA);
+
+    // Alert on CRITICAL
+    if (FS_DATA.status === 'CRITICAL' && fsPrevStatus !== 'CRITICAL') {
+      fsPlayAlert();
+      fsFlashTitle('CRITICAL ALERT');
+    }
+    if (FS_DATA.status !== 'CRITICAL') fsStopFlash();
+    fsPrevStatus = FS_DATA.status;
+
     document.getElementById('fsScanStatus').textContent = 'סריקה אחרונה: ' + new Date(FS_DATA.timestamp).toLocaleTimeString('he-IL');
+    fsStartAutoRefresh();
   } catch(e) {
     document.getElementById('fsScanStatus').textContent = 'שגיאה: ' + e.message;
   }
 }
 
 async function failsafeKillAll() {
-  try {
-    await fetch('/api/failsafe/kill-switch', {method:'POST'});
-    failsafeScan();
-  } catch(e) { alert('שגיאה: ' + e.message); }
+  var resp = await fsPinnedPost('/api/failsafe/kill-switch');
+  if (resp) failsafeScan();
 }
 
 async function failsafeResetAll() {
-  try {
-    await fetch('/api/failsafe/reset-all', {method:'POST'});
-    failsafeScan();
-  } catch(e) { alert('שגיאה: ' + e.message); }
+  var resp = await fsPinnedPost('/api/failsafe/reset-all');
+  if (resp) { fsStopFlash(); failsafeScan(); }
 }
 
 async function fsTrip(name) {
   var reason = prompt('סיבת הקפאה:');
   if (!reason) return;
-  await fetch('/api/failsafe/breaker/' + name + '/trip?reason=' + encodeURIComponent(reason), {method:'POST'});
-  failsafeScan();
+  var resp = await fsPinnedPost('/api/failsafe/breaker/' + name + '/trip?reason=' + encodeURIComponent(reason));
+  if (resp) failsafeScan();
 }
 
 async function fsReset(name) {
-  await fetch('/api/failsafe/breaker/' + name + '/reset', {method:'POST'});
-  failsafeScan();
+  var resp = await fsPinnedPost('/api/failsafe/breaker/' + name + '/reset');
+  if (resp) failsafeScan();
 }
 
 async function fsApprove(id) {
-  await fetch('/api/failsafe/flagged/' + id + '/approve', {method:'POST'});
-  failsafeScan();
+  var resp = await fsPinnedPost('/api/failsafe/flagged/' + id + '/approve');
+  if (resp) failsafeScan();
 }
 
 async function fsReject(id) {
   var note = prompt('סיבת דחייה (אופציונלי):') || '';
-  await fetch('/api/failsafe/flagged/' + id + '/reject?note=' + encodeURIComponent(note), {method:'POST'});
-  failsafeScan();
+  var resp = await fsPinnedPost('/api/failsafe/flagged/' + id + '/reject?note=' + encodeURIComponent(note));
+  if (resp) failsafeScan();
 }
 
 async function loadFailsafeHistory() {
@@ -2818,6 +2916,8 @@ function toggleFsConfig() {
 }
 
 async function saveFailsafeConfig() {
+  var pin = fsGetPin();
+  if (!pin) return;
   var cfg = {};
   document.querySelectorAll('#fsConfigGrid input, #fsConfigGrid select').forEach(inp => {
     var k = inp.dataset.key;
@@ -2827,7 +2927,8 @@ async function saveFailsafeConfig() {
     else cfg[k] = inp.value;
   });
   try {
-    const resp = await fetch('/api/failsafe/config', {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(cfg)});
+    const resp = await fetch('/api/failsafe/config?pin=' + encodeURIComponent(pin), {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(cfg)});
+    if (resp.status === 403) { FS_PIN = null; document.getElementById('fsConfigStatus').textContent = '❌ PIN שגוי'; return; }
     if (resp.ok) document.getElementById('fsConfigStatus').textContent = '✅ נשמר!';
     else document.getElementById('fsConfigStatus').textContent = '❌ שגיאה';
     setTimeout(()=>{document.getElementById('fsConfigStatus').textContent='';},3000);
@@ -2841,6 +2942,9 @@ function renderFailsafe(d) {
   if (openBreakers.length === (d.breakers||[]).length && openBreakers.length > 0) {
     banner.style.display = 'block';
     document.getElementById('fsKillBannerMsg').textContent = (openBreakers[0] && openBreakers[0].reason) || 'כל הפעולות מוקפאות';
+  } else if (openBreakers.length > 0) {
+    banner.style.display = 'block';
+    document.getElementById('fsKillBannerMsg').textContent = openBreakers.length + ' breakers מוקפאים: ' + openBreakers.map(b=>b.label).join(', ');
   } else {
     banner.style.display = 'none';
   }
@@ -2853,17 +2957,23 @@ function renderFailsafe(d) {
   if (badgeCount > 0) { navBadge.textContent = badgeCount; navBadge.style.display = 'inline'; }
   else navBadge.style.display = 'none';
 
+  // Status indicator
+  var statusColor = d.status === 'CRITICAL' ? 'var(--red)' : d.status === 'WARNING' ? 'var(--yellow)' : d.status === 'BREAKER_OPEN' ? 'var(--orange,#ff9800)' : 'var(--green)';
+  var statusIcon = d.status === 'CRITICAL' ? '🚨' : d.status === 'WARNING' ? '⚠️' : d.status === 'BREAKER_OPEN' ? '🔒' : '✅';
+  document.getElementById('fsScanStatus').innerHTML = statusIcon + ' <span style="color:' + statusColor + ';font-weight:700">' + d.status + '</span> — ' + new Date(d.timestamp).toLocaleTimeString('he-IL');
+
   // Circuit Breakers
   var grid = document.getElementById('fsBreakersGrid');
   grid.innerHTML = (d.breakers || []).map(b => {
     var statusColor = b.isOpen ? 'var(--red)' : 'var(--green)';
     var statusText = b.isOpen ? '🔴 מוקפא' : '🟢 פעיל';
     var btnHtml = b.isOpen
-      ? '<button onclick="fsReset(\'' + b.name + '\')" style="background:var(--green);color:#000;border:none;padding:4px 12px;border-radius:4px;cursor:pointer;font-size:11px;font-weight:600">שחרר</button>'
-      : '<button onclick="fsTrip(\'' + b.name + '\')" style="background:var(--red);color:#fff;border:none;padding:4px 12px;border-radius:4px;cursor:pointer;font-size:11px;font-weight:600">הקפא</button>';
+      ? '<button onclick="fsReset(\'' + b.name + '\')" style="background:var(--green);color:#000;border:none;padding:4px 12px;border-radius:4px;cursor:pointer;font-size:11px;font-weight:600">🔓 שחרר</button>'
+      : '<button onclick="fsTrip(\'' + b.name + '\')" style="background:var(--red);color:#fff;border:none;padding:4px 12px;border-radius:4px;cursor:pointer;font-size:11px;font-weight:600">🔒 הקפא</button>';
     var infoHtml = '';
     if (b.isOpen && b.reason) infoHtml = '<div style="font-size:10px;color:var(--yellow);margin-top:4px">' + esc(b.reason) + '</div>';
     if (b.isOpen && b.openedAt) infoHtml += '<div style="font-size:10px;color:var(--text2)">מאז: ' + new Date(b.openedAt).toLocaleTimeString('he-IL') + '</div>';
+    if (b.isOpen && b.triggeredBy) infoHtml += '<div style="font-size:10px;color:var(--text2)">ע"י: ' + esc(b.triggeredBy) + '</div>';
 
     return '<div style="background:var(--surface2);border:2px solid ' + statusColor + ';border-radius:10px;padding:14px;text-align:center">' +
       '<div style="font-size:13px;font-weight:700;margin-bottom:4px">' + esc(b.label) + '</div>' +
@@ -2881,17 +2991,19 @@ function renderFailsafe(d) {
     vArea.innerHTML = violations.map(v => {
       var sevColor = v.severity === 'Critical' ? 'var(--red)' : 'var(--yellow)';
       var sevIcon = v.severity === 'Critical' ? '🚨' : '⚠️';
-      var detailsHtml = (v.details || []).map(d =>
+      var detailsHtml = (v.details || []).slice(0, 10).map(d =>
         '<div style="font-size:12px;padding:4px 0;border-bottom:1px solid var(--border)">' + esc(d.detail) + '</div>'
       ).join('');
+      var moreHtml = (v.details || []).length > 10 ? '<div style="font-size:11px;color:var(--text2);padding:4px 0">...ועוד ' + ((v.details||[]).length - 10) + '</div>' : '';
+      var tripBtn = v.suggestedBreakerName ? ' <button onclick="fsTrip(\'' + v.suggestedBreakerName + '\')" style="background:var(--red);color:#fff;border:none;padding:2px 8px;border-radius:4px;cursor:pointer;font-size:10px;font-weight:600;margin-right:4px">🔒 הקפא ' + esc(v.suggestedBreakerName) + '</button>' : '';
       return '<div style="background:var(--surface2);border-right:4px solid ' + sevColor + ';border-radius:8px;padding:14px;margin-bottom:10px">' +
         '<div style="display:flex;justify-content:space-between;align-items:center">' +
-          '<div><span style="font-size:16px">' + sevIcon + '</span> <strong>' + esc(v.ruleName) + '</strong> <span style="font-size:11px;background:' + sevColor + ';color:#000;padding:2px 6px;border-radius:4px;font-weight:700">' + v.severity + '</span></div>' +
+          '<div><span style="font-size:16px">' + sevIcon + '</span> <strong>' + esc(v.ruleName) + '</strong> <span style="font-size:11px;background:' + sevColor + ';color:#000;padding:2px 6px;border-radius:4px;font-weight:700">' + v.severity + '</span>' + tripBtn + '</div>' +
           '<div style="font-size:12px;color:var(--text2)">' + v.count + ' פריטים</div>' +
         '</div>' +
         '<div style="font-size:13px;margin-top:6px;color:var(--text)">' + esc(v.description) + '</div>' +
         (v.suggestedAction ? '<div style="font-size:11px;margin-top:4px;color:var(--blue)">פעולה מומלצת: ' + esc(v.suggestedAction) + '</div>' : '') +
-        (detailsHtml ? '<div style="margin-top:8px;max-height:200px;overflow-y:auto">' + detailsHtml + '</div>' : '') +
+        (detailsHtml ? '<div style="margin-top:8px;max-height:200px;overflow-y:auto">' + detailsHtml + moreHtml + '</div>' : '') +
       '</div>';
     }).join('');
   }
@@ -2943,6 +3055,9 @@ function renderFsConfig(cfg) {
   var fields = [
     {key:'enabled', label:'מערכת מופעלת', type:'checkbox'},
     {key:'autoTriggerBreakers', label:'הפעלה אוטומטית של breakers', type:'checkbox'},
+    {key:'scanIntervalSeconds', label:'תדירות סריקה (שניות)', type:'number'},
+    {key:'notificationCooldownMinutes', label:'Cooldown התראות (דקות)', type:'number'},
+    {key:'dailySummaryEnabled', label:'סיכום יומי', type:'checkbox'},
     {key:'highValueBookingThreshold', label:'סף הזמנה גבוהה ($)', type:'number'},
     {key:'autoFlagHighValue', label:'סמן אוטומטית הזמנות גבוהות', type:'checkbox'},
     {key:'sellBelowCostEnabled', label:'בדוק מכירה מתחת לעלות', type:'checkbox'},
@@ -2999,7 +3114,7 @@ async function loadData() {
     loadLogs().catch(()=>{});
     loadSla().catch(()=>{});
     loadIncidents().catch(()=>{});
-    failsafeScan().catch(()=>{});
+    failsafeScan().then(()=>fsStartAutoRefresh()).catch(()=>{});
 
     document.getElementById('lastUpdate').textContent = 'עדכון אחרון: ' + fmtNow() + (D.dbConnected ? '' : ' [DB ERROR]');
   } catch(err) {
