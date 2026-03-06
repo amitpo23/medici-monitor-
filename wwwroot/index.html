@@ -2845,6 +2845,20 @@ function fsStopAutoRefresh() {
   if (fsAutoRefreshTimer) { clearInterval(fsAutoRefreshTimer); fsAutoRefreshTimer = null; }
 }
 
+// Load cached status (no DB scan)
+async function loadFailsafeStatus() {
+  try {
+    var resp = await fetch('/api/failsafe/status');
+    if (!resp.ok) return;
+    var data = await resp.json();
+    if (data.status === 'NO_SCAN_YET') return;
+    FS_DATA = data;
+    renderFailsafe(FS_DATA);
+    fsCheckAlert(data);
+  } catch(e) {}
+}
+
+// Force a full scan (manual button)
 async function failsafeScan() {
   document.getElementById('fsScanStatus').textContent = 'סורק...';
   try {
@@ -2852,20 +2866,21 @@ async function failsafeScan() {
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
     FS_DATA = await resp.json();
     renderFailsafe(FS_DATA);
-
-    // Alert on CRITICAL
-    if (FS_DATA.status === 'CRITICAL' && fsPrevStatus !== 'CRITICAL') {
-      fsPlayAlert();
-      fsFlashTitle('CRITICAL ALERT');
-    }
-    if (FS_DATA.status !== 'CRITICAL') fsStopFlash();
-    fsPrevStatus = FS_DATA.status;
-
-    document.getElementById('fsScanStatus').textContent = 'סריקה אחרונה: ' + new Date(FS_DATA.timestamp).toLocaleTimeString('he-IL');
-    fsStartAutoRefresh();
+    fsCheckAlert(FS_DATA);
+    loadFailsafeHistory();
+    document.getElementById('fsScanStatus').textContent = 'סריקה ידנית: ' + new Date(FS_DATA.timestamp).toLocaleTimeString('he-IL');
   } catch(e) {
     document.getElementById('fsScanStatus').textContent = 'שגיאה: ' + e.message;
   }
+}
+
+function fsCheckAlert(data) {
+  if (data.status === 'CRITICAL' && fsPrevStatus !== 'CRITICAL') {
+    fsPlayAlert();
+    fsFlashTitle('CRITICAL ALERT');
+  }
+  if (data.status !== 'CRITICAL') fsStopFlash();
+  fsPrevStatus = data.status;
 }
 
 async function failsafeKillAll() {
@@ -3030,8 +3045,6 @@ function renderFailsafe(d) {
     }).join('');
   }
 
-  // Load history too
-  loadFailsafeHistory();
 }
 
 function renderFsHistory(data) {
@@ -3055,7 +3068,7 @@ function renderFsConfig(cfg) {
   var fields = [
     {key:'enabled', label:'מערכת מופעלת', type:'checkbox'},
     {key:'autoTriggerBreakers', label:'הפעלה אוטומטית של breakers', type:'checkbox'},
-    {key:'scanIntervalSeconds', label:'תדירות סריקה (שניות)', type:'number'},
+    {key:'scanIntervalSeconds', label:'תדירות סריקה ברקע (שניות)', type:'number'},
     {key:'notificationCooldownMinutes', label:'Cooldown התראות (דקות)', type:'number'},
     {key:'dailySummaryEnabled', label:'סיכום יומי', type:'checkbox'},
     {key:'highValueBookingThreshold', label:'סף הזמנה גבוהה ($)', type:'number'},
@@ -3075,7 +3088,12 @@ function renderFsConfig(cfg) {
     {key:'runawayQueueThreshold', label:'סף תור חריג', type:'number'},
     {key:'cancelStormThreshold', label:'סף סופת ביטולים', type:'number'},
     {key:'cancelStormWindowHours', label:'חלון ביטולים (שעות)', type:'number'},
-    {key:'duplicateBookingEnabled', label:'בדוק הזמנות כפולות', type:'checkbox'}
+    {key:'duplicateBookingEnabled', label:'בדוק הזמנות כפולות', type:'checkbox'},
+    {key:'scanIntervalSeconds', label:'תדירות סריקה (שניות)', type:'number'},
+    {key:'scanOnStartup', label:'סריקה ב-startup', type:'checkbox'},
+    {key:'notificationCooldownMinutes', label:'Cooldown התראות (דקות)', type:'number'},
+    {key:'dailySummaryEnabled', label:'סיכום יומי', type:'checkbox'},
+    {key:'dailySummaryHourUtc', label:'שעת סיכום (UTC)', type:'number'}
   ];
   grid.innerHTML = fields.map(f => {
     var val = cfg[f.key];
@@ -3114,7 +3132,7 @@ async function loadData() {
     loadLogs().catch(()=>{});
     loadSla().catch(()=>{});
     loadIncidents().catch(()=>{});
-    failsafeScan().then(()=>fsStartAutoRefresh()).catch(()=>{});
+    loadFailsafeStatus().then(()=>fsStartAutoRefresh()).catch(()=>{});
 
     document.getElementById('lastUpdate').textContent = 'עדכון אחרון: ' + fmtNow() + (D.dbConnected ? '' : ' [DB ERROR]');
   } catch(err) {

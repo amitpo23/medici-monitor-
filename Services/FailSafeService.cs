@@ -1,6 +1,7 @@
 using Microsoft.Data.SqlClient;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace MediciMonitor.Services;
 
@@ -1013,6 +1014,7 @@ public class FailSafeConfig
     public int DailySummaryHourUtc { get; set; } = 6;  // 6 AM UTC = ~9 AM Israel
 
     // PIN protection for critical operations
+    [JsonIgnore]
     public string OperatorPin { get; set; } = "7743";  // Default PIN, change in config
 
     // Rule 1: High value booking

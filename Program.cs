@@ -424,7 +424,21 @@ app.MapGet("/api/failsafe/history", (FailSafeService svc, HttpContext ctx) =>
 });
 
 app.MapGet("/api/failsafe/config", (FailSafeService svc) =>
-    Results.Ok(svc.Config));
+{
+    // Hide PIN from API response
+    var cfg = svc.Config;
+    return Results.Ok(new {
+        cfg.Enabled, cfg.AutoTriggerBreakers, cfg.ScanIntervalSeconds, cfg.ScanOnStartup,
+        cfg.NotificationCooldownMinutes, cfg.DailySummaryEnabled, cfg.DailySummaryHourUtc,
+        cfg.HighValueBookingThreshold, cfg.AutoFlagHighValue,
+        cfg.SellBelowCostEnabled, cfg.SellBelowCostMinLoss, cfg.SellBelowCostCriticalLoss,
+        cfg.SpendSpikeThreshold, cfg.SpendSpikeWindowHours, cfg.AutoFlagSellBelowCost,
+        cfg.RevenueLossStreakEnabled, cfg.RevenueLossStreakDays, cfg.RevenueLossStreakMinCount, cfg.RevenueLossStreakMinPercent,
+        cfg.PriceDriftDangerPercent, cfg.PriceDriftDangerAbsolute,
+        cfg.RunawayQueueThreshold, cfg.CancelStormThreshold, cfg.CancelStormWindowHours,
+        cfg.DuplicateBookingEnabled
+    });
+});
 
 app.MapPut("/api/failsafe/config", async (FailSafeService svc, HttpContext ctx) =>
 {
