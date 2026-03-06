@@ -339,6 +339,19 @@ td.log-msg{white-space:pre-wrap;word-break:break-word;max-width:600px;font-famil
 
   <div id="soDiagStuckBanner" class="alert-bar" style="display:none;margin-bottom:12px"></div>
 
+  <div class="section">
+    <div class="section-header"><h2>&#x1F4D8; תהליך סריקה מלא — איך זה עובד (SalesOffice)</h2></div>
+    <div style="overflow-x:auto;margin-bottom:8px">
+      <table>
+        <thead><tr><th>שלב</th><th>מה קורה</th><th>אות חי מהמערכת</th><th>סטטוס</th><th>אבחון</th></tr></thead>
+        <tbody id="soDiagLifecycleBody"><tr class="empty-row"><td colspan="5">טוען...</td></tr></tbody>
+      </table>
+    </div>
+    <div style="font-size:12px;color:var(--text2)">
+      קבועים בתהליך: חיפוש לילה אחד, 2 מבוגרים, USD, timeout 30s, retries מדורגים, וסנני refundable / not-self / venue.
+    </div>
+  </div>
+
   <div class="cards" id="soDiagKpiCards"><div class="card"><div class="label">טוען SalesOrder...</div><div class="value"><div class="spinner"></div></div></div></div>
 
   <div class="section">
@@ -1284,6 +1297,87 @@ function soDiagMatch(row, q) {
   return hay.includes(q);
 }
 
+function soIssueCount(d, token) {
+  const t = (token || '').toLowerCase();
+  return (d.issueBreakdown || [])
+    .filter(x => (x.issue || '').toLowerCase().includes(t))
+    .reduce((sum, x) => sum + (x.count || 0), 0);
+}
+
+function renderSalesOrderLifecycle(d) {
+  const body = document.getElementById('soDiagLifecycleBody');
+  if (!body) return;
+
+  const dateRangeErr = soIssueCount(d, 'daterange');
+  const runningNoResult = d.runningWithoutResult || 0;
+  const staleNoResult = d.runningStaleWithoutResult || 0;
+  const noMap = d.completedWithoutMapping || 0;
+  const callbackErr = d.callbackErrors || 0;
+  const unprocessed = d.unprocessedDetailsRows || 0;
+  const detailsLastHour = d.detailsLastHour || 0;
+  const hasHotelCoverage = (d.hotelCoverage || []).length > 0;
+
+  const rows = [
+    {
+      step: '1. טעינת הזמנות',
+      action: 'טעינת SalesOffice.Orders ועיבוד סדרתי',
+      signal: (d.totalActiveOrders || 0) + ' הזמנות פעילות',
+      status: (d.totalActiveOrders || 0) > 0 ? ['s-green', 'OK'] : ['s-yellow', 'LOW'],
+      note: 'Pending=' + (d.pendingOrders || 0) + ', Running=' + (d.runningOrders || 0)
+    },
+    {
+      step: '2. סינון ראשוני',
+      action: 'בדיקת תוקף טווח תאריכים/אקטיביות',
+      signal: dateRangeErr + ' DateRangeError',
+      status: dateRangeErr > 0 ? ['s-red', 'ISSUE'] : ['s-green', 'OK'],
+      note: dateRangeErr > 0 ? 'יש הזמנות שנפסלו בטווח תאריכים' : 'לא זוהו פסילות חריגות'
+    },
+    {
+      step: '3. חיפוש ספקים (API)',
+      action: 'SearchHotels לפי תאריכים/יעד',
+      signal: detailsLastHour + ' תוצאות בשעה אחרונה',
+      status: detailsLastHour > 0 ? ['s-green', 'OK'] : runningNoResult > 0 ? ['s-yellow', 'SLOW'] : ['s-blue', 'IDLE'],
+      note: staleNoResult > 0 ? ('יש ' + staleNoResult + ' רצות מעבר לסף זמן') : 'קצב סריקה תקין'
+    },
+    {
+      step: '4. סננים קריטיים',
+      action: 'fully-refundable / not-self / venue mapping',
+      signal: hasHotelCoverage ? ((d.hotelCoverage || []).length + ' מלונות עם תוצאות') : 'אין HotelId ב-Details',
+      status: hasHotelCoverage ? ['s-green', 'OK'] : ['s-yellow', 'PARTIAL'],
+      note: noMap > 0 ? (noMap + ' הושלמו ללא Mapping') : 'לא זוהו נפילות Mapping בשלב זה'
+    },
+    {
+      step: '5. בחירת מחיר זול',
+      action: 'Flatten + Group + Min price לכל שילוב חדר/Board',
+      signal: (d.avgDetailsPerCompletedOrder || 0).toFixed(2) + ' Avg mapping/order',
+      status: (d.avgDetailsPerCompletedOrder || 0) > 0 ? ['s-green', 'OK'] : ['s-yellow', 'LOW'],
+      note: 'Details=' + (d.totalDetailsRows || 0)
+    },
+    {
+      step: '6. Remap לזניט',
+      action: 'התאמה ל-ratebycat וקבלת RatePlan/InvType',
+      signal: noMap + ' ללא Mapping',
+      status: noMap > 0 ? ['s-red', 'ISSUE'] : ['s-green', 'OK'],
+      note: noMap > 0 ? 'חלק מהחדרים לא ממופים ונושרים' : 'Remap נראה תקין'
+    },
+    {
+      step: '7. Sync ל-Zenith',
+      action: 'ADD / UPDATE / DELETE + callback processing',
+      signal: unprocessed + ' unprocessed | ' + callbackErr + ' errors',
+      status: d.isScanStuck || callbackErr > 0 ? ['s-red', 'ISSUE'] : unprocessed > 0 ? ['s-yellow', 'PENDING'] : ['s-green', 'OK'],
+      note: d.isScanStuck ? (d.scanStuckReason || 'תקיעות בסנכרון') : 'callback זורם'
+    }
+  ];
+
+  body.innerHTML = rows.map(r =>
+    '<tr><td><b>' + r.step + '</b></td>' +
+    '<td>' + esc(r.action) + '</td>' +
+    '<td>' + esc(r.signal) + '</td>' +
+    '<td>' + statusBadge(r.status[0], r.status[1]) + '</td>' +
+    '<td>' + esc(r.note) + '</td></tr>'
+  ).join('');
+}
+
 function renderSalesOrderTablesFromCache() {
   const d = SO_DIAG_CACHE;
   if (!d) return;
@@ -1353,6 +1447,7 @@ async function loadSalesOrderDiagnostics() {
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
     const d = await resp.json();
     SO_DIAG_CACHE = d;
+    renderSalesOrderLifecycle(d);
 
     const anomalyCount = (d.completedWithoutMapping||0) + (d.runningStaleWithoutResult||0) + (d.failedOrders||0) + (d.callbackErrors||0);
     const nav = document.getElementById('navSoDiagCount');
@@ -1477,6 +1572,7 @@ async function loadSalesOrderDiagnostics() {
     stuckBanner.style.display = 'none';
     stuckBanner.textContent = '';
     document.getElementById('soDiagProcessBody').innerHTML = emptyRow(4, 'שגיאה: ' + err.message);
+    document.getElementById('soDiagLifecycleBody').innerHTML = emptyRow(5, 'שגיאה: ' + err.message);
     document.getElementById('soDiagIssueBody').innerHTML = emptyRow(2, 'שגיאה: ' + err.message);
     document.getElementById('soDiagThroughputBody').innerHTML = emptyRow(6, 'שגיאה: ' + err.message);
     document.getElementById('soDiagHotelCoverageBody').innerHTML = emptyRow(6, 'שגיאה: ' + err.message);
