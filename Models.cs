@@ -218,10 +218,17 @@ public class SalesOrderDiagnostics
     public int RunningWithoutResult { get; set; }
     public int RunningStaleWithoutResult { get; set; }
     public double AvgDetailsPerCompletedOrder { get; set; }
+    public DateTime? LastProcessedCallbackAt { get; set; }
+    public DateTime? LastDetailAt { get; set; }
+    public bool IsScanStuck { get; set; }
+    public string? ScanStuckReason { get; set; }
+    public int ScanStuckThresholdMinutes { get; set; } = 30;
 
     public List<SalesOrderProcessMetric> ProcessMetrics { get; set; } = new();
     public List<SalesOrderIssueSummary> IssueBreakdown { get; set; } = new();
     public List<SalesOrderHourlyPoint> Throughput24h { get; set; } = new();
+    public List<SalesOrderHotelCoverageInfo> HotelCoverage { get; set; } = new();
+    public List<SalesOrderScanLogEntry> ScanLog { get; set; } = new();
 
     public List<SalesOrderRuntimeInfo> RunningOrderItems { get; set; } = new();
     public List<SalesOrderRuntimeInfo> CompletedWithoutMappingItems { get; set; } = new();
@@ -253,6 +260,27 @@ public class SalesOrderHourlyPoint
     public int CallbackErrors { get; set; }
 }
 
+public class SalesOrderHotelCoverageInfo
+{
+    public int? HotelId { get; set; }
+    public string? HotelName { get; set; }
+    public int OrdersCount { get; set; }
+    public int DetailsCount { get; set; }
+    public int UnprocessedCount { get; set; }
+    public int ErrorCount { get; set; }
+    public DateTime? LastSeen { get; set; }
+}
+
+public class SalesOrderScanLogEntry
+{
+    public DateTime? DateInsert { get; set; }
+    public int? OrderId { get; set; }
+    public int? DetailId { get; set; }
+    public bool? IsProcessedCallback { get; set; }
+    public string? Level { get; set; }
+    public string? Message { get; set; }
+}
+
 public class SalesOrderRuntimeInfo
 {
     public int OrderId { get; set; }
@@ -263,6 +291,8 @@ public class SalesOrderRuntimeInfo
     public int DetailCount { get; set; }
     public int UnprocessedDetails { get; set; }
     public int ErrorCount { get; set; }
+    public string? SupplierInfo { get; set; }
+    public string? RoomInfo { get; set; }
     public double? MinutesSinceStart { get; set; }
     public string? IssueReason { get; set; }
 }
@@ -297,6 +327,8 @@ public class SalesOrderTraceDetail
     public int OrderId { get; set; }
     public DateTime? DateInsert { get; set; }
     public bool? IsProcessedCallback { get; set; }
+    public string? SupplierInfo { get; set; }
+    public string? RoomInfo { get; set; }
     public string? Error { get; set; }
     public string? ErrorMessage { get; set; }
 }

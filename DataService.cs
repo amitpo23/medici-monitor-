@@ -10,6 +10,7 @@ public class DataService
 {
     private readonly string _connStr;
     private readonly int _soRunningNoResultHours;
+    private readonly int _soScanStuckMinutes;
     private readonly ILogger<DataService> _logger;
 
     public DataService(IConfiguration config, ILogger<DataService> logger)
@@ -17,6 +18,7 @@ public class DataService
         _connStr = config.GetConnectionString("SqlServer")
             ?? throw new InvalidOperationException("Missing SqlServer connection string");
         _soRunningNoResultHours = config.GetValue<int?>("AlertThresholds:SalesOfficeRunningNoResultHours") ?? 2;
+        _soScanStuckMinutes = config.GetValue<int?>("AlertThresholds:SalesOfficeScanStuckMinutes") ?? 30;
         _logger = logger;
     }
 
@@ -62,7 +64,12 @@ public class DataService
 
     public async Task<SalesOrderDiagnostics> GetSalesOrderDiagnostics()
     {
-        var r = new SalesOrderDiagnostics { Timestamp = DateTime.UtcNow, StaleRunningThresholdHours = _soRunningNoResultHours };
+        var r = new SalesOrderDiagnostics
+        {
+            Timestamp = DateTime.UtcNow,
+            StaleRunningThresholdHours = _soRunningNoResultHours,
+            ScanStuckThresholdMinutes = _soScanStuckMinutes
+        };
 
         try
         {
@@ -87,6 +94,14 @@ public class DataService
             var hasProcessedCallback = detailsTable != null && await ColumnExists(conn, detailsTable, "IsProcessedCallback");
             var hasErrCol = detailsTable != null && await ColumnExists(conn, detailsTable, "Error");
             var hasErrMsgCol = detailsTable != null && await ColumnExists(conn, detailsTable, "ErrorMessage");
+            var hasDetailId = detailsTable != null && await ColumnExists(conn, detailsTable, "Id");
+            var hasHotelId = detailsTable != null && await ColumnExists(conn, detailsTable, "HotelId");
+            var supplierColumn = detailsTable != null
+                ? await ResolveFirstExistingColumn(conn, detailsTable, ["SupplierName", "Supplier", "SourceName", "ProviderName", "Provider", "Source"])
+                : null;
+            var roomColumn = detailsTable != null
+                ? await ResolveFirstExistingColumn(conn, detailsTable, ["RoomTypeCode", "RoomType", "RoomName", "Room", "RoomId"])
+                : null;
 
             string detailCte;
             if (detailsTable != null)
@@ -121,6 +136,12 @@ public class DataService
                 ? "DATEDIFF(MINUTE, o.DateInsert, GETDATE())"
                 : "NULL";
             var orderDateSelect = hasOrderDateInsert ? "o.DateInsert" : "NULL";
+            var supplierExpr = detailsTable != null && supplierColumn != null
+                ? $"(SELECT TOP 1 CAST(x.[{supplierColumn}] AS NVARCHAR(200)) FROM {detailsTable} x WHERE x.OrderId = o.Id AND x.[{supplierColumn}] IS NOT NULL AND LTRIM(RTRIM(CAST(x.[{supplierColumn}] AS NVARCHAR(200)))) <> '' GROUP BY CAST(x.[{supplierColumn}] AS NVARCHAR(200)) ORDER BY COUNT(*) DESC, CAST(x.[{supplierColumn}] AS NVARCHAR(200)))"
+                : "NULL";
+            var roomExpr = detailsTable != null && roomColumn != null
+                ? $"(SELECT TOP 1 CAST(x.[{roomColumn}] AS NVARCHAR(200)) FROM {detailsTable} x WHERE x.OrderId = o.Id AND x.[{roomColumn}] IS NOT NULL AND LTRIM(RTRIM(CAST(x.[{roomColumn}] AS NVARCHAR(200)))) <> '' GROUP BY CAST(x.[{roomColumn}] AS NVARCHAR(200)) ORDER BY COUNT(*) DESC, CAST(x.[{roomColumn}] AS NVARCHAR(200)))"
+                : "NULL";
 
             var summarySql = $@"
                 {detailCte}
@@ -174,6 +195,101 @@ public class DataService
                     r.DetailsLastHour = dr.IsDBNull(2) ? 0 : dr.GetInt32(2);
                     r.CallbackErrors = dr.IsDBNull(3) ? 0 : dr.GetInt32(3);
                 }
+
+                if (hasDetailsDateInsert)
+                {
+                    using var lastAnyCmd = new SqlCommand($"SELECT MAX(DateInsert) FROM {detailsTable}", conn) { CommandTimeout = 10 };
+                    var lastAny = await lastAnyCmd.ExecuteScalarAsync();
+                    if (lastAny != null && lastAny != DBNull.Value) r.LastDetailAt = Convert.ToDateTime(lastAny);
+                }
+
+                if (hasProcessedCallback && hasDetailsDateInsert)
+                {
+                    using var lastProcCmd = new SqlCommand($"SELECT MAX(DateInsert) FROM {detailsTable} WHERE ISNULL(IsProcessedCallback,0)=1", conn) { CommandTimeout = 10 };
+                    var lastProc = await lastProcCmd.ExecuteScalarAsync();
+                    if (lastProc != null && lastProc != DBNull.Value) r.LastProcessedCallbackAt = Convert.ToDateTime(lastProc);
+                }
+
+                var scanLogSql = $@"
+                    SELECT TOP 120
+                        {(hasDetailId ? "Id" : "NULL")} AS DetailId,
+                        OrderId,
+                        {(hasDetailsDateInsert ? "DateInsert" : "NULL")} AS DateInsert,
+                        {(hasProcessedCallback ? "IsProcessedCallback" : "NULL")} AS IsProcessedCallback,
+                        {(hasErrCol ? "[Error]" : "NULL")} AS [Error],
+                        {(hasErrMsgCol ? "[ErrorMessage]" : "NULL")} AS [ErrorMessage]
+                    FROM {detailsTable}
+                    ORDER BY {(hasDetailsDateInsert ? "DateInsert DESC" : hasDetailId ? "Id DESC" : "OrderId DESC")}";
+
+                using (var slcmd = new SqlCommand(scanLogSql, conn) { CommandTimeout = 15 })
+                using (var slr = await slcmd.ExecuteReaderAsync())
+                {
+                    while (await slr.ReadAsync())
+                    {
+                        var err = slr.IsDBNull(4) ? null : slr.GetString(4);
+                        var errMsg = slr.IsDBNull(5) ? null : slr.GetString(5);
+                        var hasErr = !string.IsNullOrWhiteSpace(err) || !string.IsNullOrWhiteSpace(errMsg);
+                        var processed = slr.IsDBNull(3) ? (bool?)null : slr.GetBoolean(3);
+
+                        var level = hasErr ? "Error" : processed == false ? "Warning" : "Info";
+                        var msg = hasErr
+                            ? (errMsg ?? err ?? "Callback error")
+                            : processed == false
+                                ? "Callback עדיין לא עובד"
+                                : "Callback עובד בהצלחה";
+
+                        r.ScanLog.Add(new SalesOrderScanLogEntry
+                        {
+                            DetailId = slr.IsDBNull(0) ? null : slr.GetInt32(0),
+                            OrderId = slr.IsDBNull(1) ? null : slr.GetInt32(1),
+                            DateInsert = slr.IsDBNull(2) ? null : slr.GetDateTime(2),
+                            IsProcessedCallback = processed,
+                            Level = level,
+                            Message = msg
+                        });
+                    }
+                }
+
+                if (hasHotelId)
+                {
+                    try
+                    {
+                        var hotelCovSql = $@"
+                            SELECT TOP 60
+                                d.HotelId,
+                                ISNULL(h.Name, N'Hotel ' + CAST(d.HotelId AS NVARCHAR(20))) AS HotelName,
+                                COUNT(DISTINCT d.OrderId) AS OrdersCount,
+                                COUNT(*) AS DetailsCount,
+                                {(hasProcessedCallback ? "SUM(CASE WHEN ISNULL(d.IsProcessedCallback,0)=0 THEN 1 ELSE 0 END)" : "0")} AS UnprocessedCount,
+                                {(hasErrCol ? "SUM(CASE WHEN d.[Error] IS NOT NULL AND d.[Error] <> '' THEN 1 ELSE 0 END)" : hasErrMsgCol ? "SUM(CASE WHEN d.[ErrorMessage] IS NOT NULL AND d.[ErrorMessage] <> '' THEN 1 ELSE 0 END)" : "0")} AS ErrorCount,
+                                {(hasDetailsDateInsert ? "MAX(d.DateInsert)" : "NULL")} AS LastSeen
+                            FROM {detailsTable} d
+                            LEFT JOIN Med_Hotels h ON h.HotelId = d.HotelId
+                            WHERE d.HotelId IS NOT NULL
+                            GROUP BY d.HotelId, h.Name
+                            ORDER BY ErrorCount DESC, UnprocessedCount DESC, DetailsCount DESC";
+
+                        using var hcmd = new SqlCommand(hotelCovSql, conn) { CommandTimeout = 20 };
+                        using var hrdr = await hcmd.ExecuteReaderAsync();
+                        while (await hrdr.ReadAsync())
+                        {
+                            r.HotelCoverage.Add(new SalesOrderHotelCoverageInfo
+                            {
+                                HotelId = hrdr.IsDBNull(0) ? null : hrdr.GetInt32(0),
+                                HotelName = hrdr.IsDBNull(1) ? null : hrdr.GetString(1),
+                                OrdersCount = hrdr.IsDBNull(2) ? 0 : hrdr.GetInt32(2),
+                                DetailsCount = hrdr.IsDBNull(3) ? 0 : hrdr.GetInt32(3),
+                                UnprocessedCount = hrdr.IsDBNull(4) ? 0 : hrdr.GetInt32(4),
+                                ErrorCount = hrdr.IsDBNull(5) ? 0 : hrdr.GetInt32(5),
+                                LastSeen = hrdr.IsDBNull(6) ? null : hrdr.GetDateTime(6)
+                            });
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogDebug("Hotel coverage query skipped: {Err}", ex.Message);
+                    }
+                }
             }
 
             var runningSql = $@"
@@ -187,6 +303,8 @@ public class DataService
                     ISNULL(d.DetailCount, 0) AS DetailCount,
                     ISNULL(d.UnprocessedCount, 0) AS UnprocessedCount,
                     ISNULL(d.ErrorCount, 0) AS ErrorCount,
+                    {supplierExpr} AS SupplierInfo,
+                    {roomExpr} AS RoomInfo,
                     {minutesExpr} AS MinutesSinceStart,
                     CASE
                         WHEN ISNULL(d.DetailCount, 0) = 0 {(hasOrderDateInsert ? $"AND o.DateInsert <= DATEADD(HOUR, -{r.StaleRunningThresholdHours}, GETDATE())" : "")} THEN N'Running בלי תוצאה מעבר לסף זמן'
@@ -215,8 +333,10 @@ public class DataService
                         DetailCount = rdr.IsDBNull(5) ? 0 : rdr.GetInt32(5),
                         UnprocessedDetails = rdr.IsDBNull(6) ? 0 : rdr.GetInt32(6),
                         ErrorCount = rdr.IsDBNull(7) ? 0 : rdr.GetInt32(7),
-                        MinutesSinceStart = rdr.IsDBNull(8) ? null : rdr.GetInt32(8),
-                        IssueReason = rdr.IsDBNull(9) ? null : rdr.GetString(9)
+                        SupplierInfo = rdr.IsDBNull(8) ? null : rdr.GetString(8),
+                        RoomInfo = rdr.IsDBNull(9) ? null : rdr.GetString(9),
+                        MinutesSinceStart = rdr.IsDBNull(10) ? null : rdr.GetInt32(10),
+                        IssueReason = rdr.IsDBNull(11) ? null : rdr.GetString(11)
                     });
                 }
             }
@@ -232,6 +352,8 @@ public class DataService
                     ISNULL(d.DetailCount, 0) AS DetailCount,
                     ISNULL(d.UnprocessedCount, 0) AS UnprocessedCount,
                     ISNULL(d.ErrorCount, 0) AS ErrorCount,
+                    {supplierExpr} AS SupplierInfo,
+                    {roomExpr} AS RoomInfo,
                     {minutesExpr} AS MinutesSinceStart,
                     N'Completed ללא שום תוצאת mapping' AS IssueReason
                 FROM {ordersTable} o
@@ -254,10 +376,23 @@ public class DataService
                         DetailCount = rdr.IsDBNull(5) ? 0 : rdr.GetInt32(5),
                         UnprocessedDetails = rdr.IsDBNull(6) ? 0 : rdr.GetInt32(6),
                         ErrorCount = rdr.IsDBNull(7) ? 0 : rdr.GetInt32(7),
-                        MinutesSinceStart = rdr.IsDBNull(8) ? null : rdr.GetInt32(8),
-                        IssueReason = rdr.IsDBNull(9) ? null : rdr.GetString(9)
+                        SupplierInfo = rdr.IsDBNull(8) ? null : rdr.GetString(8),
+                        RoomInfo = rdr.IsDBNull(9) ? null : rdr.GetString(9),
+                        MinutesSinceStart = rdr.IsDBNull(10) ? null : rdr.GetInt32(10),
+                        IssueReason = rdr.IsDBNull(11) ? null : rdr.GetString(11)
                     });
                 }
+            }
+
+            if (r.CompletedWithoutMappingItems.Count > 0)
+            {
+                var ranges = ToOrderRanges(r.CompletedWithoutMappingItems.Select(x => x.OrderId));
+                r.ScanLog.InsertRange(0, ranges.Take(6).Select(rr => new SalesOrderScanLogEntry
+                {
+                    DateInsert = DateTime.UtcNow,
+                    Level = "Warning",
+                    Message = $"Completed ללא Mapping בטווח הזמנות {rr}"
+                }));
             }
 
             var failedSql = $@"
@@ -271,6 +406,8 @@ public class DataService
                     ISNULL(d.DetailCount, 0) AS DetailCount,
                     ISNULL(d.UnprocessedCount, 0) AS UnprocessedCount,
                     ISNULL(d.ErrorCount, 0) AS ErrorCount,
+                    {supplierExpr} AS SupplierInfo,
+                    {roomExpr} AS RoomInfo,
                     {minutesExpr} AS MinutesSinceStart,
                     CASE
                         WHEN o.WebJobStatus = 'DateRangeError' THEN N'טווח תאריכים לא חוקי להזמנה'
@@ -298,8 +435,10 @@ public class DataService
                         DetailCount = rdr.IsDBNull(5) ? 0 : rdr.GetInt32(5),
                         UnprocessedDetails = rdr.IsDBNull(6) ? 0 : rdr.GetInt32(6),
                         ErrorCount = rdr.IsDBNull(7) ? 0 : rdr.GetInt32(7),
-                        MinutesSinceStart = rdr.IsDBNull(8) ? null : rdr.GetInt32(8),
-                        IssueReason = rdr.IsDBNull(9) ? null : rdr.GetString(9)
+                        SupplierInfo = rdr.IsDBNull(8) ? null : rdr.GetString(8),
+                        RoomInfo = rdr.IsDBNull(9) ? null : rdr.GetString(9),
+                        MinutesSinceStart = rdr.IsDBNull(10) ? null : rdr.GetInt32(10),
+                        IssueReason = rdr.IsDBNull(11) ? null : rdr.GetString(11)
                     });
                 }
             }
@@ -415,6 +554,36 @@ public class DataService
                     });
                 }
             }
+
+            if ((r.RunningOrders + r.PendingOrders) > 0)
+            {
+                var now = DateTime.UtcNow;
+                if (r.LastProcessedCallbackAt.HasValue && (now - r.LastProcessedCallbackAt.Value).TotalMinutes > r.ScanStuckThresholdMinutes)
+                {
+                    r.IsScanStuck = true;
+                    r.ScanStuckReason = $"אין callback מעובד מעל {r.ScanStuckThresholdMinutes} דקות";
+                }
+                else if (!r.LastProcessedCallbackAt.HasValue && !r.LastDetailAt.HasValue)
+                {
+                    r.IsScanStuck = true;
+                    r.ScanStuckReason = "לא נמצאו אירועי סריקה בטבלת Details";
+                }
+                else if (r.DetailsLastHour == 0 && r.RunningWithoutResult > 0)
+                {
+                    r.IsScanStuck = true;
+                    r.ScanStuckReason = "אין תוצאות סריקה בשעה האחרונה למרות הזמנות פעילות";
+                }
+            }
+
+            if (r.IsScanStuck && !string.IsNullOrWhiteSpace(r.ScanStuckReason))
+            {
+                r.ScanLog.Insert(0, new SalesOrderScanLogEntry
+                {
+                    DateInsert = DateTime.UtcNow,
+                    Level = "Error",
+                    Message = $"SCAN STUCK: {r.ScanStuckReason}"
+                });
+            }
         }
         catch (Exception ex)
         {
@@ -453,6 +622,12 @@ public class DataService
             var hasErrCol = detailsTable != null && await ColumnExists(conn, detailsTable, "Error");
             var hasErrMsgCol = detailsTable != null && await ColumnExists(conn, detailsTable, "ErrorMessage");
             var hasDetailId = detailsTable != null && await ColumnExists(conn, detailsTable, "Id");
+            var supplierColumn = detailsTable != null
+                ? await ResolveFirstExistingColumn(conn, detailsTable, ["SupplierName", "Supplier", "SourceName", "ProviderName", "Provider", "Source"])
+                : null;
+            var roomColumn = detailsTable != null
+                ? await ResolveFirstExistingColumn(conn, detailsTable, ["RoomTypeCode", "RoomType", "RoomName", "Room", "RoomId"])
+                : null;
 
             var orderSql = $@"
                 SELECT TOP 1
@@ -514,6 +689,8 @@ public class DataService
                         d.OrderId,
                         {(hasDetailsDateInsert ? "d.DateInsert" : "NULL")} AS DateInsert,
                         {(hasProcessedCallback ? "d.IsProcessedCallback" : "NULL")} AS IsProcessedCallback,
+                        {(supplierColumn != null ? $"CAST(d.[{supplierColumn}] AS NVARCHAR(200))" : "NULL")} AS SupplierInfo,
+                        {(roomColumn != null ? $"CAST(d.[{roomColumn}] AS NVARCHAR(200))" : "NULL")} AS RoomInfo,
                         {(hasErrCol ? "d.[Error]" : "NULL")} AS [Error],
                         {(hasErrMsgCol ? "d.[ErrorMessage]" : "NULL")} AS [ErrorMessage]
                     FROM {detailsTable} d
@@ -531,8 +708,10 @@ public class DataService
                         OrderId = dr.IsDBNull(1) ? orderId : dr.GetInt32(1),
                         DateInsert = dr.IsDBNull(2) ? null : dr.GetDateTime(2),
                         IsProcessedCallback = dr.IsDBNull(3) ? null : dr.GetBoolean(3),
-                        Error = dr.IsDBNull(4) ? null : dr.GetString(4),
-                        ErrorMessage = dr.IsDBNull(5) ? null : dr.GetString(5)
+                        SupplierInfo = dr.IsDBNull(4) ? null : dr.GetString(4),
+                        RoomInfo = dr.IsDBNull(5) ? null : dr.GetString(5),
+                        Error = dr.IsDBNull(6) ? null : dr.GetString(6),
+                        ErrorMessage = dr.IsDBNull(7) ? null : dr.GetString(7)
                     });
                 }
             }
@@ -585,6 +764,42 @@ public class DataService
         using var cmd = new SqlCommand($"SELECT CASE WHEN COL_LENGTH('{safeTableName}', '{safeColumn}') IS NULL THEN 0 ELSE 1 END", conn);
         cmd.CommandTimeout = 5;
         return Convert.ToInt32(await cmd.ExecuteScalarAsync() ?? 0) == 1;
+    }
+
+    private static async Task<string?> ResolveFirstExistingColumn(SqlConnection conn, string tableName, string[] candidates)
+    {
+        foreach (var c in candidates)
+        {
+            if (await ColumnExists(conn, tableName, c)) return c;
+        }
+
+        return null;
+    }
+
+    private static List<string> ToOrderRanges(IEnumerable<int> ids)
+    {
+        var list = ids.Where(x => x > 0).Distinct().OrderBy(x => x).ToList();
+        var ranges = new List<string>();
+        if (list.Count == 0) return ranges;
+
+        var start = list[0];
+        var prev = list[0];
+        for (var i = 1; i < list.Count; i++)
+        {
+            var current = list[i];
+            if (current == prev + 1)
+            {
+                prev = current;
+                continue;
+            }
+
+            ranges.Add(start == prev ? $"{start}" : $"{start}-{prev}");
+            start = current;
+            prev = current;
+        }
+
+        ranges.Add(start == prev ? $"{start}" : $"{start}-{prev}");
+        return ranges;
     }
 
     // ═══════════════════════════════════════════════════════════════
