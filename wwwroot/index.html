@@ -231,6 +231,7 @@ td.log-msg{white-space:pre-wrap;word-break:break-word;max-width:600px;font-famil
   <div class="nav-tab" data-nav="audit">&#x1F4CB; Audit</div>
   <div class="nav-tab" data-nav="notifications">&#x1F4E7; התראות חיצוניות</div>
   <div class="nav-tab" data-nav="failsafe">&#x1F6D1; Kill Switch <span class="count red" id="navFailSafeCount" style="display:none">0</span></div>
+  <div class="nav-tab" data-nav="webjobs">&#x2699;&#xFE0F; WebJobs <span class="count blue" id="navWebJobsCount" style="display:none">0</span></div>
   <div class="nav-tab" data-nav="logs">&#x1F4DC; Logs <span class="count blue" id="navLogCount">0</span></div>
 </div>
 
@@ -958,6 +959,16 @@ td.log-msg{white-space:pre-wrap;word-break:break-word;max-width:600px;font-famil
           <label style="font-size:12px;display:flex;align-items:center;gap:6px;margin-bottom:6px"><input type="checkbox" id="nfTeamsEnabled"> מופעל</label>
           <input id="nfTeamsUrl" placeholder="Teams Webhook URL" style="width:100%;padding:6px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:12px">
         </div>
+        <div style="margin-bottom:16px">
+          <h3 style="font-size:13px;margin-bottom:8px">WhatsApp (Twilio)</h3>
+          <label style="font-size:12px;display:flex;align-items:center;gap:6px;margin-bottom:6px"><input type="checkbox" id="nfWhatsAppEnabled"> מופעל</label>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+            <input id="nfTwilioSid" placeholder="Twilio Account SID" style="padding:6px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:12px">
+            <input id="nfTwilioToken" placeholder="Twilio Auth Token" type="password" style="padding:6px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:12px">
+          </div>
+          <input id="nfTwilioFrom" placeholder="מספר שולח (לדוגמה: +14155238886)" style="width:100%;padding:6px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:12px;margin-top:8px">
+          <input id="nfWhatsAppRecipients" placeholder="נמענים WhatsApp (מופרדים בפסיק, לדוגמה: +972501234567,+972502345678)" style="width:100%;padding:6px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:12px;margin-top:8px">
+        </div>
         <div>
           <h3 style="font-size:13px;margin-bottom:8px">כללי</h3>
           <div style="display:flex;gap:12px;align-items:center">
@@ -1107,6 +1118,60 @@ td.log-msg{white-space:pre-wrap;word-break:break-word;max-width:600px;font-famil
         <button onclick="saveFailsafeConfig()" style="background:var(--blue);color:#fff;border:none;padding:8px 16px;border-radius:6px;cursor:pointer;font-weight:600">💾 שמור הגדרות</button>
         <span id="fsConfigStatus" style="font-size:12px;color:var(--green);align-self:center"></span>
       </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!--  PANEL: WebJobs Monitoring                                         -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<div class="nav-panel" id="panel-webjobs">
+
+  <!-- Summary Bar -->
+  <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px;align-items:center">
+    <button onclick="loadWebJobs(true)" style="background:var(--blue);color:#fff;border:none;padding:10px 20px;border-radius:8px;cursor:pointer;font-weight:700;font-size:14px">&#x1F504; רענן (Force)</button>
+    <button onclick="loadWebJobs(false)" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);padding:10px 20px;border-radius:8px;cursor:pointer;font-weight:600;font-size:14px">&#x1F504; רענן (Cached)</button>
+    <span style="flex:1"></span>
+    <span id="wjLastRefresh" style="font-size:12px;color:var(--text2)">לא נטען עדיין</span>
+  </div>
+
+  <!-- KPI Summary -->
+  <div id="wjSummaryCards" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:12px;margin-bottom:16px">
+    <div class="card"><div class="label">סה"כ Jobs</div><div class="value" id="wjTotalJobs">-</div></div>
+    <div class="card"><div class="label">&#x1F7E2; רצים</div><div class="value" id="wjRunningJobs" style="color:var(--green)">-</div></div>
+    <div class="card"><div class="label">&#x1F534; עצורים</div><div class="value" id="wjStoppedJobs" style="color:var(--red)">-</div></div>
+    <div class="card"><div class="label">&#x26A0;&#xFE0F; שגיאות</div><div class="value" id="wjErrorJobs" style="color:var(--red)">-</div></div>
+    <div class="card"><div class="label">Continuous</div><div class="value" id="wjContinuousJobs">-</div></div>
+    <div class="card"><div class="label">Triggered</div><div class="value" id="wjTriggeredJobs">-</div></div>
+  </div>
+
+  <!-- Jobs Grid per App -->
+  <div id="wjAppsContainer">
+    <div class="section"><div class="section-header"><h2>&#x2699;&#xFE0F; WebJobs</h2></div>
+      <div style="padding:16px;color:var(--text2);font-size:13px">לחץ "רענן" לטעינת WebJobs מ-Azure</div>
+    </div>
+  </div>
+
+  <!-- Events Timeline -->
+  <div class="section" style="margin-top:16px">
+    <div class="section-header"><h2>&#x1F4CB; אירועי WebJobs</h2>
+      <button onclick="loadWebJobEvents()" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);padding:4px 12px;border-radius:6px;cursor:pointer;font-size:12px">↻ רענן</button>
+    </div>
+    <div style="overflow-x:auto;max-height:400px;overflow-y:auto">
+      <table>
+        <thead style="position:sticky;top:0;z-index:1">
+          <tr><th style="width:150px">זמן</th><th>אפליקציה</th><th>Job</th><th>אירוע</th><th>פרטים</th></tr>
+        </thead>
+        <tbody id="wjEventsBody"><tr class="empty-row"><td colspan="5">אין אירועים</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Job Detail Modal (hidden) -->
+  <div id="wjDetailModal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);z-index:1000;justify-content:center;align-items:center">
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;max-width:800px;width:90%;max-height:80vh;overflow-y:auto;padding:24px;position:relative">
+      <button onclick="closeWjDetail()" style="position:absolute;top:12px;left:12px;background:none;border:none;color:var(--text);font-size:20px;cursor:pointer">✕</button>
+      <div id="wjDetailContent">טוען...</div>
     </div>
   </div>
 </div>
@@ -2556,6 +2621,11 @@ async function loadNotifConfig() {
     document.getElementById('nfSlackUrl').value = c.slackWebhookUrl || '';
     document.getElementById('nfTeamsEnabled').checked = c.teamsEnabled;
     document.getElementById('nfTeamsUrl').value = c.teamsWebhookUrl || '';
+    document.getElementById('nfWhatsAppEnabled').checked = c.whatsAppEnabled;
+    document.getElementById('nfTwilioSid').value = c.twilioAccountSid || '';
+    document.getElementById('nfTwilioToken').value = c.twilioAuthToken || '';
+    document.getElementById('nfTwilioFrom').value = c.twilioWhatsAppFrom || '';
+    document.getElementById('nfWhatsAppRecipients').value = c.whatsAppRecipients || '';
     document.getElementById('nfMinSeverity').value = c.minSeverity || 'Warning';
     document.getElementById('nfCooldown').value = c.cooldownMinutes || 5;
 
@@ -2585,6 +2655,11 @@ async function saveNotifConfig() {
     slackWebhookUrl: document.getElementById('nfSlackUrl').value,
     teamsEnabled: document.getElementById('nfTeamsEnabled').checked,
     teamsWebhookUrl: document.getElementById('nfTeamsUrl').value,
+    whatsAppEnabled: document.getElementById('nfWhatsAppEnabled').checked,
+    twilioAccountSid: document.getElementById('nfTwilioSid').value,
+    twilioAuthToken: document.getElementById('nfTwilioToken').value,
+    twilioWhatsAppFrom: document.getElementById('nfTwilioFrom').value,
+    whatsAppRecipients: document.getElementById('nfWhatsAppRecipients').value,
     minSeverity: document.getElementById('nfMinSeverity').value,
     cooldownMinutes: parseInt(document.getElementById('nfCooldown').value) || 5
   };
@@ -2633,6 +2708,219 @@ function exportLogsJson() {
   if (search) url += 'search=' + encodeURIComponent(search) + '&';
   if (category) url += 'category=' + encodeURIComponent(category) + '&';
   window.open(url, '_blank');
+}
+
+  window.open(url, '_blank');
+}
+
+// ══════════════════════════════════════════════════════════════════════
+//  WebJobs Monitoring
+// ══════════════════════════════════════════════════════════════════════
+
+async function loadWebJobs(force = false) {
+  try {
+    const url = '/api/webjobs' + (force ? '?force=true' : '');
+    const resp = await fetch(url);
+    const data = await resp.json();
+    renderWebJobs(data);
+  } catch(err) {
+    document.getElementById('wjAppsContainer').innerHTML = '<div class="section"><div style="padding:16px;color:var(--red)">שגיאה בטעינת WebJobs: ' + esc(err.message) + '</div></div>';
+  }
+}
+
+function renderWebJobs(data) {
+  const s = data.summary || {};
+  document.getElementById('wjTotalJobs').textContent = s.totalJobs || 0;
+  document.getElementById('wjRunningJobs').textContent = s.runningJobs || 0;
+  document.getElementById('wjStoppedJobs').textContent = s.stoppedJobs || 0;
+  document.getElementById('wjErrorJobs').textContent = s.errorJobs || 0;
+  document.getElementById('wjContinuousJobs').textContent = s.continuousJobs || 0;
+  document.getElementById('wjTriggeredJobs').textContent = s.triggeredJobs || 0;
+  document.getElementById('wjLastRefresh').textContent = 'עדכון: ' + fmt(data.timestamp);
+
+  // Update nav badge
+  const totalJobs = s.totalJobs || 0;
+  const navBadge = document.getElementById('navWebJobsCount');
+  if (totalJobs > 0) { navBadge.textContent = totalJobs; navBadge.style.display = ''; } else { navBadge.style.display = 'none'; }
+
+  // Render each app
+  const container = document.getElementById('wjAppsContainer');
+  const apps = data.apps || [];
+  if (!apps.length) {
+    container.innerHTML = '<div class="section"><div style="padding:16px;color:var(--text2)">לא נמצאו אפליקציות. ודא חיבור Azure CLI.</div></div>';
+    return;
+  }
+
+  let html = '';
+  for (const app of apps) {
+    const appStatusColor = app.hasError ? 'var(--red)' : 'var(--green)';
+    const appStatusIcon = app.hasError ? '&#x1F534;' : '&#x1F7E2;';
+    html += '<div class="section" style="margin-bottom:16px">';
+    html += '<div class="section-header"><h2>' + appStatusIcon + ' ' + esc(app.displayName || app.appName) + '</h2>';
+    html += '<span style="font-size:12px;color:' + appStatusColor + '">' + (app.hasError ? 'שגיאה: ' + esc(app.errorMessage||'') : app.jobs.length + ' jobs') + '</span></div>';
+
+    if (app.jobs && app.jobs.length) {
+      html += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px;padding:16px">';
+      for (const job of app.jobs) {
+        const statusColor = getJobStatusColor(job.status);
+        const statusIcon = getJobStatusIcon(job.status);
+        const typeLabel = job.type === 'continuous' ? 'Continuous' : 'Triggered';
+        const typeBg = job.type === 'continuous' ? 'var(--blue)' : 'var(--accent)';
+
+        html += '<div class="card" style="border-right:3px solid ' + statusColor + ';cursor:pointer" onclick="showJobDetail(\'' + esc(app.appName) + '\',\'' + esc(job.name) + '\',\'' + esc(job.type) + '\')">';
+        html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">';
+        html += '<div class="label" style="font-weight:700;font-size:13px">' + esc(job.name) + '</div>';
+        html += '<span style="background:' + typeBg + ';color:#fff;padding:2px 8px;border-radius:10px;font-size:10px">' + typeLabel + '</span>';
+        html += '</div>';
+        html += '<div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">';
+        html += '<span style="font-size:16px">' + statusIcon + '</span>';
+        html += '<span style="font-size:14px;font-weight:600;color:' + statusColor + '">' + esc(job.status) + '</span>';
+        html += '</div>';
+        if (job.detailedStatus) html += '<div style="font-size:11px;color:var(--text2);margin-bottom:4px">' + esc(job.detailedStatus) + '</div>';
+        if (job.runCommand) html += '<div style="font-size:10px;color:var(--text2);font-family:monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + esc(job.runCommand) + '">' + esc(job.runCommand) + '</div>';
+
+        // Latest run info
+        if (job.latestRun) {
+          const lr = job.latestRun;
+          html += '<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);font-size:11px;color:var(--text2)">';
+          html += '<div>ריצה אחרונה: <span style="color:' + getJobStatusColor(lr.status) + '">' + esc(lr.status) + '</span></div>';
+          if (lr.startTime) html += '<div>התחלה: ' + fmt(lr.startTime) + '</div>';
+          if (lr.duration) html += '<div>משך: ' + esc(lr.duration) + '</div>';
+          html += '</div>';
+        }
+
+        // Action buttons
+        html += '<div style="margin-top:8px;display:flex;gap:6px">';
+        if (job.type === 'triggered') {
+          html += '<button onclick="event.stopPropagation();triggerWebJob(\'' + esc(app.appName) + '\',\'' + esc(job.name) + '\')" style="background:var(--blue);color:#fff;border:none;padding:4px 10px;border-radius:4px;cursor:pointer;font-size:11px">▶ הפעל</button>';
+        } else {
+          if (job.status === 'Running') {
+            html += '<button onclick="event.stopPropagation();controlWebJob(\'' + esc(app.appName) + '\',\'' + esc(job.name) + '\',\'stop\')" style="background:var(--red);color:#fff;border:none;padding:4px 10px;border-radius:4px;cursor:pointer;font-size:11px">⏹ עצור</button>';
+          } else {
+            html += '<button onclick="event.stopPropagation();controlWebJob(\'' + esc(app.appName) + '\',\'' + esc(job.name) + '\',\'start\')" style="background:var(--green);color:#000;border:none;padding:4px 10px;border-radius:4px;cursor:pointer;font-size:11px">▶ הפעל</button>';
+          }
+        }
+        html += '</div>';
+        html += '</div>';
+      }
+      html += '</div>';
+    } else if (!app.hasError) {
+      html += '<div style="padding:16px;color:var(--text2);font-size:13px">אין WebJobs באפליקציה זו</div>';
+    }
+
+    html += '</div>';
+  }
+  container.innerHTML = html;
+}
+
+function getJobStatusColor(status) {
+  if (!status) return 'var(--text2)';
+  const s = status.toLowerCase();
+  if (s === 'running' || s === 'success') return 'var(--green)';
+  if (s === 'stopped' || s === 'aborted') return 'var(--red)';
+  if (s === 'failed' || s.includes('error')) return '#ff4444';
+  if (s === 'pendingrestartdue' || s === 'starting') return 'var(--yellow)';
+  return 'var(--text2)';
+}
+
+function getJobStatusIcon(status) {
+  if (!status) return '&#x2754;';
+  const s = status.toLowerCase();
+  if (s === 'running') return '&#x1F7E2;';
+  if (s === 'success') return '&#x2705;';
+  if (s === 'stopped' || s === 'aborted') return '&#x1F534;';
+  if (s === 'failed' || s.includes('error')) return '&#x274C;';
+  if (s === 'starting' || s === 'pendingrestartdue') return '&#x1F7E1;';
+  return '&#x26AA;';
+}
+
+async function triggerWebJob(appName, jobName) {
+  if (!confirm('להפעיל את WebJob "' + jobName + '"?')) return;
+  try {
+    const resp = await fetch('/api/webjobs/' + encodeURIComponent(appName) + '/' + encodeURIComponent(jobName) + '/trigger', {method:'POST'});
+    const data = await resp.json();
+    alert(data.message);
+    setTimeout(() => loadWebJobs(true), 2000);
+  } catch(e) { alert('שגיאה: ' + e.message); }
+}
+
+async function controlWebJob(appName, jobName, action) {
+  const actionHe = action === 'start' ? 'להפעיל' : 'לעצור';
+  if (!confirm(actionHe + ' את WebJob "' + jobName + '"?')) return;
+  try {
+    const resp = await fetch('/api/webjobs/' + encodeURIComponent(appName) + '/' + encodeURIComponent(jobName) + '/' + action, {method:'POST'});
+    const data = await resp.json();
+    alert(data.message);
+    setTimeout(() => loadWebJobs(true), 2000);
+  } catch(e) { alert('שגיאה: ' + e.message); }
+}
+
+async function showJobDetail(appName, jobName, jobType) {
+  const modal = document.getElementById('wjDetailModal');
+  const content = document.getElementById('wjDetailContent');
+  modal.style.display = 'flex';
+  content.innerHTML = '<div style="text-align:center"><div class="spinner"></div><div style="margin-top:8px;color:var(--text2)">טוען פרטי Job...</div></div>';
+
+  try {
+    const resp = await fetch('/api/webjobs/' + encodeURIComponent(appName) + '/' + encodeURIComponent(jobName) + '?type=' + encodeURIComponent(jobType));
+    const detail = await resp.json();
+
+    let html = '<h2 style="margin-bottom:16px">' + getJobStatusIcon(detail.status) + ' ' + esc(detail.jobName) + '</h2>';
+    html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px">';
+    html += '<div><span style="color:var(--text2);font-size:12px">אפליקציה:</span><br><strong>' + esc(detail.appName) + '</strong></div>';
+    html += '<div><span style="color:var(--text2);font-size:12px">סוג:</span><br><strong>' + esc(detail.jobType) + '</strong></div>';
+    html += '<div><span style="color:var(--text2);font-size:12px">סטטוס:</span><br><strong style="color:' + getJobStatusColor(detail.status) + '">' + esc(detail.status) + '</strong></div>';
+    if (detail.extraInfo) html += '<div><span style="color:var(--text2);font-size:12px">מידע נוסף:</span><br>' + esc(detail.extraInfo) + '</div>';
+    html += '</div>';
+
+    // Run History
+    if (detail.history && detail.history.length) {
+      html += '<h3 style="margin-bottom:8px">&#x1F4CB; היסטוריית ריצות</h3>';
+      html += '<div style="overflow-x:auto;max-height:300px;overflow-y:auto;margin-bottom:16px"><table><thead><tr><th>סטטוס</th><th>התחלה</th><th>סיום</th><th>משך</th><th>טריגר</th></tr></thead><tbody>';
+      for (const run of detail.history) {
+        html += '<tr>';
+        html += '<td><span style="color:' + getJobStatusColor(run.status) + '">' + getJobStatusIcon(run.status) + ' ' + esc(run.status) + '</span></td>';
+        html += '<td style="font-size:11px">' + (run.startTime ? fmt(run.startTime) : '-') + '</td>';
+        html += '<td style="font-size:11px">' + (run.endTime ? fmt(run.endTime) : '-') + '</td>';
+        html += '<td>' + esc(run.duration || '-') + '</td>';
+        html += '<td style="font-size:11px">' + esc(run.trigger || '-') + '</td>';
+        html += '</tr>';
+      }
+      html += '</tbody></table></div>';
+    }
+
+    // Recent Log
+    if (detail.recentLog) {
+      html += '<h3 style="margin-bottom:8px">&#x1F4DC; לוג אחרון</h3>';
+      html += '<pre style="background:var(--bg);padding:12px;border-radius:8px;font-size:11px;max-height:300px;overflow:auto;white-space:pre-wrap;border:1px solid var(--border)">' + esc(detail.recentLog) + '</pre>';
+    }
+
+    content.innerHTML = html;
+  } catch(err) {
+    content.innerHTML = '<div style="color:var(--red)">שגיאה: ' + esc(err.message) + '</div>';
+  }
+}
+
+function closeWjDetail() {
+  document.getElementById('wjDetailModal').style.display = 'none';
+}
+
+async function loadWebJobEvents() {
+  try {
+    const resp = await fetch('/api/webjobs/events?last=50');
+    const events = await resp.json();
+    const tbody = document.getElementById('wjEventsBody');
+    if (!events || !events.length) {
+      tbody.innerHTML = emptyRow(5, 'אין אירועים');
+      return;
+    }
+    tbody.innerHTML = events.map(e => {
+      const eventColor = e.eventType === 'StatusChanged' ? 'var(--yellow)' : e.eventType === 'Discovered' ? 'var(--green)' : e.eventType === 'Removed' ? 'var(--red)' : 'var(--text2)';
+      return '<tr><td style="font-size:11px">' + fmt(e.timestamp) + '</td><td>' + esc(e.appName) + '</td><td>' + esc(e.jobName) + '</td><td style="color:' + eventColor + '">' + esc(e.eventType) + '</td><td style="font-size:11px">' + esc(e.detail) + '</td></tr>';
+    }).join('');
+  } catch(err) {
+    document.getElementById('wjEventsBody').innerHTML = '<tr><td colspan="5" style="color:var(--red)">שגיאה: ' + esc(err.message) + '</td></tr>';
+  }
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -3133,6 +3421,7 @@ async function loadData() {
     loadSla().catch(()=>{});
     loadIncidents().catch(()=>{});
     loadFailsafeStatus().then(()=>fsStartAutoRefresh()).catch(()=>{});
+    loadWebJobs(false).catch(()=>{});
 
     document.getElementById('lastUpdate').textContent = 'עדכון אחרון: ' + fmtNow() + (D.dbConnected ? '' : ' [DB ERROR]');
   } catch(err) {

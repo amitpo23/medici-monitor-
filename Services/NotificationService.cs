@@ -41,6 +41,9 @@ public class NotificationService
         if (Config.TeamsEnabled && !string.IsNullOrEmpty(Config.TeamsWebhookUrl))
             tasks.Add(SendTeams(title, message, severity, result));
 
+        if (Config.WhatsAppEnabled && !string.IsNullOrEmpty(Config.TwilioAccountSid))
+            tasks.Add(SendWhatsApp(title, message, severity, result));
+
         // Always log
         _logger.LogInformation("Notification [{Severity}] {Title}: {Message}", severity, title, message);
         result.Channels.Add(new ChannelResult { Channel = "Log", Success = true });
@@ -185,6 +188,62 @@ public class NotificationService
         }
     }
 
+    // ── WhatsApp via Twilio ──
+
+    private async Task SendWhatsApp(string title, string message, string severity, NotificationResult result)
+    {
+        try
+        {
+            var emoji = severity switch { "Critical" => "🚨", "Warning" => "⚠️", _ => "ℹ️" };
+            var body = $"{emoji} *MediciMonitor*\n*{title}*\n\n{message}\n\n_{severity} | {DateTime.UtcNow:HH:mm:ss UTC}_";
+
+            var recipients = (Config.WhatsAppRecipients ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            if (recipients.Length == 0)
+            {
+                result.Channels.Add(new ChannelResult { Channel = "WhatsApp", Success = false, Detail = "No recipients configured" });
+                return;
+            }
+
+            var twilioUrl = $"https://api.twilio.com/2010-04-01/Accounts/{Config.TwilioAccountSid}/Messages.json";
+            var authBytes = Encoding.ASCII.GetBytes($"{Config.TwilioAccountSid}:{Config.TwilioAuthToken}");
+            var authHeader = Convert.ToBase64String(authBytes);
+
+            int sent = 0, failed = 0;
+            foreach (var recipient in recipients)
+            {
+                try
+                {
+                    var formData = new FormUrlEncodedContent(new[]
+                    {
+                        new KeyValuePair<string, string>("From", $"whatsapp:{Config.TwilioWhatsAppFrom}"),
+                        new KeyValuePair<string, string>("To", $"whatsapp:{recipient}"),
+                        new KeyValuePair<string, string>("Body", body)
+                    });
+
+                    var request = new HttpRequestMessage(HttpMethod.Post, twilioUrl);
+                    request.Headers.Add("Authorization", $"Basic {authHeader}");
+                    request.Content = formData;
+
+                    var resp = await _http.SendAsync(request);
+                    if (resp.IsSuccessStatusCode) sent++; else failed++;
+                }
+                catch { failed++; }
+            }
+
+            result.Channels.Add(new ChannelResult
+            {
+                Channel = "WhatsApp",
+                Success = sent > 0,
+                Detail = $"Sent to {sent}/{recipients.Length} recipients" + (failed > 0 ? $" ({failed} failed)" : "")
+            });
+        }
+        catch (Exception ex)
+        {
+            result.Channels.Add(new ChannelResult { Channel = "WhatsApp", Success = false, Detail = ex.Message });
+            _logger.LogWarning("WhatsApp notification failed: {Err}", ex.Message);
+        }
+    }
+
     // ── Test notification ──
 
     public async Task<NotificationResult> SendTestAsync()
@@ -233,6 +292,13 @@ public class NotificationConfig
     // Teams
     public bool TeamsEnabled { get; set; }
     public string? TeamsWebhookUrl { get; set; }
+
+    // WhatsApp (Twilio)
+    public bool WhatsAppEnabled { get; set; }
+    public string? TwilioAccountSid { get; set; }
+    public string? TwilioAuthToken { get; set; }
+    public string? TwilioWhatsAppFrom { get; set; }  // e.g. "+14155238886"
+    public string? WhatsAppRecipients { get; set; }   // comma-separated: "+972501234567,+972502345678"
 
     // Behavior
     public int CooldownMinutes { get; set; } = 5;

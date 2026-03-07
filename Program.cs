@@ -22,6 +22,7 @@ builder.Services.AddSingleton<SlaTrackingService>();
 builder.Services.AddSingleton<AuditService>();
 builder.Services.AddSingleton<IncidentManagementService>();
 builder.Services.AddSingleton<FailSafeService>();
+builder.Services.AddSingleton<WebJobsMonitoringService>();
 builder.Services.AddHostedService<FailSafeBackgroundService>();
 builder.Services.AddHostedService<AlertNotificationService>();
 builder.Services.AddCors(o => o.AddDefaultPolicy(p => p.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader()));
@@ -457,6 +458,50 @@ app.MapPost("/api/failsafe/verify-pin", (FailSafeService svc, HttpContext ctx) =
 {
     var pin = ctx.Request.Query["pin"].FirstOrDefault();
     return Results.Ok(new { valid = svc.ValidatePin(pin) });
+});
+
+// ═══════════════════════════════════════════════════════════════
+//  WebJobs Monitoring
+// ═══════════════════════════════════════════════════════════════
+app.MapGet("/api/webjobs", async (WebJobsMonitoringService svc, HttpContext ctx) =>
+{
+    bool force = ctx.Request.Query.ContainsKey("force");
+    return Results.Ok(await svc.GetDashboardAsync(force));
+});
+
+app.MapGet("/api/webjobs/targets", (WebJobsMonitoringService svc) =>
+    Results.Ok(svc.GetTargets()));
+
+app.MapPost("/api/webjobs/targets", (WebJobsMonitoringService svc, HttpContext ctx) =>
+{
+    var appName = ctx.Request.Query["appName"].FirstOrDefault();
+    var displayName = ctx.Request.Query["displayName"].FirstOrDefault();
+    if (string.IsNullOrEmpty(appName)) return Results.BadRequest("appName required");
+    svc.AddTarget(appName, displayName ?? appName);
+    return Results.Ok(new { success = true, targets = svc.GetTargets() });
+});
+
+app.MapGet("/api/webjobs/{appName}/{jobName}", async (WebJobsMonitoringService svc, string appName, string jobName, HttpContext ctx) =>
+{
+    var jobType = ctx.Request.Query["type"].FirstOrDefault() ?? "triggered";
+    var detail = await svc.GetJobDetailAsync(appName, jobName, jobType);
+    return detail != null ? Results.Ok(detail) : Results.NotFound(new { error = "Job not found" });
+});
+
+app.MapPost("/api/webjobs/{appName}/{jobName}/trigger", async (WebJobsMonitoringService svc, string appName, string jobName) =>
+    Results.Ok(await svc.TriggerJobAsync(appName, jobName)));
+
+app.MapPost("/api/webjobs/{appName}/{jobName}/{action}", async (WebJobsMonitoringService svc, string appName, string jobName, string action) =>
+{
+    if (action != "start" && action != "stop")
+        return Results.BadRequest("Action must be 'start' or 'stop'");
+    return Results.Ok(await svc.SetJobStateAsync(appName, jobName, action));
+});
+
+app.MapGet("/api/webjobs/events", (WebJobsMonitoringService svc, HttpContext ctx) =>
+{
+    int last = int.TryParse(ctx.Request.Query["last"].FirstOrDefault(), out var n) ? n : 50;
+    return Results.Ok(svc.GetEvents(last));
 });
 
 // ── Dashboard ──
