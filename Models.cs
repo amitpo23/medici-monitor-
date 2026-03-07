@@ -453,6 +453,25 @@ public class AzurePerformanceMetrics
     public double AvgResponseTime { get; set; }
 }
 
+public class AzureMonitorFiredAlert
+{
+    public string AlertId { get; set; } = "";
+    public string Name { get; set; } = "";
+    public string Severity { get; set; } = "";
+    public string MonitorCondition { get; set; } = "";  // Fired, Resolved
+    public string AlertState { get; set; } = "";        // New, Acknowledged, Closed
+    public string TargetResource { get; set; } = "";
+    public string TargetResourceName { get; set; } = "";
+    public string TargetResourceType { get; set; } = "";
+    public string TargetResourceGroup { get; set; } = "";
+    public string SignalType { get; set; } = "";
+    public string MonitorService { get; set; } = "";
+    public string Description { get; set; } = "";
+    public string AlertRule { get; set; } = "";
+    public DateTime? FiredTime { get; set; }
+    public DateTime? LastModified { get; set; }
+}
+
 // ════════════════════════════════════════════════════════════════════════
 //  Business Intelligence Models
 // ════════════════════════════════════════════════════════════════════════

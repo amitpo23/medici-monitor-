@@ -231,6 +231,159 @@ public class AzureMonitoringService
         return m;
     }
 
+    // ── Azure Monitor Fired Alerts (via ARM REST API + Managed Identity) ──
+
+    private string? _cachedToken;
+    private DateTime _tokenExpiry = DateTime.MinValue;
+    private readonly HttpClient _armHttp = new() { Timeout = TimeSpan.FromSeconds(30) };
+
+    public async Task<List<AzureMonitorFiredAlert>> GetFiredAzureMonitorAlerts()
+    {
+        var alerts = new List<AzureMonitorFiredAlert>();
+        try
+        {
+            var token = await GetManagedIdentityToken();
+            if (string.IsNullOrEmpty(token))
+            {
+                _logger.LogWarning("Could not get managed identity token for Azure Monitor alerts");
+                return alerts;
+            }
+
+            // Alert Management REST API — list all alerts in the subscription
+            var url = "https://management.azure.com/subscriptions/2da025cc-dfe5-450f-a18f-10549a3907e3/providers/Microsoft.AlertsManagement/alerts?api-version=2019-05-05-preview&timeRange=1d";
+            var request = new HttpRequestMessage(HttpMethod.Get, url);
+            request.Headers.Add("Authorization", $"Bearer {token}");
+            var response = await _armHttp.SendAsync(request);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                _logger.LogWarning("Azure Monitor alerts GET returned {Code}", (int)response.StatusCode);
+                return alerts;
+            }
+
+            var json = await response.Content.ReadAsStringAsync();
+            var doc = JsonDocument.Parse(json);
+
+            if (doc.RootElement.TryGetProperty("value", out var valueArr))
+            {
+                foreach (var item in valueArr.EnumerateArray())
+                {
+                    try
+                    {
+                        var props = item.GetProperty("properties");
+                        var essentials = props.GetProperty("essentials");
+
+                        var alert = new AzureMonitorFiredAlert
+                        {
+                            AlertId = GetStr(item, "id") ?? "",
+                            Name = GetStr(item, "name") ?? "",
+                            Severity = GetStr(essentials, "severity") ?? "",
+                            MonitorCondition = GetStr(essentials, "monitorCondition") ?? "",
+                            AlertState = GetStr(essentials, "alertState") ?? "",
+                            TargetResource = GetStr(essentials, "targetResource") ?? "",
+                            TargetResourceType = GetStr(essentials, "targetResourceType") ?? "",
+                            TargetResourceGroup = GetStr(essentials, "targetResourceGroup") ?? "",
+                            SignalType = GetStr(essentials, "signalType") ?? "",
+                            MonitorService = GetStr(essentials, "monitorService") ?? "",
+                            Description = GetStr(essentials, "description") ?? "",
+                            AlertRule = GetStr(essentials, "alertRule") ?? "",
+                        };
+
+                        if (essentials.TryGetProperty("startDateTime", out var startDt) && startDt.ValueKind == JsonValueKind.String)
+                            alert.FiredTime = DateTime.TryParse(startDt.GetString(), out var dt) ? dt : null;
+
+                        if (essentials.TryGetProperty("lastModifiedDateTime", out var modDt) && modDt.ValueKind == JsonValueKind.String)
+                            alert.LastModified = DateTime.TryParse(modDt.GetString(), out var dt2) ? dt2 : null;
+
+                        // Extract short resource name
+                        var targetRes = alert.TargetResource;
+                        if (!string.IsNullOrEmpty(targetRes))
+                            alert.TargetResourceName = targetRes.Split('/').LastOrDefault() ?? targetRes;
+
+                        alerts.Add(alert);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogDebug("Error parsing alert entry: {Err}", ex.Message);
+                    }
+                }
+            }
+
+            // Sort: Fired first, then by time descending
+            alerts = alerts
+                .OrderByDescending(a => a.MonitorCondition == "Fired")
+                .ThenByDescending(a => a.FiredTime)
+                .ToList();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError("GetFiredAzureMonitorAlerts error: {Err}", ex.Message);
+        }
+        return alerts;
+    }
+
+    private async Task<string?> GetManagedIdentityToken()
+    {
+        if (_cachedToken != null && DateTime.UtcNow < _tokenExpiry.AddMinutes(-5))
+            return _cachedToken;
+
+        try
+        {
+            var identityEndpoint = Environment.GetEnvironmentVariable("IDENTITY_ENDPOINT");
+            var identityHeader = Environment.GetEnvironmentVariable("IDENTITY_HEADER");
+
+            if (!string.IsNullOrEmpty(identityEndpoint) && !string.IsNullOrEmpty(identityHeader))
+            {
+                using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+                var tokenUrl = $"{identityEndpoint}?resource=https://management.azure.com/&api-version=2019-08-01";
+                var request = new HttpRequestMessage(HttpMethod.Get, tokenUrl);
+                request.Headers.Add("X-IDENTITY-HEADER", identityHeader);
+                var response = await http.SendAsync(request);
+
+                if (response.IsSuccessStatusCode)
+                {
+                    var json = await response.Content.ReadAsStringAsync();
+                    var doc = JsonDocument.Parse(json);
+                    _cachedToken = doc.RootElement.GetProperty("access_token").GetString();
+                    if (doc.RootElement.TryGetProperty("expires_on", out var expiresOn))
+                    {
+                        if (long.TryParse(expiresOn.GetString(), out var epoch))
+                            _tokenExpiry = DateTimeOffset.FromUnixTimeSeconds(epoch).UtcDateTime;
+                        else
+                            _tokenExpiry = DateTime.UtcNow.AddHours(1);
+                    }
+                    return _cachedToken;
+                }
+            }
+
+            using var http2 = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+            var imdsUrl = "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https://management.azure.com/";
+            var req2 = new HttpRequestMessage(HttpMethod.Get, imdsUrl);
+            req2.Headers.Add("Metadata", "true");
+            var resp2 = await http2.SendAsync(req2);
+
+            if (resp2.IsSuccessStatusCode)
+            {
+                var json = await resp2.Content.ReadAsStringAsync();
+                var doc = JsonDocument.Parse(json);
+                _cachedToken = doc.RootElement.GetProperty("access_token").GetString();
+                _tokenExpiry = DateTime.UtcNow.AddHours(1);
+                return _cachedToken;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug("Managed identity token fetch failed: {Err}", ex.Message);
+        }
+        return null;
+    }
+
+    private static string? GetStr(JsonElement el, string prop)
+    {
+        if (el.TryGetProperty(prop, out var val) && val.ValueKind == JsonValueKind.String) return val.GetString();
+        return null;
+    }
+
     // ── Helpers ───────────────────────────────────────────────────
 
     private async Task<(bool success, string output)> RunAzCli(string args)

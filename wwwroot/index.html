@@ -582,6 +582,20 @@ td.log-msg{white-space:pre-wrap;word-break:break-word;max-width:600px;font-famil
 <div class="nav-panel" id="panel-azure">
   <div class="cards" id="azureKpiCards"><div class="card"><div class="label">טוען Azure...</div><div class="value"><div class="spinner"></div></div></div></div>
 
+  <div class="section" style="border:2px solid var(--danger,#e74c3c);border-radius:10px;padding:0;margin-bottom:14px">
+    <div class="section-header" style="background:rgba(231,76,60,.12);border-radius:10px 10px 0 0;padding:10px 14px">
+      <h2>&#x1F6A8; Azure Monitor — התראות שנורו</h2>
+      <button onclick="loadMonitorAlerts()" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);padding:4px 12px;border-radius:6px;cursor:pointer;font-size:12px">&#x21BB; רענן</button>
+    </div>
+    <div id="monitorAlertsSummary" style="padding:6px 14px 0;font-size:13px;color:var(--text2)"></div>
+    <div style="overflow-x:auto;padding:0 8px 8px">
+      <table>
+        <thead><tr><th>שם התראה</th><th>חומרה</th><th>סטטוס</th><th>מצב</th><th>זמן</th><th>משאב</th><th>סוג סיגנל</th><th>שירות</th></tr></thead>
+        <tbody id="monitorAlertsBody"><tr class="empty-row"><td colspan="8">טוען...</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
   <div class="grid2">
     <div class="section">
       <div class="section-header"><h2>&#x2764;&#xFE0F; בדיקת בריאות API</h2>
@@ -1989,6 +2003,53 @@ function renderAlert(d) {
 // ══════════════════════════════════════════════════════════════════════
 //  RENDER: Azure Monitor Panel
 // ══════════════════════════════════════════════════════════════════════
+async function loadMonitorAlerts() {
+  document.getElementById('monitorAlertsBody').innerHTML = '<tr><td colspan="8" style="text-align:center;padding:20px"><div class="spinner"></div></td></tr>';
+  try {
+    const resp = await fetch('/api/azure/monitor-alerts');
+    const data = await resp.json();
+    const alerts = Array.isArray(data) ? data : [];
+    const fired = alerts.filter(a => a.monitorCondition === 'Fired');
+    const resolved = alerts.filter(a => a.monitorCondition === 'Resolved');
+    const sumEl = document.getElementById('monitorAlertsSummary');
+    if (alerts.length) {
+      sumEl.innerHTML = '<span style="color:' + (fired.length ? 'var(--danger,#e74c3c)' : 'var(--success,#2ecc71)') + ';font-weight:600">' +
+        (fired.length ? '🔴 ' + fired.length + ' התראות פעילות' : '✅ אין התראות פעילות') +
+        '</span> &nbsp;|&nbsp; סה"כ ב-24 שעות: ' + alerts.length + ' (נפתרו: ' + resolved.length + ')';
+    } else {
+      sumEl.innerHTML = '<span style="color:var(--success,#2ecc71)">✅ אין התראות ב-24 שעות האחרונות</span>';
+    }
+    document.getElementById('monitorAlertsBody').innerHTML = alerts.length ? alerts.map(a => {
+      const sev = a.severity || '';
+      const sevBadge = sev === 'Sev0' ? statusBadge('s-red','Sev0 קריטי') :
+                       sev === 'Sev1' ? statusBadge('s-red','Sev1 שגיאה') :
+                       sev === 'Sev2' ? statusBadge('s-yellow','Sev2 אזהרה') :
+                       sev === 'Sev3' ? statusBadge('s-blue','Sev3 מידע') :
+                       statusBadge('s-blue', sev || '-');
+      const cond = a.monitorCondition || '';
+      const condBadge = cond === 'Fired' ? statusBadge('s-red','🔥 Fired') : statusBadge('s-green','✅ Resolved');
+      const state = a.alertState || '';
+      const stateBadge = state === 'New' ? statusBadge('s-yellow','חדש') :
+                         state === 'Acknowledged' ? statusBadge('s-blue','אושר') :
+                         state === 'Closed' ? statusBadge('s-green','סגור') : esc(state);
+      const resName = a.targetResourceName || a.targetResource || '-';
+      const firedTime = a.firedTime ? fmt(a.firedTime) : '-';
+      return '<tr style="' + (cond === 'Fired' ? 'background:rgba(231,76,60,.07)' : '') + '">' +
+        '<td title="' + esc(a.alertRule || a.name || '') + '"><strong>' + esc(a.alertRule || a.name || '-') + '</strong></td>' +
+        '<td>' + sevBadge + '</td>' +
+        '<td>' + condBadge + '</td>' +
+        '<td>' + stateBadge + '</td>' +
+        '<td>' + firedTime + '</td>' +
+        '<td title="' + esc(a.targetResource || '') + '">' + esc(resName.length > 30 ? resName.substring(0,27)+'...' : resName) + '</td>' +
+        '<td>' + esc(a.signalType || '-') + '</td>' +
+        '<td>' + esc(a.monitorService || '-') + '</td></tr>';
+    }).join('') : emptyRow(8, 'אין התראות Azure Monitor ב-24 שעות האחרונות');
+  } catch(err) {
+    document.getElementById('monitorAlertsSummary').innerHTML = '<span style="color:var(--danger)">⚠ שגיאה בטעינת התראות</span>';
+    document.getElementById('monitorAlertsBody').innerHTML = emptyRow(8, 'שגיאה: ' + err.message);
+  }
+}
+
 async function loadAzureHealth() {
   document.getElementById('azHealthBody').innerHTML = '<tr><td colspan="5" style="text-align:center;padding:20px"><div class="spinner"></div></td></tr>';
   try {
@@ -3414,6 +3475,7 @@ async function loadData() {
 
     // Auto-load panels data in background
     loadAzureHealth().catch(()=>{});
+    loadMonitorAlerts().catch(()=>{});
     loadSalesOrderDiagnostics().catch(()=>{});
     loadBI('today').catch(()=>{});
     loadAlerts().catch(()=>{});

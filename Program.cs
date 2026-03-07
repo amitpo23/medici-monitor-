@@ -95,6 +95,9 @@ app.MapGet("/api/azure/resources", async (AzureMonitoringService svc) =>
 app.MapGet("/api/azure/alerts", async (AzureMonitoringService svc) =>
     Results.Ok(await svc.GetActiveAlerts()));
 
+app.MapGet("/api/azure/monitor-alerts", async (AzureMonitoringService svc) =>
+    Results.Ok(await svc.GetFiredAzureMonitorAlerts()));
+
 app.MapGet("/api/azure/performance", async (AzureMonitoringService svc) =>
     Results.Ok(await svc.GetPerformanceMetrics()));
 
