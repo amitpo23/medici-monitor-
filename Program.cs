@@ -23,6 +23,7 @@ builder.Services.AddSingleton<AuditService>();
 builder.Services.AddSingleton<IncidentManagementService>();
 builder.Services.AddSingleton<FailSafeService>();
 builder.Services.AddSingleton<WebJobsMonitoringService>();
+builder.Services.AddSingleton<ClaudeAiService>();
 builder.Services.AddHostedService<FailSafeBackgroundService>();
 builder.Services.AddHostedService<AlertNotificationService>();
 builder.Services.AddCors(o => o.AddDefaultPolicy(p => p.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader()));
@@ -505,6 +506,37 @@ app.MapGet("/api/webjobs/events", (WebJobsMonitoringService svc, HttpContext ctx
 {
     int last = int.TryParse(ctx.Request.Query["last"].FirstOrDefault(), out var n) ? n : 50;
     return Results.Ok(svc.GetEvents(last));
+});
+
+// ═══════════════════════════════════════════════════════════════
+//  Claude AI Analysis
+// ═══════════════════════════════════════════════════════════════
+app.MapGet("/api/ai/status", (ClaudeAiService svc) =>
+    Results.Ok(new { available = svc.IsAvailable }));
+
+app.MapGet("/api/ai/analyse-alerts", async (ClaudeAiService svc) =>
+    Results.Ok(await svc.AnalyseAlerts()));
+
+app.MapGet("/api/ai/analyse-errors", async (ClaudeAiService svc) =>
+    Results.Ok(await svc.AnalyseErrors()));
+
+app.MapGet("/api/ai/analyse-bookings", async (ClaudeAiService svc) =>
+    Results.Ok(await svc.AnalyseBookings()));
+
+app.MapGet("/api/ai/briefing", async (ClaudeAiService svc) =>
+    Results.Ok(await svc.GenerateBriefing()));
+
+app.MapPost("/api/ai/chat", async (ClaudeAiService svc, HttpContext ctx) =>
+{
+    using var reader = new StreamReader(ctx.Request.Body);
+    var body = await reader.ReadToEndAsync();
+    try
+    {
+        var doc = System.Text.Json.JsonDocument.Parse(body);
+        var msg = doc.RootElement.GetProperty("message").GetString() ?? "";
+        return Results.Ok(await svc.Chat(msg));
+    }
+    catch { return Results.BadRequest(new { error = "Expected JSON: {\"message\":\"...\"}" }); }
 });
 
 // ── Dashboard ──
