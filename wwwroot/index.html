@@ -2192,11 +2192,12 @@ async function aiCheckStatus() {
     const data = await resp.json();
     const badge = document.getElementById('aiStatusBadge');
     if (data.available) {
-      badge.textContent = '🟢 Claude מחובר ומוכן';
+      const modeLabel = data.mode === 'Cli' ? 'CLI / OAuth (Max)' : data.mode === 'Sdk' ? 'API Key (SDK)' : data.mode;
+      badge.textContent = '🟢 Claude מחובר — ' + modeLabel;
       badge.style.background = 'rgba(46,204,113,.15)';
       badge.style.color = 'var(--green,#2ecc71)';
     } else {
-      badge.textContent = '🔴 Claude לא מוגדר — הוסף API Key';
+      badge.textContent = '🔴 Claude לא מוגדר — הוסף API Key או התקן Claude CLI';
       badge.style.background = 'rgba(231,76,60,.15)';
       badge.style.color = 'var(--red,#e74c3c)';
     }
@@ -2217,7 +2218,7 @@ async function aiAction(action) {
     const data = await resp.json();
     if (data.success) {
       area.innerHTML = formatAiResponse(data.response);
-      meta.textContent = `מודל: ${data.model || '-'} | קלט: ${data.inputTokens} tokens | פלט: ${data.outputTokens} tokens | ${(data.durationMs/1000).toFixed(1)}s`;
+      meta.textContent = `${data.mode || 'AI'} | מודל: ${data.model || '-'} | ${data.inputTokens ? 'קלט: '+data.inputTokens+' tokens | פלט: '+data.outputTokens+' tokens | ' : ''}${(data.durationMs/1000).toFixed(1)}s`;
     } else {
       area.innerHTML = '<span style="color:var(--red)">⚠ ' + esc(data.error || 'שגיאה לא ידועה') + '</span>';
     }
@@ -2243,7 +2244,7 @@ async function aiChat() {
     const data = await resp.json();
     if (data.success) {
       area.innerHTML = '<div style="background:var(--surface2);padding:8px 14px;border-radius:8px;margin-bottom:12px;font-size:13px;color:var(--blue)"><strong>שאלה:</strong> ' + esc(msg) + '</div>' + formatAiResponse(data.response);
-      meta.textContent = `מודל: ${data.model || '-'} | קלט: ${data.inputTokens} tokens | פלט: ${data.outputTokens} tokens | ${(data.durationMs/1000).toFixed(1)}s`;
+      meta.textContent = `${data.mode || 'AI'} | מודל: ${data.model || '-'} | ${data.inputTokens ? 'קלט: '+data.inputTokens+' tokens | פלט: '+data.outputTokens+' tokens | ' : ''}${(data.durationMs/1000).toFixed(1)}s`;
     } else {
       area.innerHTML = '<span style="color:var(--red)">⚠ ' + esc(data.error || 'שגיאה') + '</span>';
     }

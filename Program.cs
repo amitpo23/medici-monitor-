@@ -512,7 +512,7 @@ app.MapGet("/api/webjobs/events", (WebJobsMonitoringService svc, HttpContext ctx
 //  Claude AI Analysis
 // ═══════════════════════════════════════════════════════════════
 app.MapGet("/api/ai/status", (ClaudeAiService svc) =>
-    Results.Ok(new { available = svc.IsAvailable }));
+    Results.Ok(new { available = svc.IsAvailable, mode = svc.Mode }));
 
 app.MapGet("/api/ai/analyse-alerts", async (ClaudeAiService svc) =>
     Results.Ok(await svc.AnalyseAlerts()));

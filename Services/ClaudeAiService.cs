@@ -1,14 +1,14 @@
 using System.Text;
 using System.Text.Json;
+using System.Diagnostics;
 using Anthropic.SDK;
 using Anthropic.SDK.Messaging;
 
 namespace MediciMonitor.Services;
 
 /// <summary>
-/// AI-powered analysis using Claude API (Anthropic).
-/// Provides: alert analysis, error root-cause, booking anomaly detection,
-/// daily briefings, and free-form Q&A about the Medici system.
+/// AI-powered analysis using Claude.
+/// Dual mode: (1) API Key → Anthropic SDK  (2) Claude CLI → OAuth (Max subscription)
 /// </summary>
 public class ClaudeAiService
 {
@@ -17,9 +17,11 @@ public class ClaudeAiService
     private readonly AzureMonitoringService _azure;
     private readonly IConfiguration _config;
     private AnthropicClient? _client;
-    private bool _initialized;
 
-    // Default model – configurable via appsettings  "Claude:Model"
+    private enum AiMode { None, Sdk, Cli }
+    private AiMode _mode = AiMode.None;
+    private string _cliPath = "";
+
     private string _model = "claude-sonnet-4-20250514";
     private int _maxTokens = 2048;
 
@@ -36,37 +38,60 @@ public class ClaudeAiService
         Init();
     }
 
-    // ─── Initialisation ───────────────────────────────────────────
+    // ─── Initialisation (SDK first, then CLI fallback) ────────────
 
     private void Init()
     {
+        _model = _config["Claude:Model"] ?? _model;
+        if (int.TryParse(_config["Claude:MaxTokens"], out var mt) && mt > 0)
+            _maxTokens = mt;
+
+        // Priority 1: API Key → Anthropic SDK
         try
         {
             var apiKey = _config["Claude:ApiKey"]
                          ?? Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY");
-
-            if (string.IsNullOrWhiteSpace(apiKey))
+            if (!string.IsNullOrWhiteSpace(apiKey))
             {
-                _logger.LogWarning("Claude API key not configured (Claude:ApiKey or ANTHROPIC_API_KEY)");
+                _client = new AnthropicClient(apiKey);
+                _mode = AiMode.Sdk;
+                _logger.LogInformation("Claude AI → SDK mode (API Key), model {Model}", _model);
                 return;
             }
-
-            _client = new AnthropicClient(apiKey);
-            _model = _config["Claude:Model"] ?? _model;
-
-            if (int.TryParse(_config["Claude:MaxTokens"], out var mt) && mt > 0)
-                _maxTokens = mt;
-
-            _initialized = true;
-            _logger.LogInformation("Claude AI service initialised – model {Model}", _model);
         }
-        catch (Exception ex)
+        catch (Exception ex) { _logger.LogWarning("SDK init failed: {Err}", ex.Message); }
+
+        // Priority 2: Claude CLI (OAuth from Max subscription)
+        try
         {
-            _logger.LogError(ex, "Claude AI init failed");
+            var cliPath = _config["Claude:CliPath"] ?? "claude";
+            var psi = new ProcessStartInfo
+            {
+                FileName = cliPath, Arguments = "--version",
+                UseShellExecute = false, RedirectStandardOutput = true,
+                RedirectStandardError = true, CreateNoWindow = true
+            };
+            using var proc = Process.Start(psi);
+            if (proc != null)
+            {
+                proc.WaitForExit(5000);
+                if (proc.ExitCode == 0)
+                {
+                    _cliPath = cliPath;
+                    _mode = AiMode.Cli;
+                    var ver = proc.StandardOutput.ReadToEnd().Trim();
+                    _logger.LogInformation("Claude AI → CLI mode (OAuth), version {Ver}", ver);
+                    return;
+                }
+            }
         }
+        catch (Exception ex) { _logger.LogDebug("CLI detect failed: {Err}", ex.Message); }
+
+        _logger.LogWarning("Claude AI unavailable — no API key and no CLI found");
     }
 
-    public bool IsAvailable => _initialized && _client != null;
+    public bool IsAvailable => _mode != AiMode.None;
+    public string Mode => _mode.ToString();
 
     // ─── System prompt (Hebrew, Medici context) ───────────────────
 
@@ -337,11 +362,22 @@ public class ClaudeAiService
         }
     }
 
-    // ─── Core call to Claude ─────────────────────────────────────
+    // ─── Core call to Claude (dual-mode) ───────────────────────
 
     private async Task<AiAnalysisResult> Ask(string userPrompt)
     {
-        var sw = System.Diagnostics.Stopwatch.StartNew();
+        if (_mode == AiMode.Sdk)
+            return await AskViaSdk(userPrompt);
+        if (_mode == AiMode.Cli)
+            return await AskViaCli(userPrompt);
+        return Unavailable();
+    }
+
+    // ── Mode 1: Anthropic SDK (API Key) ──
+
+    private async Task<AiAnalysisResult> AskViaSdk(string userPrompt)
+    {
+        var sw = Stopwatch.StartNew();
         try
         {
             var messages = new List<Message>
@@ -362,13 +398,12 @@ public class ClaudeAiService
             var result = await _client!.Messages.GetClaudeMessageAsync(parameters);
             sw.Stop();
 
-            var text = result.Message?.ToString() ?? "";
-
             return new AiAnalysisResult
             {
                 Success = true,
-                Response = text,
+                Response = result.Message?.ToString() ?? "",
                 Model = _model,
+                Mode = "SDK",
                 InputTokens = result.Usage?.InputTokens ?? 0,
                 OutputTokens = result.Usage?.OutputTokens ?? 0,
                 DurationMs = sw.ElapsedMilliseconds
@@ -377,13 +412,67 @@ public class ClaudeAiService
         catch (Exception ex)
         {
             sw.Stop();
-            _logger.LogError(ex, "Claude API call failed");
+            _logger.LogError(ex, "Claude SDK call failed");
+            return new AiAnalysisResult { Success = false, Error = ex.Message, DurationMs = sw.ElapsedMilliseconds };
+        }
+    }
+
+    // ── Mode 2: Claude CLI (OAuth / Max subscription) ──
+
+    private async Task<AiAnalysisResult> AskViaCli(string userPrompt)
+    {
+        var sw = Stopwatch.StartNew();
+        try
+        {
+            var fullPrompt = $"[System]\n{SystemPrompt}\n\n[User]\n{userPrompt}";
+
+            var psi = new ProcessStartInfo
+            {
+                FileName = _cliPath,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                RedirectStandardInput = false,
+                CreateNoWindow = true
+            };
+
+            psi.ArgumentList.Add("--print");
+            psi.ArgumentList.Add(fullPrompt);
+            psi.ArgumentList.Add("--model");
+            psi.ArgumentList.Add(_model);
+            psi.ArgumentList.Add("--max-turns");
+            psi.ArgumentList.Add("1");
+
+            using var proc = Process.Start(psi);
+            if (proc == null) throw new Exception("Failed to start claude CLI");
+
+            var outputTask = proc.StandardOutput.ReadToEndAsync();
+            var errorTask = proc.StandardError.ReadToEndAsync();
+
+            var exited = proc.WaitForExit(120_000);
+            if (!exited) { proc.Kill(); throw new TimeoutException("Claude CLI timed out after 120s"); }
+
+            var output = await outputTask;
+            var stderr = await errorTask;
+            sw.Stop();
+
+            if (proc.ExitCode != 0)
+                throw new Exception($"CLI exit code {proc.ExitCode}: {stderr.Trim()}");
+
             return new AiAnalysisResult
             {
-                Success = false,
-                Error = ex.Message,
+                Success = true,
+                Response = output.Trim(),
+                Model = _model,
+                Mode = "CLI (OAuth)",
                 DurationMs = sw.ElapsedMilliseconds
             };
+        }
+        catch (Exception ex)
+        {
+            sw.Stop();
+            _logger.LogError(ex, "Claude CLI call failed");
+            return new AiAnalysisResult { Success = false, Error = ex.Message, DurationMs = sw.ElapsedMilliseconds };
         }
     }
 
@@ -392,7 +481,7 @@ public class ClaudeAiService
     private static AiAnalysisResult Unavailable() => new()
     {
         Success = false,
-        Error = "Claude AI לא מוגדר. הוסף Claude:ApiKey ב-appsettings.json או ANTHROPIC_API_KEY כמשתנה סביבה."
+        Error = "Claude AI לא זמין. אפשרויות: (1) הגדר Claude:ApiKey (2) התקן Claude CLI עם מנוי Max"
     };
 
     private static AiAnalysisResult Error(Exception ex) => new()
@@ -416,6 +505,7 @@ public class AiAnalysisResult
     public string Response { get; set; } = "";
     public string? Error { get; set; }
     public string? Model { get; set; }
+    public string? Mode { get; set; }  // "SDK" or "CLI (OAuth)"
     public int InputTokens { get; set; }
     public int OutputTokens { get; set; }
     public long DurationMs { get; set; }
