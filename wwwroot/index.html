@@ -2192,7 +2192,7 @@ async function aiCheckStatus() {
     const data = await resp.json();
     const badge = document.getElementById('aiStatusBadge');
     if (data.available) {
-      const modeLabel = data.mode === 'Cli' ? 'CLI / OAuth (Max)' : data.mode === 'Sdk' ? 'API Key (SDK)' : data.mode;
+      const modeLabel = data.mode === 'Cli' ? 'CLI / OAuth (Max)' : data.mode === 'OAuth' ? 'OAuth (Max subscription)' : data.mode === 'Sdk' ? 'API Key (SDK)' : data.mode;
       badge.textContent = '🟢 Claude מחובר — ' + modeLabel;
       badge.style.background = 'rgba(46,204,113,.15)';
       badge.style.color = 'var(--green,#2ecc71)';
