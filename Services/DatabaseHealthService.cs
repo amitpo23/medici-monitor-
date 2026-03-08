@@ -141,18 +141,22 @@ public class DatabaseHealthService
 
     private async Task LoadIndexFragmentation(SqlConnection conn, DbHealthReport r)
     {
+        // Use sys.dm_db_index_usage_stats (fast) instead of the extremely slow dm_db_index_physical_stats
         const string sql = @"
             SELECT TOP 15
-                OBJECT_NAME(ips.object_id) as TableName,
+                OBJECT_NAME(i.object_id) as TableName,
                 i.name as IndexName,
-                ips.avg_fragmentation_in_percent as FragPercent,
-                ips.page_count as PageCount
-            FROM sys.dm_db_index_physical_stats(DB_ID(), NULL, NULL, NULL, 'LIMITED') ips
-            INNER JOIN sys.indexes i ON ips.object_id = i.object_id AND ips.index_id = i.index_id
-            WHERE ips.avg_fragmentation_in_percent > 10 AND ips.page_count > 100 AND i.name IS NOT NULL
-            ORDER BY ips.avg_fragmentation_in_percent DESC";
+                ISNULL(s.user_seeks + s.user_scans + s.user_lookups, 0) as TotalReads,
+                ISNULL(s.user_updates, 0) as TotalWrites
+            FROM sys.indexes i
+            LEFT JOIN sys.dm_db_index_usage_stats s
+                ON i.object_id = s.object_id AND i.index_id = s.index_id AND s.database_id = DB_ID()
+            WHERE i.type > 0 AND i.is_disabled = 0
+                  AND OBJECTPROPERTY(i.object_id, 'IsUserTable') = 1
+                  AND i.name IS NOT NULL
+            ORDER BY ISNULL(s.user_updates, 0) DESC";
 
-        using var cmd = new SqlCommand(sql, conn) { CommandTimeout = 30 };
+        using var cmd = new SqlCommand(sql, conn) { CommandTimeout = 10 };
         using var rdr = await cmd.ExecuteReaderAsync();
         while (await rdr.ReadAsync())
         {
@@ -160,8 +164,10 @@ public class DatabaseHealthService
             {
                 TableName = rdr.IsDBNull(0) ? "" : rdr.GetString(0),
                 IndexName = rdr.IsDBNull(1) ? "" : rdr.GetString(1),
-                FragmentationPercent = rdr.IsDBNull(2) ? 0 : Math.Round(rdr.GetDouble(2), 1),
-                PageCount = rdr.IsDBNull(3) ? 0 : rdr.GetInt64(3)
+                FragmentationPercent = 0, // not available without slow DMV scan
+                PageCount = rdr.IsDBNull(3) ? 0 : rdr.GetInt64(3),
+                TotalReads = rdr.IsDBNull(2) ? 0 : rdr.GetInt64(2),
+                TotalWrites = rdr.IsDBNull(3) ? 0 : rdr.GetInt64(3)
             });
         }
     }
@@ -288,6 +294,8 @@ public class FragmentedIndex
     public string IndexName { get; set; } = "";
     public double FragmentationPercent { get; set; }
     public long PageCount { get; set; }
+    public long TotalReads { get; set; }
+    public long TotalWrites { get; set; }
 }
 
 public class WaitStat

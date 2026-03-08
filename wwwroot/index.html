@@ -197,6 +197,15 @@ td.log-msg{white-space:pre-wrap;word-break:break-word;max-width:600px;font-famil
 </head>
 <body>
 
+<!-- ═══ Loading Overlay ═══ -->
+<div id="loadingOverlay" style="position:fixed;inset:0;z-index:9999;background:var(--bg);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px">
+  <div style="width:48px;height:48px;border:4px solid var(--border);border-top-color:var(--blue);border-radius:50%;animation:spin 1s linear infinite"></div>
+  <div id="loadingText" style="font-size:16px;color:var(--text)">מתחבר לשרת...</div>
+  <div id="loadingDetail" style="font-size:12px;color:var(--text2)">אתחול ראשוני עשוי לקחת עד 30 שניות</div>
+</div>
+@keyframes spin { to { transform: rotate(360deg) } }
+<style>#loadingOverlay div:first-child { animation: spin 1s linear infinite } @keyframes spin { to { transform: rotate(360deg) } }</style>
+
 <!-- ═══ Top Bar ═══ -->
 <div class="topbar">
   <h1><span class="dot" id="statusDot"></span> Medici Operations Center <span style="font-size:12px;color:var(--text2);font-weight:400">v2.2</span></h1>
@@ -3611,11 +3620,38 @@ function renderFsConfig(cfg) {
 // ══════════════════════════════════════════════════════════════════════
 //  MAIN: Load Data
 // ══════════════════════════════════════════════════════════════════════
+async function fetchWithRetry(url, opts = {}, retries = 3) {
+  for (let i = 0; i < retries; i++) {
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 25000);
+      const resp = await fetch(url, { ...opts, signal: ctrl.signal });
+      clearTimeout(timer);
+      if (resp.ok) return resp;
+      if (i < retries - 1) { await new Promise(r => setTimeout(r, 2000)); continue; }
+      throw new Error('HTTP ' + resp.status);
+    } catch(e) {
+      if (i >= retries - 1) throw e;
+      const overlay = document.getElementById('loadingOverlay');
+      if (overlay && overlay.style.display !== 'none') {
+        document.getElementById('loadingDetail').textContent = 'ניסיון ' + (i+2) + '/' + retries + '...';
+      }
+      await new Promise(r => setTimeout(r, 3000));
+    }
+  }
+}
+
 async function loadData() {
+  const overlay = document.getElementById('loadingOverlay');
   try {
-    const resp = await fetch('/api/status');
-    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    if (overlay && overlay.style.display !== 'none') {
+      document.getElementById('loadingText').textContent = 'טוען נתונים...';
+    }
+    const resp = await fetchWithRetry('/api/status');
     D = await resp.json();
+
+    // Hide loading overlay on first successful load
+    if (overlay) overlay.style.display = 'none';
 
     renderOverview(D);
     renderReservations(D);
@@ -3640,6 +3676,7 @@ async function loadData() {
 
     document.getElementById('lastUpdate').textContent = 'עדכון אחרון: ' + fmtNow() + (D.dbConnected ? '' : ' [DB ERROR]');
   } catch(err) {
+    if (overlay) overlay.style.display = 'none';
     document.getElementById('statusDot').className = 'dot err';
     document.getElementById('lastUpdate').textContent = 'שגיאה: ' + err.message;
     document.getElementById('kpiCards').innerHTML = '<div class="card danger"><div class="label">שגיאת חיבור</div><div class="value" style="font-size:14px">' + err.message + '</div></div>';
