@@ -41,7 +41,8 @@ public class NotificationService
         if (Config.TeamsEnabled && !string.IsNullOrEmpty(Config.TeamsWebhookUrl))
             tasks.Add(SendTeams(title, message, severity, result));
 
-        if (Config.WhatsAppEnabled && !string.IsNullOrEmpty(Config.TwilioAccountSid))
+        if (Config.WhatsAppEnabled && !string.IsNullOrEmpty(Config.TwilioAccountSid) &&
+            (!string.IsNullOrEmpty(Config.TwilioAuthToken) || !string.IsNullOrEmpty(Config.TwilioApiKeySid)))
             tasks.Add(SendWhatsApp(title, message, severity, result));
 
         // Always log
@@ -205,7 +206,10 @@ public class NotificationService
             }
 
             var twilioUrl = $"https://api.twilio.com/2010-04-01/Accounts/{Config.TwilioAccountSid}/Messages.json";
-            var authBytes = Encoding.ASCII.GetBytes($"{Config.TwilioAccountSid}:{Config.TwilioAuthToken}");
+            // Prefer API Key auth (SK...:secret), fall back to Account SID:AuthToken
+            var authUser = !string.IsNullOrEmpty(Config.TwilioApiKeySid) ? Config.TwilioApiKeySid : Config.TwilioAccountSid;
+            var authPass = !string.IsNullOrEmpty(Config.TwilioApiKeySid) ? Config.TwilioApiKeySecret : Config.TwilioAuthToken;
+            var authBytes = Encoding.ASCII.GetBytes($"{authUser}:{authPass}");
             var authHeader = Convert.ToBase64String(authBytes);
 
             int sent = 0, failed = 0;
@@ -296,7 +300,9 @@ public class NotificationConfig
     // WhatsApp (Twilio)
     public bool WhatsAppEnabled { get; set; }
     public string? TwilioAccountSid { get; set; }
-    public string? TwilioAuthToken { get; set; }
+    public string? TwilioAuthToken { get; set; }       // Account-level auth token
+    public string? TwilioApiKeySid { get; set; }       // API Key SID (SK...)
+    public string? TwilioApiKeySecret { get; set; }    // API Key Secret
     public string? TwilioWhatsAppFrom { get; set; }  // e.g. "+14155238886"
     public string? WhatsAppRecipients { get; set; }   // comma-separated: "+972501234567,+972502345678"
 
