@@ -24,6 +24,8 @@ public class FailSafeService
     private readonly string _connStr;
     private readonly ILogger<FailSafeService> _logger;
     private readonly NotificationService? _notifications;
+    private readonly DataService? _dataService;
+    private StateStorageService? _stateStorage;
     private readonly object _lock = new();
 
     // ── Circuit Breaker State ──
@@ -77,7 +79,7 @@ public class FailSafeService
     public int ScanCount { get; private set; }
     public DateTime? LastBackgroundScanTime { get; set; }
 
-    public FailSafeService(IConfiguration config, ILogger<FailSafeService> logger, NotificationService? notifications = null)
+    public FailSafeService(IConfiguration config, ILogger<FailSafeService> logger, NotificationService? notifications = null, DataService? dataService = null)
     {
         var cs = config.GetConnectionString("SqlServer")
             ?? throw new InvalidOperationException("Missing SqlServer connection string");
@@ -86,6 +88,7 @@ public class FailSafeService
         _connStr = cs;
         _logger = logger;
         _notifications = notifications;
+        _dataService = dataService;
 
         // Load config from appsettings
         var section = config.GetSection("FailSafe");
@@ -160,8 +163,14 @@ public class FailSafeService
                     LastSaved = DateTime.UtcNow
                 };
             }
+            // File-based (fast)
             var json = JsonSerializer.Serialize(state, new JsonSerializerOptions { WriteIndented = true });
             File.WriteAllText(_stateFilePath, json);
+
+            // DB-based (async, fire-and-forget)
+            if (_stateStorage != null)
+                _ = _stateStorage.SaveStateAsync("FailSafeService", "main", state);
+
             _lastStateSave = DateTime.UtcNow;
         }
         catch (Exception ex)
@@ -171,6 +180,8 @@ public class FailSafeService
     }
 
     // ── PIN Validation ──
+
+    public void SetStateStorageService(StateStorageService sss) => _stateStorage = sss;
 
     public bool ValidatePin(string? pin) => !string.IsNullOrEmpty(pin) && pin == Config.OperatorPin;
 
@@ -716,6 +727,11 @@ public class FailSafeService
 
             SaveState(true);
             _dailyTrips++;
+
+            // Sync to shared DB table so backend can query breaker state
+            if (_dataService != null)
+                _ = _dataService.SyncBreakerToDb(name.ToUpper(), true, breaker.Label, reason, triggeredBy);
+
             return breaker.Clone();
         }
     }
@@ -736,6 +752,11 @@ public class FailSafeService
                 _ = _notifications.SendAsync($"🟢 Circuit Breaker: {breaker.Label}", $"Breaker {name} שוחרר ע\"י {approvedBy}", "Info", "FailSafe");
 
             SaveState(true);
+
+            // Sync to shared DB table
+            if (_dataService != null)
+                _ = _dataService.SyncBreakerToDb(name.ToUpper(), false, breaker.Label, null, approvedBy);
+
             return breaker.Clone();
         }
     }
@@ -759,6 +780,12 @@ public class FailSafeService
 
             SaveState(true);
             _dailyTrips += _breakers.Count;
+
+            // Sync all breakers to DB
+            if (_dataService != null)
+                foreach (var b in _breakers.Values)
+                    _ = _dataService.SyncBreakerToDb(b.Name, true, b.Label, reason, triggeredBy);
+
             return true;
         }
     }
@@ -776,6 +803,12 @@ public class FailSafeService
             RecordTrigger("RESET_ALL", "ALL", $"All breakers reset by {approvedBy}", approvedBy);
             _logger.LogInformation("All circuit breakers RESET by {By}", approvedBy);
             SaveState(true);
+
+            // Sync all breakers to DB
+            if (_dataService != null)
+                foreach (var b in _breakers.Values)
+                    _ = _dataService.SyncBreakerToDb(b.Name, false, b.Label, null, approvedBy);
+
             return true;
         }
     }

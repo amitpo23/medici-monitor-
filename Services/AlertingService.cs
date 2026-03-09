@@ -13,13 +13,22 @@ public class AlertingService
     private readonly string _connStr;
     private readonly ILogger<AlertingService> _logger;
     private NotificationService? _notifications;
+    private HistoricalDataService? _historical;
+    private WebJobsMonitoringService? _webJobs;
+    private StateStorageService? _stateStorage;
 
     // Alert state
     private readonly List<AlertInfo> _alertHistory = new();
     private readonly Dictionary<string, DateTime> _acknowledged = new();
     private readonly Dictionary<string, DateTime> _snoozed = new();
+    private readonly Dictionary<string, DateTime> _lastNotifiedPerAlert = new();
     private readonly object _lock = new();
     private const int MaxHistory = 2000;
+
+    // State persistence
+    private readonly string _stateFilePath;
+    private DateTime _lastStateSave = DateTime.MinValue;
+    private static readonly TimeSpan StateSaveInterval = TimeSpan.FromMinutes(1);
 
     // Configurable thresholds
     public AlertThresholds Thresholds { get; set; } = new();
@@ -30,9 +39,15 @@ public class AlertingService
         _connStr = config.GetConnectionString("SqlServer")
             ?? throw new InvalidOperationException("Missing SqlServer connection string");
         _logger = logger;
+
+        _stateFilePath = Path.Combine(AppContext.BaseDirectory, "alerting-state.json");
+        LoadPersistedState();
     }
 
     public void SetNotificationService(NotificationService ns) => _notifications = ns;
+    public void SetHistoricalDataService(HistoricalDataService hds) => _historical = hds;
+    public void SetWebJobsMonitoringService(WebJobsMonitoringService wjs) => _webJobs = wjs;
+    public void SetStateStorageService(StateStorageService sss) => _stateStorage = sss;
 
     public async Task<List<AlertInfo>> EvaluateAlerts()
     {
@@ -81,6 +96,36 @@ public class AlertingService
                     Message = $"זמן תגובה ממוצע: {avgResponse:F0}ms — מעל סף {Thresholds.AvgResponseDegradationMs}ms",
                     Severity = "Warning", Category = "Performance"
                 });
+
+            // 3b. SSL certificate expiry
+            try
+            {
+                var sslResults = await _azure.CheckSslCertificates();
+                foreach (var ssl in sslResults.Where(s => s.IsAccessible))
+                {
+                    if (ssl.DaysUntilExpiry <= 7)
+                        alerts.Add(new AlertInfo { Id = $"SSL_EXPIRY_{ssl.Host}", Title = "SSL Certificate Expiring",
+                            Message = $"תעודת SSL של {ssl.Host} פגה בעוד {ssl.DaysUntilExpiry} ימים!",
+                            Severity = "Critical", Category = "Infrastructure" });
+                    else if (ssl.DaysUntilExpiry <= 30)
+                        alerts.Add(new AlertInfo { Id = $"SSL_WARNING_{ssl.Host}", Title = "SSL Certificate Warning",
+                            Message = $"תעודת SSL של {ssl.Host} פגה בעוד {ssl.DaysUntilExpiry} ימים",
+                            Severity = "Warning", Category = "Infrastructure" });
+                }
+            }
+            catch (Exception ex) { _logger.LogDebug("SSL expiry check skipped: {Err}", ex.Message); }
+
+            // 3c. DNS resolution failures
+            try
+            {
+                var dnsResults = await _azure.CheckDnsHealth();
+                var dnsFailed = dnsResults.Where(d => !d.IsResolved).ToList();
+                if (dnsFailed.Any())
+                    alerts.Add(new AlertInfo { Id = "DNS_FAILURE", Title = "DNS Resolution Failed",
+                        Message = $"כשל DNS ב-{dnsFailed.Count} דומיינים: {string.Join(", ", dnsFailed.Select(d => d.Host))}",
+                        Severity = "Critical", Category = "Infrastructure" });
+            }
+            catch (Exception ex) { _logger.LogDebug("DNS check skipped: {Err}", ex.Message); }
 
             // 4-15. DB-based alerts
             if (dbOk)
@@ -210,6 +255,23 @@ public class AlertingService
                     if (minutesSince > Thresholds.BuyRoomsDownMinutes)
                         alerts.Add(new AlertInfo { Id = "BUYROOMS_DOWN", Title = "BuyRooms Not Purchasing", Message = $"לא נרכשו חדרים {minutesSince:F0} דקות (סף: {Thresholds.BuyRoomsDownMinutes} דקות)", Severity = "Critical", Category = "System" });
                 }
+
+                // 10b. BuyRooms funnel drop
+                var preBooks = await ScalarInt(conn, "SELECT COUNT(*) FROM MED_PreBook WHERE DateInsert >= DATEADD(HOUR, -1, GETDATE())");
+                var books = await ScalarInt(conn, "SELECT COUNT(*) FROM MED_Book WHERE DateInsert >= DATEADD(HOUR, -1, GETDATE())");
+                if (preBooks > 5 && books == 0)
+                    alerts.Add(new AlertInfo { Id = "BUYROOMS_FUNNEL_BROKEN", Title = "BuyRooms Funnel Broken",
+                        Message = $"{preBooks} PreBooks נוצרו בשעה האחרונה אבל 0 Books — BuyRooms כנראה תקוע בשלב ההזמנה",
+                        Severity = "Critical", Category = "System" });
+
+                // 10c. Orphaned PreBooks
+                var orphaned = await ScalarInt(conn, @"SELECT COUNT(*) FROM MED_PreBook p
+                    WHERE p.DateInsert >= DATEADD(HOUR, -2, GETDATE())
+                    AND NOT EXISTS (SELECT 1 FROM MED_Book b WHERE b.PreBookId = p.Id)");
+                if (orphaned > 10)
+                    alerts.Add(new AlertInfo { Id = "ORPHANED_PREBOOKS", Title = "Orphaned PreBooks",
+                        Message = $"{orphaned} PreBooks ללא Book תואם ב-2 שעות אחרונות — כשל חלקי ב-BuyRooms",
+                        Severity = "Warning", Category = "System" });
 
                 // 11. Push failure spike
                 var pushFails = await ScalarInt(conn, "SELECT COUNT(*) FROM Med_HotelsToPush WHERE IsActive = 0 AND Error IS NOT NULL AND Error != 'CancelBook' AND DateInsert >= DATEADD(HOUR, -1, GETDATE())");
@@ -412,7 +474,110 @@ public class AlertingService
                     }
                 }
                 catch (Exception ex) { _logger.LogDebug("SalesOffice running-without-result check skipped: {Err}", ex.Message); }
+
+                // 21. SalesOffice completed but no matching reservation
+                try
+                {
+                    string? soOrdTbl = null, soDetTbl = null;
+                    foreach (var t in new[] { "SalesOfficeOrders", "[SalesOffice.Orders]", "SalesOffice_Orders" })
+                    { try { await ScalarInt(conn, $"SELECT TOP 1 1 FROM {t}"); soOrdTbl = t; break; } catch { } }
+                    foreach (var t in new[] { "[SalesOffice.Details]", "SalesOfficeDetails", "SalesOffice_Details" })
+                    { try { await ScalarInt(conn, $"SELECT TOP 1 1 FROM {t}"); soDetTbl = t; break; } catch { } }
+
+                    if (soOrdTbl != null && soDetTbl != null)
+                    {
+                        var noReservation = await ScalarInt(conn,
+                            $@"SELECT COUNT(DISTINCT o.Id)
+                               FROM {soOrdTbl} o
+                               INNER JOIN {soDetTbl} d ON d.OrderId = o.Id
+                               LEFT JOIN Med_Reservation r ON r.HotelCode = CAST(d.HotelId AS NVARCHAR(20))
+                                   AND r.Datefrom = o.DateFrom AND r.Dateto = o.DateTo
+                               WHERE o.IsActive = 1
+                                 AND o.WebJobStatus LIKE 'Completed%'
+                                 AND o.DateInsert >= DATEADD(DAY, -7, GETDATE())
+                                 AND r.Id IS NULL");
+
+                        if (noReservation > 0)
+                            alerts.Add(new AlertInfo
+                            {
+                                Id = "SO_NO_RESERVATION",
+                                Title = "SalesOffice Without Reservation",
+                                Message = $"{noReservation} הזמנות SalesOffice הושלמו בשבוע האחרון ללא Reservation תואמת ב-Zenith — בדיקה נדרשת",
+                                Severity = noReservation > 10 ? "Critical" : "Warning",
+                                Category = "Business"
+                            });
+                    }
+                }
+                catch (Exception ex) { _logger.LogDebug("SalesOffice-Zenith cross-ref check skipped: {Err}", ex.Message); }
+
+                // 22. Queue retry loop detection
+                try
+                {
+                    var queueRetryLoop = await ScalarInt(conn,
+                        @"SELECT COUNT(*) FROM (
+                            SELECT [Key] FROM Queue
+                            WHERE Status = 'Error' AND CreatedOn >= DATEADD(HOUR, -6, GETDATE())
+                            GROUP BY [Key] HAVING COUNT(*) >= 3
+                        ) x");
+                    if (queueRetryLoop > 0)
+                        alerts.Add(new AlertInfo { Id = "QUEUE_RETRY_LOOP", Title = "Queue Retry Loop",
+                            Message = $"{queueRetryLoop} פריטים בתור נכשלים שוב ושוב (3+ כשלונות ב-6 שעות)",
+                            Severity = queueRetryLoop > 10 ? "Critical" : "Warning", Category = "Queue" });
+                }
+                catch (Exception ex) { _logger.LogDebug("Queue retry loop check skipped: {Err}", ex.Message); }
+
+                // 23. Push retry loop detection
+                try
+                {
+                    var pushRetryLoop = await ScalarInt(conn,
+                        @"SELECT COUNT(*) FROM (
+                            SELECT HotelId FROM Med_HotelsToPush
+                            WHERE IsActive = 0 AND Error IS NOT NULL AND Error != 'CancelBook'
+                              AND DateInsert >= DATEADD(HOUR, -6, GETDATE())
+                            GROUP BY HotelId HAVING COUNT(*) >= 3
+                        ) x");
+                    if (pushRetryLoop > 0)
+                        alerts.Add(new AlertInfo { Id = "PUSH_RETRY_LOOP", Title = "Push Retry Loop",
+                            Message = $"{pushRetryLoop} מלונות נכשלים ב-Push שוב ושוב (3+ כשלונות ב-6 שעות)",
+                            Severity = pushRetryLoop > 5 ? "Critical" : "Warning", Category = "Push" });
+                }
+                catch (Exception ex) { _logger.LogDebug("Push retry loop check skipped: {Err}", ex.Message); }
+
+                // 24. Conversion rate anomaly (compare today vs yesterday)
+                try
+                {
+                    var todaySold = await ScalarInt(conn, "SELECT COUNT(*) FROM MED_Book WHERE IsActive = 1 AND IsSold = 1 AND DateInsert >= CAST(GETDATE() AS DATE)");
+                    var todayTotal = await ScalarInt(conn, "SELECT COUNT(*) FROM MED_Book WHERE IsActive = 1 AND DateInsert >= CAST(GETDATE() AS DATE)");
+                    var yesterdaySold = await ScalarInt(conn, "SELECT COUNT(*) FROM MED_Book WHERE IsActive = 1 AND IsSold = 1 AND DateInsert >= CAST(DATEADD(DAY,-1,GETDATE()) AS DATE) AND DateInsert < CAST(GETDATE() AS DATE)");
+                    var yesterdayTotal = await ScalarInt(conn, "SELECT COUNT(*) FROM MED_Book WHERE IsActive = 1 AND DateInsert >= CAST(DATEADD(DAY,-1,GETDATE()) AS DATE) AND DateInsert < CAST(GETDATE() AS DATE)");
+
+                    if (yesterdayTotal > 0 && todayTotal > 5 && DateTime.Now.Hour >= 14)
+                    {
+                        var todayRate = (double)todaySold / todayTotal;
+                        var yesterdayRate = (double)yesterdaySold / yesterdayTotal;
+                        if (yesterdayRate > 0 && todayRate < yesterdayRate * 0.5)
+                            alerts.Add(new AlertInfo { Id = "CONVERSION_DROP", Title = "Conversion Rate Drop",
+                                Message = $"שיעור המרה היום: {todayRate:P0} מול אתמול: {yesterdayRate:P0} — ירידה של {(1 - todayRate / yesterdayRate) * 100:F0}%",
+                                Severity = "Warning", Category = "Business" });
+                    }
+                }
+                catch (Exception ex) { _logger.LogDebug("Conversion anomaly check skipped: {Err}", ex.Message); }
             }
+
+            // 25. Trend degradation from historical data
+            if (_historical?.LastTrendWarning != null
+                && _historical.LastTrendWarningTime.HasValue
+                && (DateTime.UtcNow - _historical.LastTrendWarningTime.Value).TotalHours < 1)
+            {
+                alerts.Add(new AlertInfo { Id = "TREND_DEGRADATION", Title = "Trend Degradation Detected",
+                    Message = _historical.LastTrendWarning, Severity = "Warning", Category = "System" });
+            }
+
+            // 26. WebJobs monitoring self-health
+            if (_webJobs != null && !_webJobs.IsMonitoringHealthy)
+                alerts.Add(new AlertInfo { Id = "WEBJOBS_MONITORING_DOWN", Title = "WebJobs Monitoring Down",
+                    Message = _webJobs.MonitoringIssue ?? "ניטור WebJobs לא מחזיר תוצאות",
+                    Severity = "Warning", Category = "Infrastructure" });
 
             // Set timestamp & active status, filter acknowledged/snoozed
             lock (_lock)
@@ -445,9 +610,10 @@ public class AlertingService
                 }
                 while (_alertHistory.Count > MaxHistory) _alertHistory.RemoveAt(0);
 
-                // Send notifications for new critical/warning alerts (not acknowledged/snoozed)
+                // Send notifications for new critical/warning alerts (with cooldown)
                 if (_notifications != null)
                 {
+                    var cooldownMinutes = _notifications.Config.CooldownMinutes;
                     foreach (var a in alerts.Where(a => !a.IsAcknowledged && !a.IsSnoozed))
                     {
                         var minSev = _notifications.Config.MinSeverity;
@@ -455,15 +621,22 @@ public class AlertingService
                             (a.Severity == "Warning" && minSev != "Critical") ||
                             (a.Severity == "Info" && minSev == "Info");
 
-                        if (shouldNotify)
-                        {
-                            _ = _notifications.SendAsync(a.Title, a.Message, a.Severity, a.Category);
-                        }
+                        if (!shouldNotify) continue;
+
+                        // Check cooldown
+                        if (_lastNotifiedPerAlert.TryGetValue(a.Id, out var lastSent)
+                            && (DateTime.UtcNow - lastSent).TotalMinutes < cooldownMinutes)
+                            continue; // Still in cooldown
+
+                        _lastNotifiedPerAlert[a.Id] = DateTime.UtcNow;
+                        _ = _notifications.SendAsync(a.Title, a.Message, a.Severity, a.Category);
                     }
                 }
             }
         }
         catch (Exception ex) { _logger.LogError("EvaluateAlerts error: {Err}", ex.Message); }
+
+        SaveState();
         return alerts;
     }
 
@@ -549,6 +722,96 @@ public class AlertingService
         return sb.ToString();
     }
 
+    // ── State Persistence (DB primary, file fallback) ──
+
+    private void LoadPersistedState()
+    {
+        try
+        {
+            // Try file-based state first (fast, synchronous startup)
+            if (File.Exists(_stateFilePath))
+            {
+                var json = File.ReadAllText(_stateFilePath);
+                var state = JsonSerializer.Deserialize<AlertingPersistedState>(json);
+                if (state != null) RestoreState(state);
+                return;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("Could not load alerting state from file: {Err}", ex.Message);
+        }
+    }
+
+    public async Task LoadPersistedStateFromDbAsync()
+    {
+        if (_stateStorage == null) return;
+        try
+        {
+            var state = await _stateStorage.LoadStateAsync<AlertingPersistedState>("AlertingService", "main");
+            if (state != null) RestoreState(state);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("Could not load alerting state from DB: {Err}", ex.Message);
+        }
+    }
+
+    private void RestoreState(AlertingPersistedState state)
+    {
+        lock (_lock)
+        {
+            _alertHistory.Clear();
+            _alertHistory.AddRange(state.AlertHistory);
+
+            _acknowledged.Clear();
+            foreach (var (k, v) in state.Acknowledged) _acknowledged[k] = v;
+
+            _snoozed.Clear();
+            foreach (var (k, v) in state.Snoozed) _snoozed[k] = v;
+
+            _lastNotifiedPerAlert.Clear();
+            foreach (var (k, v) in state.LastNotifiedPerAlert) _lastNotifiedPerAlert[k] = v;
+        }
+
+        _logger.LogInformation("Alerting state restored: {History} history, {Ack} acknowledged, {Snz} snoozed",
+            state.AlertHistory.Count, state.Acknowledged.Count, state.Snoozed.Count);
+    }
+
+    public void SaveState(bool force = false)
+    {
+        if (!force && DateTime.UtcNow - _lastStateSave < StateSaveInterval) return;
+        try
+        {
+            AlertingPersistedState state;
+            lock (_lock)
+            {
+                state = new AlertingPersistedState
+                {
+                    AlertHistory = _alertHistory.TakeLast(500).ToList(),
+                    Acknowledged = new Dictionary<string, DateTime>(_acknowledged),
+                    Snoozed = new Dictionary<string, DateTime>(_snoozed),
+                    LastNotifiedPerAlert = new Dictionary<string, DateTime>(_lastNotifiedPerAlert),
+                    LastSaved = DateTime.UtcNow
+                };
+            }
+
+            // File-based (fast)
+            var json = JsonSerializer.Serialize(state, new JsonSerializerOptions { WriteIndented = true });
+            File.WriteAllText(_stateFilePath, json);
+
+            // DB-based (async, fire-and-forget)
+            if (_stateStorage != null)
+                _ = _stateStorage.SaveStateAsync("AlertingService", "main", state);
+
+            _lastStateSave = DateTime.UtcNow;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("Could not save alerting state: {Err}", ex.Message);
+        }
+    }
+
     // ── Helpers ──
 
     private static async Task<int> ScalarInt(Microsoft.Data.SqlClient.SqlConnection conn, string sql)
@@ -604,4 +867,13 @@ public class AlertThresholds
     public int SalesOfficePartialMappingThreshold { get; set; } = 10;
     public int SalesOfficeRunningNoResultHours { get; set; } = 2;
     public int SalesOfficeRunningNoResultThreshold { get; set; } = 5;
+}
+
+public class AlertingPersistedState
+{
+    public List<AlertInfo> AlertHistory { get; set; } = new();
+    public Dictionary<string, DateTime> Acknowledged { get; set; } = new();
+    public Dictionary<string, DateTime> Snoozed { get; set; } = new();
+    public Dictionary<string, DateTime> LastNotifiedPerAlert { get; set; } = new();
+    public DateTime LastSaved { get; set; }
 }

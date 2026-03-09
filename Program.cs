@@ -24,27 +24,45 @@ builder.Services.AddSingleton<IncidentManagementService>();
 builder.Services.AddSingleton<FailSafeService>();
 builder.Services.AddSingleton<WebJobsMonitoringService>();
 builder.Services.AddSingleton<ClaudeAiService>();
+builder.Services.AddSingleton<StateStorageService>();
 builder.Services.AddHostedService<FailSafeBackgroundService>();
 builder.Services.AddHostedService<AlertNotificationService>();
+builder.Services.AddSignalR();
+builder.Services.AddSingleton<MonitorHubNotifier>();
 builder.Services.AddCors(o => o.AddDefaultPolicy(p => p.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader()));
 
 var app = builder.Build();
 app.UseCors();
+app.UseMiddleware<MediciMonitor.Services.ApiKeyMiddleware>();
 app.UseStaticFiles();
 
 // ── Wire up cross-service dependencies ──
 var alertingSvc = app.Services.GetRequiredService<AlertingService>();
 var notificationSvc = app.Services.GetRequiredService<NotificationService>();
 alertingSvc.SetNotificationService(notificationSvc);
+alertingSvc.SetHistoricalDataService(app.Services.GetRequiredService<HistoricalDataService>());
+alertingSvc.SetWebJobsMonitoringService(app.Services.GetRequiredService<WebJobsMonitoringService>());
+
+// Wire StateStorageService for DB-based state persistence
+var stateStorage = app.Services.GetRequiredService<StateStorageService>();
+alertingSvc.SetStateStorageService(stateStorage);
+app.Services.GetRequiredService<SlaTrackingService>().SetStateStorageService(stateStorage);
+app.Services.GetRequiredService<FailSafeService>().SetStateStorageService(stateStorage);
 
 builder.Configuration.GetSection("Notifications").Bind(notificationSvc.Config);
 var configuredThresholds = builder.Configuration.GetSection("AlertThresholds").Get<AlertThresholds>();
 if (configuredThresholds != null)
     alertingSvc.Thresholds = configuredThresholds;
 
+// ── Ensure monitor-owned DB tables exist ──
+await app.Services.GetRequiredService<DataService>().EnsureMonitorTablesExist();
+
 // ── Start background services ──
 app.Services.GetRequiredService<HistoricalDataService>().StartAutoCapture(15);
 app.Services.GetRequiredService<SlaTrackingService>().StartTracking(60);
+
+// ── SignalR Hub ──
+app.MapHub<MonitorHub>("/hub/monitor");
 
 // ═══════════════════════════════════════════════════════════════
 //  Health Endpoints (self-monitoring)
@@ -457,6 +475,20 @@ app.MapPut("/api/failsafe/config", async (FailSafeService svc, HttpContext ctx) 
 
 app.MapGet("/api/failsafe/daily-summary", (FailSafeService svc) =>
     Results.Ok(svc.GetDailySummary()));
+
+// Backend-facing breaker check endpoints (shared DB)
+app.MapGet("/api/failsafe/breakers/check/{name}", async (DataService svc, string name) =>
+{
+    var breakers = await svc.GetBreakersFromDb();
+    var isOpen = breakers.TryGetValue(name.ToUpper(), out var open) && open;
+    return Results.Ok(new { breaker = name.ToUpper(), isOpen, timestamp = DateTime.UtcNow });
+});
+
+app.MapGet("/api/failsafe/breakers/check", async (DataService svc) =>
+{
+    var breakers = await svc.GetBreakersFromDb();
+    return Results.Ok(new { breakers, timestamp = DateTime.UtcNow });
+});
 
 app.MapPost("/api/failsafe/verify-pin", (FailSafeService svc, HttpContext ctx) =>
 {

@@ -11,11 +11,17 @@ public class SlaTrackingService
     private readonly ILogger<SlaTrackingService> _logger;
     private readonly object _lock = new();
     private CancellationTokenSource? _cts;
+    private StateStorageService? _stateStorage;
 
     // In-memory SLA data per endpoint
     private readonly Dictionary<string, EndpointSla> _endpoints = new();
     private readonly List<IncidentRecord> _incidents = new();
     private const int MaxIncidents = 1000;
+
+    // State persistence
+    private readonly string _stateFilePath;
+    private DateTime _lastStateSave = DateTime.MinValue;
+    private static readonly TimeSpan StateSaveInterval = TimeSpan.FromMinutes(1);
 
     public SlaTrackingService(AzureMonitoringService azure, IConfiguration config, ILogger<SlaTrackingService> logger)
     {
@@ -23,7 +29,12 @@ public class SlaTrackingService
         _connStr = config.GetConnectionString("SqlServer")
             ?? throw new InvalidOperationException("Missing SqlServer connection string");
         _logger = logger;
+
+        _stateFilePath = Path.Combine(AppContext.BaseDirectory, "sla-state.json");
+        LoadPersistedState();
     }
+
+    public void SetStateStorageService(StateStorageService sss) => _stateStorage = sss;
 
     // ── Start background SLA monitoring ──
 
@@ -160,6 +171,70 @@ public class SlaTrackingService
                 }
             }
         }
+
+        SaveState();
+    }
+
+    // ── State Persistence ──
+
+    private void LoadPersistedState()
+    {
+        try
+        {
+            if (!File.Exists(_stateFilePath)) return;
+            var json = File.ReadAllText(_stateFilePath);
+            var state = System.Text.Json.JsonSerializer.Deserialize<SlaPersistedState>(json);
+            if (state == null) return;
+
+            lock (_lock)
+            {
+                _endpoints.Clear();
+                foreach (var (name, saved) in state.Endpoints)
+                    _endpoints[name] = saved;
+
+                _incidents.Clear();
+                _incidents.AddRange(state.Incidents);
+            }
+
+            _logger.LogInformation("SLA state restored: {Endpoints} endpoints, {Incidents} incidents",
+                state.Endpoints.Count, state.Incidents.Count);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("Could not load SLA state: {Err}", ex.Message);
+        }
+    }
+
+    public void SaveState(bool force = false)
+    {
+        if (!force && DateTime.UtcNow - _lastStateSave < StateSaveInterval) return;
+        try
+        {
+            SlaPersistedState state;
+            lock (_lock)
+            {
+                state = new SlaPersistedState
+                {
+                    Endpoints = new Dictionary<string, EndpointSla>(_endpoints),
+                    Incidents = _incidents.TakeLast(200).ToList(),
+                    LastSaved = DateTime.UtcNow
+                };
+            }
+
+            // File-based (fast)
+            var json = System.Text.Json.JsonSerializer.Serialize(state, new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+            File.WriteAllText(_stateFilePath, json);
+
+            // DB-based (async, fire-and-forget)
+            if (_stateStorage != null)
+                _ = _stateStorage.SaveStateAsync("SlaTrackingService", "main", state);
+
+            _lastStateSave = DateTime.UtcNow;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("Could not save SLA state: {Err}", ex.Message);
+        }
     }
 
     // ── Get SLA Dashboard Data ──
@@ -240,7 +315,7 @@ public class SlaTrackingService
 
 // ── Internal tracking models ──
 
-internal class EndpointSla
+public class EndpointSla
 {
     public string EndpointName { get; set; } = "";
     public bool IsCurrentlyUp { get; set; } = true;
@@ -292,4 +367,11 @@ public class SlaEntry
     public double MTTR { get; set; }
     public double MTTD { get; set; }
     public double CurrentDowntimeMinutes { get; set; }
+}
+
+public class SlaPersistedState
+{
+    public Dictionary<string, EndpointSla> Endpoints { get; set; } = new();
+    public List<IncidentRecord> Incidents { get; set; } = new();
+    public DateTime LastSaved { get; set; }
 }

@@ -56,6 +56,7 @@ public class DataService
             await Safe(() => LoadConversionRevenue(conn, s));
             await Safe(() => LoadPriceDrift(conn, s));
             await Safe(() => LoadBuyRoomsHeartbeat(conn, s));
+            await Safe(() => LoadBuyRoomsFunnel(conn, s));
         }
         catch (Exception ex)
         {
@@ -1712,5 +1713,134 @@ public class DataService
                 s.BuyRoomsHealthy = false;
             }
         }
+    }
+
+    private async Task LoadBuyRoomsFunnel(SqlConnection conn, SystemStatus s)
+    {
+        // PreBook creation rate (last hour)
+        using var cmd1 = new SqlCommand(
+            "SELECT COUNT(*) FROM MED_PreBook WHERE DateInsert >= DATEADD(HOUR, -1, GETDATE())", conn);
+        cmd1.CommandTimeout = 10;
+        s.PreBooksLastHour = Convert.ToInt32(await cmd1.ExecuteScalarAsync() ?? 0);
+
+        // Book creation rate (last hour)
+        using var cmd2 = new SqlCommand(
+            "SELECT COUNT(*) FROM MED_Book WHERE DateInsert >= DATEADD(HOUR, -1, GETDATE())", conn);
+        cmd2.CommandTimeout = 10;
+        s.BooksLastHour = Convert.ToInt32(await cmd2.ExecuteScalarAsync() ?? 0);
+
+        // Funnel conversion
+        s.BuyRoomsFunnelRate = s.PreBooksLastHour > 0
+            ? Math.Round((double)s.BooksLastHour / s.PreBooksLastHour * 100, 1)
+            : 0;
+
+        // PreBooks without matching Book (started but not completed)
+        using var cmd3 = new SqlCommand(@"
+            SELECT COUNT(*) FROM MED_PreBook p
+            WHERE p.DateInsert >= DATEADD(HOUR, -2, GETDATE())
+              AND NOT EXISTS (SELECT 1 FROM MED_Book b WHERE b.PreBookId = p.Id)", conn);
+        cmd3.CommandTimeout = 10;
+        s.OrphanedPreBooks = Convert.ToInt32(await cmd3.ExecuteScalarAsync() ?? 0);
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  Monitor Tables (owned by MediciMonitor — safe to write)
+    // ═══════════════════════════════════════════════════════════════
+
+    public async Task EnsureMonitorTablesExist()
+    {
+        try
+        {
+            using var conn = new SqlConnection(_connStr);
+            await conn.OpenAsync();
+            using var cmd = new SqlCommand(@"
+                IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'Monitor_CircuitBreakers')
+                CREATE TABLE Monitor_CircuitBreakers (
+                    BreakerName NVARCHAR(50) PRIMARY KEY,
+                    IsOpen BIT NOT NULL DEFAULT 0,
+                    Label NVARCHAR(200),
+                    Reason NVARCHAR(500),
+                    TriggeredBy NVARCHAR(100),
+                    OpenedAt DATETIME2,
+                    ClosedAt DATETIME2,
+                    LastUpdated DATETIME2 DEFAULT GETUTCDATE()
+                )", conn);
+            cmd.CommandTimeout = 15;
+            await cmd.ExecuteNonQueryAsync();
+
+            using var cmd2 = new SqlCommand(@"
+                IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'Monitor_State')
+                CREATE TABLE Monitor_State (
+                    ServiceName NVARCHAR(100),
+                    StateKey NVARCHAR(100),
+                    StateJson NVARCHAR(MAX),
+                    LastUpdated DATETIME2 DEFAULT GETUTCDATE(),
+                    PRIMARY KEY (ServiceName, StateKey)
+                )", conn);
+            cmd2.CommandTimeout = 15;
+            await cmd2.ExecuteNonQueryAsync();
+
+            _logger.LogInformation("Monitor tables ensured (CircuitBreakers, State)");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to ensure Monitor tables: {Err}", ex.Message);
+        }
+    }
+
+    public async Task SyncBreakerToDb(string name, bool isOpen, string? label, string? reason, string? triggeredBy)
+    {
+        try
+        {
+            using var conn = new SqlConnection(_connStr);
+            await conn.OpenAsync();
+            using var cmd = new SqlCommand(@"
+                MERGE Monitor_CircuitBreakers AS target
+                USING (SELECT @Name AS BreakerName) AS source
+                ON target.BreakerName = source.BreakerName
+                WHEN MATCHED THEN
+                    UPDATE SET IsOpen = @IsOpen, Label = @Label, Reason = @Reason,
+                               TriggeredBy = @TriggeredBy,
+                               OpenedAt = CASE WHEN @IsOpen = 1 AND target.IsOpen = 0 THEN GETUTCDATE() ELSE target.OpenedAt END,
+                               ClosedAt = CASE WHEN @IsOpen = 0 AND target.IsOpen = 1 THEN GETUTCDATE() ELSE target.ClosedAt END,
+                               LastUpdated = GETUTCDATE()
+                WHEN NOT MATCHED THEN
+                    INSERT (BreakerName, IsOpen, Label, Reason, TriggeredBy, OpenedAt, LastUpdated)
+                    VALUES (@Name, @IsOpen, @Label, @Reason, @TriggeredBy,
+                            CASE WHEN @IsOpen = 1 THEN GETUTCDATE() ELSE NULL END, GETUTCDATE());", conn);
+            cmd.Parameters.AddWithValue("@Name", name);
+            cmd.Parameters.AddWithValue("@IsOpen", isOpen);
+            cmd.Parameters.AddWithValue("@Label", (object?)label ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("@Reason", (object?)reason ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("@TriggeredBy", (object?)triggeredBy ?? DBNull.Value);
+            cmd.CommandTimeout = 10;
+            await cmd.ExecuteNonQueryAsync();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to sync breaker {Name} to DB: {Err}", name, ex.Message);
+        }
+    }
+
+    public async Task<Dictionary<string, bool>> GetBreakersFromDb()
+    {
+        var result = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            using var conn = new SqlConnection(_connStr);
+            await conn.OpenAsync();
+            using var cmd = new SqlCommand("SELECT BreakerName, IsOpen FROM Monitor_CircuitBreakers", conn);
+            cmd.CommandTimeout = 10;
+            using var rdr = await cmd.ExecuteReaderAsync();
+            while (await rdr.ReadAsync())
+            {
+                result[rdr.GetString(0)] = rdr.GetBoolean(1);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to read breakers from DB: {Err}", ex.Message);
+        }
+        return result;
     }
 }

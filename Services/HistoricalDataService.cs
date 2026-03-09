@@ -88,9 +88,40 @@ public class HistoricalDataService
                 : "Healthy";
 
             await SaveSnapshot(snap);
+            AnalyzeTrends(snap);
             return new { Success = true, Snapshot = snap, Message = "צילום מצב בוצע בהצלחה" };
         }
         catch (Exception ex) { return new { Success = false, Error = ex.Message }; }
+    }
+
+    // ── Trend Warning (consumed by AlertingService) ────────────
+
+    public string? LastTrendWarning { get; private set; }
+    public DateTime? LastTrendWarningTime { get; private set; }
+
+    private readonly List<HistoricalSnapshot> _recentSnapshots = new();
+
+    private void AnalyzeTrends(HistoricalSnapshot latest)
+    {
+        _recentSnapshots.Add(latest);
+        if (_recentSnapshots.Count > 10) _recentSnapshots.RemoveAt(0);
+        if (_recentSnapshots.Count < 4) return;
+
+        var recent = _recentSnapshots.TakeLast(4).ToList();
+
+        // Check for monotonically increasing error count
+        bool errorsIncreasing = true;
+        for (int i = 1; i < recent.Count; i++)
+        {
+            if (recent[i].ErrorsCount <= recent[i - 1].ErrorsCount)
+            { errorsIncreasing = false; break; }
+        }
+
+        if (errorsIncreasing)
+        {
+            LastTrendWarning = $"שגיאות עולות ב-{recent.Count} snapshots רצופים: {string.Join(" → ", recent.Select(s => s.ErrorsCount))}";
+            LastTrendWarningTime = DateTime.UtcNow;
+        }
     }
 
     // ── Trend Analysis ───────────────────────────────────────────

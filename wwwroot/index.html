@@ -214,6 +214,7 @@ td.log-msg{white-space:pre-wrap;word-break:break-word;max-width:600px;font-famil
     <button id="btnAutoRefresh" class="active" onclick="toggleAutoRefresh()">Auto 30s</button>
     <button onclick="loadData()">&#x21BB; רענן</button>
     <button id="btnSound" onclick="toggleSound()">&#x1f50a; Sound OFF</button>
+    <button onclick="promptApiKey()">&#x1f511;</button>
   </div>
 </div>
 
@@ -1258,7 +1259,58 @@ td.log-msg{white-space:pre-wrap;word-break:break-word;max-width:600px;font-famil
 
 </div>
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/microsoft-signalr/8.0.7/signalr.min.js"></script>
 <script>
+// ── SignalR real-time connection ──
+let hubConnection = null;
+function initSignalR() {
+    try {
+        hubConnection = new signalR.HubConnectionBuilder()
+            .withUrl('/hub/monitor')
+            .withAutomaticReconnect([0, 2000, 5000, 10000, 30000])
+            .build();
+
+        hubConnection.on('AlertsUpdated', function(alerts) {
+            if (alerts && alerts.length > 0) {
+                const critical = alerts.filter(a => a.severity === 'Critical');
+                if (critical.length > 0) {
+                    console.log('[SignalR] Critical alerts received:', critical.length);
+                }
+            }
+        });
+
+        hubConnection.on('BreakerChanged', function(data) {
+            console.log('[SignalR] Breaker changed:', data.breakerName, data.isOpen ? 'OPEN' : 'CLOSED');
+        });
+
+        hubConnection.on('Notification', function(data) {
+            console.log('[SignalR] Notification:', data.title, data.severity);
+        });
+
+        hubConnection.start()
+            .then(() => console.log('[SignalR] Connected'))
+            .catch(err => console.log('[SignalR] Connection failed (will retry):', err.toString()));
+    } catch(e) { console.log('[SignalR] Init error:', e); }
+}
+initSignalR();
+
+// ── API Key support ──
+const API_KEY = localStorage.getItem('medici_api_key') || '';
+function apiFetch(url, options = {}) {
+    if (API_KEY) {
+        options.headers = { ...options.headers, 'X-API-Key': API_KEY };
+    }
+    return fetch(url, options);
+}
+
+function promptApiKey() {
+    const current = localStorage.getItem('medici_api_key') || '';
+    const key = prompt('Enter API Key (leave empty to clear):', current);
+    if (key === null) return; // cancelled
+    if (key) { localStorage.setItem('medici_api_key', key); } else { localStorage.removeItem('medici_api_key'); }
+    location.reload();
+}
+
 let autoRefresh = true, soundEnabled = false, refreshTimer = null, lastStuckCount = 0, D = null;
 let SO_DIAG_CACHE = null;
 
@@ -1670,7 +1722,7 @@ function renderSalesOrderTablesFromCache() {
 async function loadSalesOrderDiagnostics() {
   document.getElementById('soDiagKpiCards').innerHTML = '<div class="card"><div class="label">טוען SalesOrder...</div><div class="value"><div class="spinner"></div></div></div>';
   try {
-    const resp = await fetch('/api/salesorder/diagnostics');
+    const resp = await apiFetch('/api/salesorder/diagnostics');
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
     const d = await resp.json();
     SO_DIAG_CACHE = d;
@@ -1823,7 +1875,7 @@ async function loadSalesOrderTrace() {
   document.getElementById('soDiagTraceBody').innerHTML = '<tr class="empty-row"><td colspan="8"><div class="spinner"></div></td></tr>';
 
   try {
-    const resp = await fetch('/api/salesorder/trace/' + encodeURIComponent(orderId));
+    const resp = await apiFetch('/api/salesorder/trace/' + encodeURIComponent(orderId));
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
     const d = await resp.json();
 
@@ -2074,7 +2126,7 @@ function renderAlert(d) {
 async function loadMonitorAlerts() {
   document.getElementById('monitorAlertsBody').innerHTML = '<tr><td colspan="8" style="text-align:center;padding:20px"><div class="spinner"></div></td></tr>';
   try {
-    const resp = await fetch('/api/azure/monitor-alerts');
+    const resp = await apiFetch('/api/azure/monitor-alerts');
     const data = await resp.json();
     const alerts = Array.isArray(data) ? data : [];
     const fired = alerts.filter(a => a.monitorCondition === 'Fired');
@@ -2121,7 +2173,7 @@ async function loadMonitorAlerts() {
 async function loadAzureHealth() {
   document.getElementById('azHealthBody').innerHTML = '<tr><td colspan="5" style="text-align:center;padding:20px"><div class="spinner"></div></td></tr>';
   try {
-    const resp = await fetch('/api/azure/health');
+    const resp = await apiFetch('/api/azure/health');
     const data = await resp.json();
     const endpoints = Array.isArray(data) ? data : (data.endpoints || []);
     const cards = [];
@@ -2153,7 +2205,7 @@ async function loadAzureHealth() {
 async function loadAzureResources() {
   document.getElementById('azResourceBody').innerHTML = '<tr><td colspan="4" style="text-align:center;padding:20px"><div class="spinner"></div></td></tr>';
   try {
-    const resp = await fetch('/api/azure/resources');
+    const resp = await apiFetch('/api/azure/resources');
     const data = await resp.json();
     const resources = Array.isArray(data) ? data : (data.resources || []);
     document.getElementById('azResourceBody').innerHTML = resources.length ? resources.map(r => {
@@ -2173,7 +2225,7 @@ async function loadAzureResources() {
 async function loadAzureAlerts() {
   document.getElementById('azAlertBody').innerHTML = '<tr><td colspan="5" style="text-align:center;padding:20px"><div class="spinner"></div></td></tr>';
   try {
-    const resp = await fetch('/api/azure/alerts');
+    const resp = await apiFetch('/api/azure/alerts');
     const data = await resp.json();
     const alerts = Array.isArray(data) ? data : (data.alerts || []);
     document.getElementById('azAlertBody').innerHTML = alerts.length ? alerts.map(a => {
@@ -2197,7 +2249,7 @@ async function loadAzureAlerts() {
 // ══════════════════════════════════════════════════════════════════════
 async function aiCheckStatus() {
   try {
-    const resp = await fetch('/api/ai/status');
+    const resp = await apiFetch('/api/ai/status');
     const data = await resp.json();
     const badge = document.getElementById('aiStatusBadge');
     if (data.available) {
@@ -2223,7 +2275,7 @@ async function aiAction(action) {
   area.innerHTML = '<div style="text-align:center;padding:30px"><div class="spinner"></div><br><span style="color:var(--text2);font-size:13px">Claude מנתח את הנתונים... (10-30 שניות)</span></div>';
   meta.textContent = '';
   try {
-    const resp = await fetch('/api/ai/' + action);
+    const resp = await apiFetch('/api/ai/' + action);
     const data = await resp.json();
     if (data.success) {
       area.innerHTML = formatAiResponse(data.response);
@@ -2245,7 +2297,7 @@ async function aiChat() {
   area.innerHTML = '<div style="text-align:center;padding:30px"><div class="spinner"></div><br><span style="color:var(--text2);font-size:13px">Claude חושב...</span></div>';
   meta.textContent = '';
   try {
-    const resp = await fetch('/api/ai/chat', {
+    const resp = await apiFetch('/api/ai/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ message: msg })
@@ -2296,7 +2348,7 @@ async function loadBI(period, btnEl) {
   period = period || 'today';
   document.getElementById('biKpiCards').innerHTML = '<div class="card"><div class="label">טוען BI...</div><div class="value"><div class="spinner"></div></div></div>';
   try {
-    const resp = await fetch('/api/bi/' + period);
+    const resp = await apiFetch('/api/bi/' + period);
     const data = await resp.json();
     const m = data.metrics || {};
 
@@ -2368,7 +2420,7 @@ async function loadBI(period, btnEl) {
 async function loadEmergency() {
   document.getElementById('emergKpiCards').innerHTML = '<div class="card"><div class="label">בודק חירום...</div><div class="value"><div class="spinner"></div></div></div>';
   try {
-    const resp = await fetch('/api/emergency/status');
+    const resp = await apiFetch('/api/emergency/status');
     const raw = await resp.json();
     const data = raw.emergencyStatus || raw;
 
@@ -2428,7 +2480,7 @@ async function execAction(actionType, confirmed) {
   resultDiv.style.display = '';
   output.textContent = 'מבצע ' + actionType + '...';
   try {
-    const resp = await fetch('/api/emergency/action/' + actionType, { method: 'POST' });
+    const resp = await apiFetch('/api/emergency/action/' + actionType, { method: 'POST' });
     const data = await resp.json();
     output.textContent = JSON.stringify(data, null, 2);
   } catch(err) {
@@ -2447,7 +2499,7 @@ async function loadTrends(period, btnEl) {
   period = period || '24h';
   document.getElementById('historyKpiCards').innerHTML = '<div class="card"><div class="label">טוען מגמות...</div><div class="value"><div class="spinner"></div></div></div>';
   try {
-    const resp = await fetch('/api/history/trends/' + period);
+    const resp = await apiFetch('/api/history/trends/' + period);
     const data = await resp.json();
     const trend = data.trendData || data;
     const summary = trend.summary || data.summary || {};
@@ -2477,7 +2529,7 @@ async function loadTrends(period, btnEl) {
 
 async function captureSnapshot() {
   try {
-    const resp = await fetch('/api/history/snapshot', { method: 'POST' });
+    const resp = await apiFetch('/api/history/snapshot', { method: 'POST' });
     const data = await resp.json();
     alert('Snapshot נלכד בהצלחה!\n' + (data.timestamp || ''));
   } catch(err) {
@@ -2491,7 +2543,7 @@ async function loadPerfReport() {
   section.style.display = '';
   output.textContent = 'טוען דוח ביצועים...';
   try {
-    const resp = await fetch('/api/history/report/24h');
+    const resp = await apiFetch('/api/history/report/24h');
     const data = await resp.json();
     output.textContent = JSON.stringify(data, null, 2);
   } catch(err) {
@@ -2505,7 +2557,7 @@ async function loadPerfReport() {
 async function loadAlerts() {
   document.getElementById('alertKpiCards').innerHTML = '<div class="card"><div class="label">בודק התראות...</div><div class="value"><div class="spinner"></div></div></div>';
   try {
-    const resp = await fetch('/api/alerts');
+    const resp = await apiFetch('/api/alerts');
     const data = await resp.json();
     const alerts = data.alerts || data || [];
 
@@ -2543,7 +2595,7 @@ async function loadAlerts() {
         '</td></tr>';
     }).join('') : emptyRow(6, 'אין התראות — הכל תקין!');
 
-    const summResp = await fetch('/api/alerts/summary');
+    const summResp = await apiFetch('/api/alerts/summary');
     const summData = await summResp.json();
     document.getElementById('alertSummary').textContent = summData.summary || summData.Summary || JSON.stringify(summData, null, 2);
   } catch(err) {
@@ -2552,22 +2604,22 @@ async function loadAlerts() {
 }
 
 async function ackAlert(id) {
-  try { await fetch('/api/alerts/' + id + '/acknowledge', {method:'POST'}); loadAlerts(); } catch(e) { alert('Error: ' + e.message); }
+  try { await apiFetch('/api/alerts/' + id + '/acknowledge', {method:'POST'}); loadAlerts(); } catch(e) { alert('Error: ' + e.message); }
 }
 async function unackAlert(id) {
-  try { await fetch('/api/alerts/' + id + '/unacknowledge', {method:'POST'}); loadAlerts(); } catch(e) { alert('Error: ' + e.message); }
+  try { await apiFetch('/api/alerts/' + id + '/unacknowledge', {method:'POST'}); loadAlerts(); } catch(e) { alert('Error: ' + e.message); }
 }
 async function snoozeAlert(id) {
   const mins = prompt('כמה דקות להשתיק?', '60');
   if (!mins) return;
-  try { await fetch('/api/alerts/' + id + '/snooze?minutes=' + mins, {method:'POST'}); loadAlerts(); } catch(e) { alert('Error: ' + e.message); }
+  try { await apiFetch('/api/alerts/' + id + '/snooze?minutes=' + mins, {method:'POST'}); loadAlerts(); } catch(e) { alert('Error: ' + e.message); }
 }
 
 async function loadAlertHistory() {
   const section = document.getElementById('alertHistorySection');
   section.style.display = '';
   try {
-    const resp = await fetch('/api/alerts/history?last=100');
+    const resp = await apiFetch('/api/alerts/history?last=100');
     const data = await resp.json();
     const alerts = data || [];
     document.getElementById('alertHistoryBody').innerHTML = alerts.length ? alerts.map(a => {
@@ -2584,7 +2636,7 @@ async function toggleThresholds() {
   if (section.style.display !== 'none') { section.style.display = 'none'; return; }
   section.style.display = '';
   try {
-    const resp = await fetch('/api/alerts/thresholds');
+    const resp = await apiFetch('/api/alerts/thresholds');
     const t = await resp.json();
     const labels = {
       slowApiThresholdMs: 'API איטי (ms)', avgResponseDegradationMs: 'ממוצע תגובה (ms)',
@@ -2611,7 +2663,7 @@ async function saveThresholds() {
     t[key] = parseInt(inp.value) || 0;
   });
   try {
-    await fetch('/api/alerts/thresholds', {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(t)});
+    await apiFetch('/api/alerts/thresholds', {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(t)});
     alert('ספים נשמרו בהצלחה!');
   } catch(e) { alert('שגיאה: ' + e.message); }
 }
@@ -2622,7 +2674,7 @@ async function saveThresholds() {
 async function loadSla() {
   document.getElementById('slaKpiCards').innerHTML = '<div class="card"><div class="label">טוען SLA...</div><div class="value"><div class="spinner"></div></div></div>';
   try {
-    const resp = await fetch('/api/sla');
+    const resp = await apiFetch('/api/sla');
     const data = await resp.json();
     const cards = [];
     cards.push(kpi('Uptime כולל', data.overallUptime ? data.overallUptime.toFixed(3) + '%' : '-', data.overallUptime >= 99.9 ? 'ok' : data.overallUptime >= 99 ? 'warning' : 'danger'));
@@ -2663,7 +2715,7 @@ async function loadSla() {
 async function loadDbHealth() {
   document.getElementById('dbhKpiCards').innerHTML = '<div class="card"><div class="label">טוען DB Health...</div><div class="value"><div class="spinner"></div></div></div>';
   try {
-    const resp = await fetch('/api/db-health');
+    const resp = await apiFetch('/api/db-health');
     const d = await resp.json();
     const cards = [];
     cards.push(kpi('חיבור', d.isConnected ? 'מחובר' : 'מנותק', d.isConnected ? 'ok' : 'danger'));
@@ -2760,7 +2812,7 @@ async function createIncident() {
   const sev = document.getElementById('incSeverity').value;
   if (!title) { alert('נא להזין כותרת'); return; }
   try {
-    await fetch('/api/incidents', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({title,description:desc,severity:sev})});
+    await apiFetch('/api/incidents', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({title,description:desc,severity:sev})});
     document.getElementById('incTitle').value = '';
     document.getElementById('incDesc').value = '';
     document.getElementById('createIncidentSection').style.display = 'none';
@@ -2771,7 +2823,7 @@ async function createIncident() {
 async function updateIncident(id, status) {
   if (!status) return;
   try {
-    await fetch('/api/incidents/' + id, {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify({status, note:null})});
+    await apiFetch('/api/incidents/' + id, {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify({status, note:null})});
     loadIncidents();
   } catch(e) { alert('שגיאה: ' + e.message); }
 }
@@ -2829,7 +2881,7 @@ async function loadAudit() {
 // ══════════════════════════════════════════════════════════════════════
 async function loadNotifConfig() {
   try {
-    const resp = await fetch('/api/notifications/config');
+    const resp = await apiFetch('/api/notifications/config');
     const c = await resp.json();
     document.getElementById('nfWebhookEnabled').checked = c.webhookEnabled;
     document.getElementById('nfWebhookUrl').value = c.webhookUrl || '';
@@ -2852,7 +2904,7 @@ async function loadNotifConfig() {
     document.getElementById('nfCooldown').value = c.cooldownMinutes || 5;
 
     // History
-    const hResp = await fetch('/api/notifications/history?last=50');
+    const hResp = await apiFetch('/api/notifications/history?last=50');
     const history = await hResp.json();
     document.getElementById('notifHistoryBody').innerHTML = (history||[]).length ? history.map(n => {
       const sevCls = n.severity==='Critical'?'s-red':n.severity==='Warning'?'s-yellow':'s-blue';
@@ -2886,14 +2938,14 @@ async function saveNotifConfig() {
     cooldownMinutes: parseInt(document.getElementById('nfCooldown').value) || 5
   };
   try {
-    await fetch('/api/notifications/config', {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(config)});
+    await apiFetch('/api/notifications/config', {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(config)});
     alert('הגדרות נשמרו!');
   } catch(e) { alert('שגיאה: ' + e.message); }
 }
 
 async function testNotification() {
   try {
-    const resp = await fetch('/api/notifications/test', {method:'POST'});
+    const resp = await apiFetch('/api/notifications/test', {method:'POST'});
     const data = await resp.json();
     const results = (data.channels||[]).map(c => c.channel + ': ' + (c.success ? 'OK' : 'FAIL - ' + (c.detail||''))).join('\n');
     alert('תוצאת בדיקה:\n' + results);
@@ -3059,7 +3111,7 @@ function getJobStatusIcon(status) {
 async function triggerWebJob(appName, jobName) {
   if (!confirm('להפעיל את WebJob "' + jobName + '"?')) return;
   try {
-    const resp = await fetch('/api/webjobs/' + encodeURIComponent(appName) + '/' + encodeURIComponent(jobName) + '/trigger', {method:'POST'});
+    const resp = await apiFetch('/api/webjobs/' + encodeURIComponent(appName) + '/' + encodeURIComponent(jobName) + '/trigger', {method:'POST'});
     const data = await resp.json();
     alert(data.message);
     setTimeout(() => loadWebJobs(true), 2000);
@@ -3070,7 +3122,7 @@ async function controlWebJob(appName, jobName, action) {
   const actionHe = action === 'start' ? 'להפעיל' : 'לעצור';
   if (!confirm(actionHe + ' את WebJob "' + jobName + '"?')) return;
   try {
-    const resp = await fetch('/api/webjobs/' + encodeURIComponent(appName) + '/' + encodeURIComponent(jobName) + '/' + action, {method:'POST'});
+    const resp = await apiFetch('/api/webjobs/' + encodeURIComponent(appName) + '/' + encodeURIComponent(jobName) + '/' + action, {method:'POST'});
     const data = await resp.json();
     alert(data.message);
     setTimeout(() => loadWebJobs(true), 2000);
@@ -3084,7 +3136,7 @@ async function showJobDetail(appName, jobName, jobType) {
   content.innerHTML = '<div style="text-align:center"><div class="spinner"></div><div style="margin-top:8px;color:var(--text2)">טוען פרטי Job...</div></div>';
 
   try {
-    const resp = await fetch('/api/webjobs/' + encodeURIComponent(appName) + '/' + encodeURIComponent(jobName) + '?type=' + encodeURIComponent(jobType));
+    const resp = await apiFetch('/api/webjobs/' + encodeURIComponent(appName) + '/' + encodeURIComponent(jobName) + '?type=' + encodeURIComponent(jobType));
     const detail = await resp.json();
 
     let html = '<h2 style="margin-bottom:16px">' + getJobStatusIcon(detail.status) + ' ' + esc(detail.jobName) + '</h2>';
@@ -3129,7 +3181,7 @@ function closeWjDetail() {
 
 async function loadWebJobEvents() {
   try {
-    const resp = await fetch('/api/webjobs/events?last=50');
+    const resp = await apiFetch('/api/webjobs/events?last=50');
     const events = await resp.json();
     const tbody = document.getElementById('wjEventsBody');
     if (!events || !events.length) {
@@ -3211,7 +3263,7 @@ async function loadLogStats() {
   const section = document.getElementById('logStatsSection');
   section.style.display = '';
   try {
-    const resp = await fetch('/api/logs/stats');
+    const resp = await apiFetch('/api/logs/stats');
     const data = await resp.json();
     let html = '<div style="width:100%"><h3 style="font-size:14px;margin-bottom:8px">לפי Level</h3>';
     if (data.byLevel) {
@@ -3311,7 +3363,7 @@ function fsGetPin() {
 
 async function fsVerifyPin(pin) {
   try {
-    var resp = await fetch('/api/failsafe/verify-pin?pin=' + encodeURIComponent(pin), {method:'POST'});
+    var resp = await apiFetch('/api/failsafe/verify-pin?pin=' + encodeURIComponent(pin), {method:'POST'});
     var data = await resp.json();
     if (!data.valid) { FS_PIN = null; alert('❌ PIN שגוי!'); return false; }
     return true;
@@ -3331,7 +3383,7 @@ function fsStartAutoRefresh() {
   if (fsAutoRefreshTimer) return;
   fsAutoRefreshTimer = setInterval(async () => {
     try {
-      var resp = await fetch('/api/failsafe/status');
+      var resp = await apiFetch('/api/failsafe/status');
       if (!resp.ok) return;
       var data = await resp.json();
       if (data.status === 'NO_SCAN_YET') return;
@@ -3358,7 +3410,7 @@ function fsStopAutoRefresh() {
 // Load cached status (no DB scan)
 async function loadFailsafeStatus() {
   try {
-    var resp = await fetch('/api/failsafe/status');
+    var resp = await apiFetch('/api/failsafe/status');
     if (!resp.ok) return;
     var data = await resp.json();
     if (data.status === 'NO_SCAN_YET') return;
@@ -3372,7 +3424,7 @@ async function loadFailsafeStatus() {
 async function failsafeScan() {
   document.getElementById('fsScanStatus').textContent = 'סורק...';
   try {
-    const resp = await fetch('/api/failsafe/scan');
+    const resp = await apiFetch('/api/failsafe/scan');
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
     FS_DATA = await resp.json();
     renderFailsafe(FS_DATA);
@@ -3428,7 +3480,7 @@ async function fsReject(id) {
 
 async function loadFailsafeHistory() {
   try {
-    const resp = await fetch('/api/failsafe/history?last=100');
+    const resp = await apiFetch('/api/failsafe/history?last=100');
     const data = await resp.json();
     renderFsHistory(data);
   } catch(e) {}
@@ -3452,7 +3504,7 @@ async function saveFailsafeConfig() {
     else cfg[k] = inp.value;
   });
   try {
-    const resp = await fetch('/api/failsafe/config?pin=' + encodeURIComponent(pin), {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(cfg)});
+    const resp = await apiFetch('/api/failsafe/config?pin=' + encodeURIComponent(pin), {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(cfg)});
     if (resp.status === 403) { FS_PIN = null; document.getElementById('fsConfigStatus').textContent = '❌ PIN שגוי'; return; }
     if (resp.ok) document.getElementById('fsConfigStatus').textContent = '✅ נשמר!';
     else document.getElementById('fsConfigStatus').textContent = '❌ שגיאה';

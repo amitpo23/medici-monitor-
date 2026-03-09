@@ -12,15 +12,17 @@ public class AlertNotificationService : BackgroundService
     private readonly AlertingService _alerting;
     private readonly IConfiguration _config;
     private readonly ILogger<AlertNotificationService> _logger;
+    private readonly MonitorHubNotifier _hubNotifier;
     private readonly Dictionary<string, DateTime> _lastNotified = new();
     private static readonly TimeSpan CooldownPeriod = TimeSpan.FromHours(1);
     private static readonly TimeSpan CheckInterval = TimeSpan.FromMinutes(5);
 
-    public AlertNotificationService(AlertingService alerting, IConfiguration config, ILogger<AlertNotificationService> logger)
+    public AlertNotificationService(AlertingService alerting, IConfiguration config, ILogger<AlertNotificationService> logger, MonitorHubNotifier hubNotifier)
     {
         _alerting = alerting;
         _config = config;
         _logger = logger;
+        _hubNotifier = hubNotifier;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -32,6 +34,11 @@ public class AlertNotificationService : BackgroundService
             try
             {
                 var alerts = await _alerting.EvaluateAlerts();
+
+                // Push all alerts to connected SignalR clients
+                if (alerts.Any())
+                    await _hubNotifier.SendAlerts(alerts);
+
                 var critical = alerts.Where(a => a.Severity == "Critical").ToList();
 
                 foreach (var alert in critical)

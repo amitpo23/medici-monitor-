@@ -20,6 +20,11 @@ public class WebJobsMonitoringService
     private readonly List<WebJobEvent> _events = new();
     private const int MaxEvents = 1000;
 
+    // Self-health monitoring
+    private int _consecutiveEmptyResults = 0;
+    public bool IsMonitoringHealthy => _consecutiveEmptyResults < 3;
+    public string? MonitoringIssue { get; private set; }
+
     // App Services to monitor — add more as needed
     private readonly List<WebJobsAppTarget> _targets = new()
     {
@@ -57,6 +62,19 @@ public class WebJobsMonitoringService
             TotalApps = dashboard.Apps.Count,
             HealthyApps = dashboard.Apps.Count(a => !a.HasError)
         };
+
+        // Self-health: track consecutive empty results
+        if (allJobs.Count == 0)
+        {
+            _consecutiveEmptyResults++;
+            if (_consecutiveEmptyResults >= 3)
+                MonitoringIssue = $"WebJobs monitoring returned 0 results {_consecutiveEmptyResults} times — Azure CLI may not be configured";
+        }
+        else
+        {
+            _consecutiveEmptyResults = 0;
+            MonitoringIssue = null;
+        }
 
         // Detect changes and record events
         DetectChanges(dashboard);

@@ -90,6 +90,12 @@ public class SystemStatus
     public int MinutesSinceLastPurchase { get; set; }
     public bool BuyRoomsHealthy { get; set; }
 
+    // ── 10. NEW: BuyRooms Funnel ──
+    public int PreBooksLastHour { get; set; }
+    public int BooksLastHour { get; set; }
+    public double BuyRoomsFunnelRate { get; set; }
+    public int OrphanedPreBooks { get; set; }
+
     // ── Detailed Lists ──
     public List<StuckBookingInfo> StuckBookings { get; set; } = new();
     public List<CancelErrorInfo> RecentCancelErrors { get; set; } = new();
