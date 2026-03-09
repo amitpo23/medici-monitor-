@@ -1,5 +1,55 @@
 # MediciMonitor — Changelog
 
+## v2.2.0 — 2026-03-09 — AI, WhatsApp, FailSafe, WebJobs & Dashboard Hardening
+
+### מה נוסף
+
+- **Claude AI integration** מלאה עם 3 מצבי עבודה:
+	- `SDK` עם API key,
+	- `OAuth` עם Claude Max / browser auth,
+	- `CLI` fallback מקומי.
+- נוספו endpoints ל-AI כולל סטטוס, ניתוח התראות, ניתוח שגיאות, סיכומי Booking ו-chat.
+- **WhatsApp notifications** דרך Twilio נוספו למערכת ההתראות.
+	- תמיכה ב-`Account SID/Auth Token` וגם ב-`API Key SID/Secret`.
+	- נבדק בהצלחה מול Twilio WhatsApp Sandbox.
+- **FailSafe / Kill Switch** הורחב עם:
+	- breakers תפעוליים,
+	- זיהוי חריגות קריטיות,
+	- flagged items,
+	- history/config APIs,
+	- אינטגרציה עם notification channels.
+- **WebJobs monitoring** נוסף לדשבורד עם תצוגת אפליקציות, jobs, רענון ופרטי runtime.
+- **Azure Monitor fired alerts** נוספו לדשבורד ול-API.
+
+### שיפורי Dashboard
+
+- נוספו לשוניות ופאנלים עבור:
+	- `Claude AI`
+	- `Kill Switch / FailSafe`
+	- `WebJobs`
+	- `Notifications`
+	- `DB Health`
+	- `Incidents`
+	- `Logs / Audit`
+- נוספה תמיכת `SignalR` לעדכונים בזמן אמת.
+- נוספה תמיכה בהזנת `API Key` מה-UI דרך הדפדפן.
+
+### תיקוני ביצועים ויציבות
+
+- תוקנה תקיעת טעינה בדשבורד שנגרמה משגיאת JavaScript (`Unexpected token '}'`).
+- נוספה שכבת `loading overlay` + warmup + retry בעת cold start.
+- endpoint `db-health` שופר משמעותית מכ-31 שניות לכ-1 שנייה.
+- חוויית הטעינה ב-Free tier (`F1`) שופרה עבור Azure App Service ללא `AlwaysOn`.
+
+### הערות תפעוליות
+
+- סביבת Azure הפעילה אומתה מחדש:
+	- `medici-monitor-dashboard`
+	- `medici-backend`
+	- `medici-sql-server / medici-db`
+	- Azure Monitor alerts / Log alerts
+- WhatsApp נבדק ונשלח בהצלחה מהסביבה הפרודקשנית.
+
 ## v2.1.3 — 2026-03-05 — Deep SalesOrder Process Mapping
 
 ### מה נוסף

@@ -1,8 +1,42 @@
-# MediciMonitor — תיעוד מלא v2.1
+# MediciMonitor — תיעוד מלא v2.2
 
-> **מהדורה:** 2.1 | **תאריך:** 2026-02-24 | **מחבר:** GitHub Copilot + Amit  
+> **מהדורה:** 2.2 | **תאריך:** 2026-03-09 | **מחבר:** GitHub Copilot + Amit  
 > **לינק ציבורי:** https://medici-monitor-dashboard.azurewebsites.net  
 > **מטרה:** מערכת ניטור אחודה (Unified Operations Center) למערכת Medici Booking Engine
+
+---
+
+## עדכוני גרסה 2.2
+
+גרסה זו מרחיבה את MediciMonitor ממערכת Dashboard תצפיתית למרכז שליטה תפעולי מלא עם AI, FailSafe, התראות WhatsApp, WebJobs וניטור Azure מתקדם.
+
+### יכולות חדשות מרכזיות
+
+- **Claude AI**
+       - תמיכה ב-`SDK`, `OAuth`, ו-`CLI` fallback.
+       - ניתוח התראות, שגיאות, bookings, briefing ו-chat.
+- **Notifications**
+       - WhatsApp דרך Twilio.
+       - תמיכה ב-API Key auth וב-Auth Token.
+       - המשך תמיכה ב-Webhook / Slack / Teams / Email / Log.
+- **FailSafe / Kill Switch**
+       - breakers, violations, flagged items, approval flow, history ו-config.
+- **WebJobs Monitoring**
+       - מיפוי jobs, סטטוסים ופרטי runtime מתוך Azure/App Services.
+- **Azure Monitoring**
+       - fired alerts, monitor rules, health checks ומשאבי Azure.
+- **DB Health / Incidents / Audit / Logs**
+       - הרחבת יכולות ה-diagnostics בדשבורד וב-API.
+
+### שיפורי ביצועים
+
+- קיצור משמעותי של `db-health` מכ~31 שניות לכ~1 שנייה.
+- מנגנון `warmup + retry` עבור cold start ב-Azure Free tier.
+- תיקון parse error ב-frontend שגרם למסך טעינה אינסופי.
+
+### הערה על Hosting
+
+האפליקציה רצה על **Azure App Service Free F1**, ולכן אין `AlwaysOn`. כתוצאה מכך ייתכן `cold start` לאחר חוסר פעילות. הדשבורד כולל כעת טיפול יזום בכך.
 
 ---
 
