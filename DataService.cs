@@ -1738,7 +1738,7 @@ public class DataService
         using var cmd3 = new SqlCommand(@"
             SELECT COUNT(*) FROM MED_PreBook p
             WHERE p.DateInsert >= DATEADD(HOUR, -2, GETDATE())
-              AND NOT EXISTS (SELECT 1 FROM MED_Book b WHERE b.PreBookId = p.Id)", conn);
+              AND NOT EXISTS (SELECT 1 FROM MED_Book b WHERE b.PreBookId = p.PreBookId)", conn);
         cmd3.CommandTimeout = 10;
         s.OrphanedPreBooks = Convert.ToInt32(await cmd3.ExecuteScalarAsync() ?? 0);
     }

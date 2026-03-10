@@ -1,6 +1,7 @@
 bin/
 obj/
 pub/
+pub_out/
 publish/
 deploy.zip
 azure-logs/
@@ -12,3 +13,4 @@ azurelogs/
 *.user
 .vs/
 Logs/
+debug-playwright.js

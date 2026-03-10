@@ -265,13 +265,17 @@ public class AlertingService
                         Severity = "Critical", Category = "System" });
 
                 // 10c. Orphaned PreBooks
-                var orphaned = await ScalarInt(conn, @"SELECT COUNT(*) FROM MED_PreBook p
-                    WHERE p.DateInsert >= DATEADD(HOUR, -2, GETDATE())
-                    AND NOT EXISTS (SELECT 1 FROM MED_Book b WHERE b.PreBookId = p.Id)");
-                if (orphaned > 10)
-                    alerts.Add(new AlertInfo { Id = "ORPHANED_PREBOOKS", Title = "Orphaned PreBooks",
-                        Message = $"{orphaned} PreBooks ללא Book תואם ב-2 שעות אחרונות — כשל חלקי ב-BuyRooms",
-                        Severity = "Warning", Category = "System" });
+                try
+                {
+                    var orphaned = await ScalarInt(conn, @"SELECT COUNT(*) FROM MED_PreBook p
+                        WHERE p.DateInsert >= DATEADD(HOUR, -2, GETDATE())
+                        AND NOT EXISTS (SELECT 1 FROM MED_Book b WHERE b.PreBookId = p.PreBookId)");
+                    if (orphaned > 10)
+                        alerts.Add(new AlertInfo { Id = "ORPHANED_PREBOOKS", Title = "Orphaned PreBooks",
+                            Message = $"{orphaned} PreBooks ללא Book תואם ב-2 שעות אחרונות — כשל חלקי ב-BuyRooms",
+                            Severity = "Warning", Category = "System" });
+                }
+                catch (Exception ex) { _logger.LogDebug("Orphaned PreBooks check skipped: {Err}", ex.Message); }
 
                 // 11. Push failure spike
                 var pushFails = await ScalarInt(conn, "SELECT COUNT(*) FROM Med_HotelsToPush WHERE IsActive = 0 AND Error IS NOT NULL AND Error != 'CancelBook' AND DateInsert >= DATEADD(HOUR, -1, GETDATE())");
@@ -495,7 +499,7 @@ public class AlertingService
                                WHERE o.IsActive = 1
                                  AND o.WebJobStatus LIKE 'Completed%'
                                  AND o.DateInsert >= DATEADD(DAY, -7, GETDATE())
-                                 AND r.Id IS NULL");
+                                 AND r.HotelCode IS NULL");
 
                         if (noReservation > 0)
                             alerts.Add(new AlertInfo
