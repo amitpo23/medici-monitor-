@@ -449,8 +449,8 @@ td.log-msg{white-space:pre-wrap;word-break:break-word;max-width:600px;font-famil
       <div class="section-header"><h2>&#x274C; Completed ללא Mapping</h2></div>
       <div style="overflow-x:auto">
         <table>
-          <thead><tr><th>Order ID</th><th>סטטוס</th><th>נוצר</th><th>Supplier</th><th>Room</th><th>DateFrom</th><th>DateTo</th><th>סיבה</th></tr></thead>
-          <tbody id="soDiagNoMapBody"><tr class="empty-row"><td colspan="8">טוען...</td></tr></tbody>
+          <thead><tr><th>Order ID</th><th>סטטוס</th><th>נוצר</th><th>מלון/יעד</th><th>Supplier</th><th>Room</th><th>DateFrom</th><th>DateTo</th><th>סיבה</th><th>מה חסר במיפוי</th></tr></thead>
+          <tbody id="soDiagNoMapBody"><tr class="empty-row"><td colspan="10">טוען...</td></tr></tbody>
         </table>
       </div>
     </div>
@@ -1571,9 +1571,11 @@ function soDiagMatch(row, q) {
   const hay = [
     row.orderId,
     row.webJobStatus,
+    row.hotelInfo,
     row.supplierInfo,
     row.roomInfo,
-    row.issueReason
+    row.issueReason,
+    row.missingWhat
   ].filter(Boolean).join(' ').toLowerCase();
   return hay.includes(q);
 }
@@ -1689,17 +1691,19 @@ function renderSalesOrderTablesFromCache() {
   const noMapBody = document.getElementById('soDiagNoMapBody');
   const noMapItems = (d.completedWithoutMappingItems || []).filter(o => soDiagMatch(o, q));
   if (!noMapItems.length) {
-    noMapBody.innerHTML = emptyRow(8, q ? 'אין תוצאות לחיפוש ספק/חדר' : 'אין הזמנות Completed ללא Mapping');
+    noMapBody.innerHTML = emptyRow(10, q ? 'אין תוצאות לחיפוש מלון/ספק/חדר' : 'אין הזמנות Completed ללא Mapping');
   } else {
     noMapBody.innerHTML = noMapItems.map(o =>
       '<tr><td>' + o.orderId + '</td>' +
       '<td>' + statusBadge('s-green', o.webJobStatus || 'Completed') + '</td>' +
       '<td>' + fmt(o.dateInsert) + '</td>' +
+      '<td>' + esc(o.hotelInfo || '-') + '</td>' +
       '<td>' + esc(o.supplierInfo || '-') + '</td>' +
       '<td>' + esc(o.roomInfo || '-') + '</td>' +
       '<td>' + fmtDate(o.dateFrom) + '</td>' +
       '<td>' + fmtDate(o.dateTo) + '</td>' +
-      '<td>' + statusBadge('s-red', esc(o.issueReason || 'Completed ללא Mapping')) + '</td></tr>'
+      '<td>' + statusBadge('s-red', esc(o.issueReason || 'Completed ללא Mapping')) + '</td>' +
+      '<td>' + esc(o.missingWhat || '-') + '</td></tr>'
     ).join('');
   }
 

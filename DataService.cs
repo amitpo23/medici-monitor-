@@ -101,6 +101,10 @@ public class DataService
             var hasErrMsgCol = detailsTable != null && await ColumnExists(conn, detailsTable, "ErrorMessage");
             var hasDetailId = detailsTable != null && await ColumnExists(conn, detailsTable, "Id");
             var hasHotelId = detailsTable != null && await ColumnExists(conn, detailsTable, "HotelId");
+            var orderHotelIdColumn = await ResolveFirstExistingColumn(conn, ordersTable, ["HotelId", "HotelCode", "PropertyId", "PropertyCode"]);
+            var orderHotelNameColumn = await ResolveFirstExistingColumn(conn, ordersTable, ["HotelName", "PropertyName", "Hotel", "Property"]);
+            var orderSupplierColumn = await ResolveFirstExistingColumn(conn, ordersTable, ["SupplierName", "Supplier", "SourceName", "ProviderName", "Provider", "Source"]);
+            var orderRoomColumn = await ResolveFirstExistingColumn(conn, ordersTable, ["RoomTypeCode", "RoomType", "RoomName", "Room", "Category"]);
             var supplierColumn = detailsTable != null
                 ? await ResolveFirstExistingColumn(conn, detailsTable, ["SupplierName", "Supplier", "SourceName", "ProviderName", "Provider", "Source"])
                 : null;
@@ -144,12 +148,29 @@ public class DataService
                 ? "DATEDIFF(MINUTE, o.DateInsert, GETDATE())"
                 : "NULL";
             var orderDateSelect = hasOrderDateInsert ? "o.DateInsert" : "NULL";
+            var orderHotelExpr = orderHotelNameColumn != null && orderHotelIdColumn != null
+                ? $"COALESCE(NULLIF(LTRIM(RTRIM(CAST(o.[{orderHotelNameColumn}] AS NVARCHAR(200)))), ''), N'Hotel ' + CAST(o.[{orderHotelIdColumn}] AS NVARCHAR(50)))"
+                : orderHotelNameColumn != null
+                    ? $"NULLIF(LTRIM(RTRIM(CAST(o.[{orderHotelNameColumn}] AS NVARCHAR(200)))), '')"
+                    : orderHotelIdColumn != null
+                        ? $"N'Hotel ' + CAST(o.[{orderHotelIdColumn}] AS NVARCHAR(50))"
+                        : "NULL";
+            var detailHotelExpr = detailsTable != null && detailOrderFk != null && hasHotelId
+                ? $"(SELECT TOP 1 ISNULL(h.Name, N'Hotel ' + CAST(x.HotelId AS NVARCHAR(20))) FROM {detailsTable} x LEFT JOIN Med_Hotels h ON h.HotelId = x.HotelId WHERE x.[{detailOrderFk}] = o.Id AND x.HotelId IS NOT NULL GROUP BY x.HotelId, h.Name ORDER BY COUNT(*) DESC, ISNULL(h.Name, N'Hotel ' + CAST(x.HotelId AS NVARCHAR(20))))"
+                : "NULL";
+            var hotelExpr = $"COALESCE({detailHotelExpr}, {orderHotelExpr})";
+            var orderSupplierExpr = orderSupplierColumn != null
+                ? $"NULLIF(LTRIM(RTRIM(CAST(o.[{orderSupplierColumn}] AS NVARCHAR(200)))), '')"
+                : "NULL";
             var supplierExpr = detailsTable != null && supplierColumn != null && detailOrderFk != null
-                ? $"(SELECT TOP 1 CAST(x.[{supplierColumn}] AS NVARCHAR(200)) FROM {detailsTable} x WHERE x.[{detailOrderFk}] = o.Id AND x.[{supplierColumn}] IS NOT NULL AND LTRIM(RTRIM(CAST(x.[{supplierColumn}] AS NVARCHAR(200)))) <> '' GROUP BY CAST(x.[{supplierColumn}] AS NVARCHAR(200)) ORDER BY COUNT(*) DESC, CAST(x.[{supplierColumn}] AS NVARCHAR(200)))"
+                ? $"COALESCE((SELECT TOP 1 CAST(x.[{supplierColumn}] AS NVARCHAR(200)) FROM {detailsTable} x WHERE x.[{detailOrderFk}] = o.Id AND x.[{supplierColumn}] IS NOT NULL AND LTRIM(RTRIM(CAST(x.[{supplierColumn}] AS NVARCHAR(200)))) <> '' GROUP BY CAST(x.[{supplierColumn}] AS NVARCHAR(200)) ORDER BY COUNT(*) DESC, CAST(x.[{supplierColumn}] AS NVARCHAR(200))), {orderSupplierExpr})"
+                : orderSupplierExpr;
+            var orderRoomExpr = orderRoomColumn != null
+                ? $"NULLIF(LTRIM(RTRIM(CAST(o.[{orderRoomColumn}] AS NVARCHAR(200)))), '')"
                 : "NULL";
             var roomExpr = detailsTable != null && roomColumn != null && detailOrderFk != null
-                ? $"(SELECT TOP 1 CAST(x.[{roomColumn}] AS NVARCHAR(200)) FROM {detailsTable} x WHERE x.[{detailOrderFk}] = o.Id AND x.[{roomColumn}] IS NOT NULL AND LTRIM(RTRIM(CAST(x.[{roomColumn}] AS NVARCHAR(200)))) <> '' GROUP BY CAST(x.[{roomColumn}] AS NVARCHAR(200)) ORDER BY COUNT(*) DESC, CAST(x.[{roomColumn}] AS NVARCHAR(200)))"
-                : "NULL";
+                ? $"COALESCE((SELECT TOP 1 CAST(x.[{roomColumn}] AS NVARCHAR(200)) FROM {detailsTable} x WHERE x.[{detailOrderFk}] = o.Id AND x.[{roomColumn}] IS NOT NULL AND LTRIM(RTRIM(CAST(x.[{roomColumn}] AS NVARCHAR(200)))) <> '' GROUP BY CAST(x.[{roomColumn}] AS NVARCHAR(200)) ORDER BY COUNT(*) DESC, CAST(x.[{roomColumn}] AS NVARCHAR(200))), {orderRoomExpr})"
+                : orderRoomExpr;
 
             var summarySql = $@"
                 {detailCte}
@@ -361,10 +382,17 @@ public class DataService
                     ISNULL(d.DetailCount, 0) AS DetailCount,
                     ISNULL(d.UnprocessedCount, 0) AS UnprocessedCount,
                     ISNULL(d.ErrorCount, 0) AS ErrorCount,
+                    {hotelExpr} AS HotelInfo,
                     {supplierExpr} AS SupplierInfo,
                     {roomExpr} AS RoomInfo,
                     {minutesExpr} AS MinutesSinceStart,
-                    N'Completed ללא שום תוצאת mapping' AS IssueReason
+                    N'Completed ללא שום תוצאת mapping' AS IssueReason,
+                    CONCAT(
+                        N'חסר Detail/Mapping',
+                        CASE WHEN {hotelExpr} IS NULL THEN N' · חסר מלון/יעד' ELSE N'' END,
+                        CASE WHEN {supplierExpr} IS NULL THEN N' · חסר ספק' ELSE N'' END,
+                        CASE WHEN {roomExpr} IS NULL THEN N' · חסר חדר' ELSE N'' END
+                    ) AS MissingWhat
                 FROM {ordersTable} o
                 LEFT JOIN d ON d.OrderId = o.Id
                 WHERE o.IsActive = 1 AND o.WebJobStatus LIKE 'Completed%' AND ISNULL(d.DetailCount, 0) = 0
@@ -385,10 +413,12 @@ public class DataService
                         DetailCount = rdr.IsDBNull(5) ? 0 : rdr.GetInt32(5),
                         UnprocessedDetails = rdr.IsDBNull(6) ? 0 : rdr.GetInt32(6),
                         ErrorCount = rdr.IsDBNull(7) ? 0 : rdr.GetInt32(7),
-                        SupplierInfo = rdr.IsDBNull(8) ? null : rdr.GetString(8),
-                        RoomInfo = rdr.IsDBNull(9) ? null : rdr.GetString(9),
-                        MinutesSinceStart = rdr.IsDBNull(10) ? null : rdr.GetInt32(10),
-                        IssueReason = rdr.IsDBNull(11) ? null : rdr.GetString(11)
+                        HotelInfo = rdr.IsDBNull(8) ? null : rdr.GetString(8),
+                        SupplierInfo = rdr.IsDBNull(9) ? null : rdr.GetString(9),
+                        RoomInfo = rdr.IsDBNull(10) ? null : rdr.GetString(10),
+                        MinutesSinceStart = rdr.IsDBNull(11) ? null : rdr.GetInt32(11),
+                        IssueReason = rdr.IsDBNull(12) ? null : rdr.GetString(12),
+                        MissingWhat = rdr.IsDBNull(13) ? null : rdr.GetString(13)
                     });
                 }
             }

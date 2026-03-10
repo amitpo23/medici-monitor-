@@ -297,10 +297,12 @@ public class SalesOrderRuntimeInfo
     public int DetailCount { get; set; }
     public int UnprocessedDetails { get; set; }
     public int ErrorCount { get; set; }
+    public string? HotelInfo { get; set; }
     public string? SupplierInfo { get; set; }
     public string? RoomInfo { get; set; }
     public double? MinutesSinceStart { get; set; }
     public string? IssueReason { get; set; }
+    public string? MissingWhat { get; set; }
 }
 
 public class SalesOrderOrderTraceResponse
