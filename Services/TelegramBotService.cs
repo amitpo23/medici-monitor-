@@ -69,7 +69,7 @@ public class TelegramBotService : BackgroundService
                 await PollCommands();
 
                 // Send hourly report
-                if (DateTime.UtcNow - lastReportTime >= TimeSpan.FromHours(1))
+                if (DateTime.UtcNow - lastReportTime >= TimeSpan.FromHours(3))
                 {
                     await SendHourlyReport();
                     lastReportTime = DateTime.UtcNow;
