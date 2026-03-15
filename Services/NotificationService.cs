@@ -50,8 +50,8 @@ public class NotificationService
                 tasks.Add(SendWhatsAppTwilioLegacy(title, message, severity, result));
         }
 
-        if (Config.TelegramEnabled && !string.IsNullOrEmpty(Config.TelegramBotToken) && !string.IsNullOrEmpty(Config.TelegramChatId))
-            tasks.Add(SendTelegram(title, message, severity, result));
+        // Telegram is handled separately by TelegramBotService (every 3 hours)
+        // Not sent here to avoid frequent messages on every alert
 
         // Always log
         _logger.LogInformation("Notification [{Severity}] {Title}: {Message}", severity, title, message);
