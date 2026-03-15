@@ -11,6 +11,12 @@ public class DatabaseHealthService
     private readonly string _connStr;
     private readonly ILogger<DatabaseHealthService> _logger;
 
+    // ── Cache (DB health metrics change slowly) ──
+    private DbHealthReport? _cachedReport;
+    private DateTime _cacheTime = DateTime.MinValue;
+    private static readonly TimeSpan CacheTtl = TimeSpan.FromMinutes(5);
+    private readonly SemaphoreSlim _cacheLock = new(1, 1);
+
     public DatabaseHealthService(IConfiguration config, ILogger<DatabaseHealthService> logger)
     {
         _connStr = config.GetConnectionString("SqlServer")
@@ -20,30 +26,43 @@ public class DatabaseHealthService
 
     public async Task<DbHealthReport> GetHealthReport()
     {
-        var report = new DbHealthReport { Timestamp = DateTime.UtcNow };
+        if (_cachedReport != null && DateTime.UtcNow - _cacheTime < CacheTtl)
+            return _cachedReport;
 
+        await _cacheLock.WaitAsync();
         try
         {
-            using var conn = new SqlConnection(_connStr);
-            await conn.OpenAsync();
-            report.IsConnected = true;
+            if (_cachedReport != null && DateTime.UtcNow - _cacheTime < CacheTtl)
+                return _cachedReport;
 
-            await Safe(() => LoadConnectionStats(conn, report));
-            await Safe(() => LoadDatabaseSize(conn, report));
-            await Safe(() => LoadLongRunningQueries(conn, report));
-            await Safe(() => LoadDeadlockInfo(conn, report));
-            await Safe(() => LoadIndexFragmentation(conn, report));
-            await Safe(() => LoadWaitStats(conn, report));
-            await Safe(() => LoadPerformanceCounters(conn, report));
-        }
-        catch (Exception ex)
-        {
-            report.IsConnected = false;
-            report.Error = ex.Message;
-            _logger.LogError(ex, "DatabaseHealthService failed: {Msg}", ex.Message);
-        }
+            var report = new DbHealthReport { Timestamp = DateTime.UtcNow };
 
-        return report;
+            try
+            {
+                using var conn = new SqlConnection(_connStr);
+                await conn.OpenAsync();
+                report.IsConnected = true;
+
+                await Safe(() => LoadConnectionStats(conn, report));
+                await Safe(() => LoadDatabaseSize(conn, report));
+                await Safe(() => LoadLongRunningQueries(conn, report));
+                await Safe(() => LoadDeadlockInfo(conn, report));
+                await Safe(() => LoadIndexFragmentation(conn, report));
+                await Safe(() => LoadWaitStats(conn, report));
+                await Safe(() => LoadPerformanceCounters(conn, report));
+            }
+            catch (Exception ex)
+            {
+                report.IsConnected = false;
+                report.Error = ex.Message;
+                _logger.LogError(ex, "DatabaseHealthService failed: {Msg}", ex.Message);
+            }
+
+            _cachedReport = report;
+            _cacheTime = DateTime.UtcNow;
+            return report;
+        }
+        finally { _cacheLock.Release(); }
     }
 
     private async Task LoadConnectionStats(SqlConnection conn, DbHealthReport r)

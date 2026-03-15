@@ -244,6 +244,7 @@ td.log-msg{white-space:pre-wrap;word-break:break-word;max-width:600px;font-famil
   <div class="nav-tab" data-nav="notifications">&#x1F4E7; התראות חיצוניות</div>
   <div class="nav-tab" data-nav="failsafe">&#x1F6D1; Kill Switch <span class="count red" id="navFailSafeCount" style="display:none">0</span></div>
   <div class="nav-tab" data-nav="webjobs">&#x2699;&#xFE0F; WebJobs <span class="count blue" id="navWebJobsCount" style="display:none">0</span></div>
+  <div class="nav-tab" data-nav="reconciliation">&#x1F50D; התאמת הזמנות <span class="count red" id="navReconCount" style="display:none">0</span></div>
   <div class="nav-tab" data-nav="ai">&#x1F9E0; Claude AI</div>
   <div class="nav-tab" data-nav="logs">&#x1F4DC; Logs <span class="count blue" id="navLogCount">0</span></div>
 </div>
@@ -987,14 +988,13 @@ td.log-msg{white-space:pre-wrap;word-break:break-word;max-width:600px;font-famil
           <input id="nfTeamsUrl" placeholder="Teams Webhook URL" style="width:100%;padding:6px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:12px">
         </div>
         <div style="margin-bottom:16px">
-          <h3 style="font-size:13px;margin-bottom:8px">WhatsApp (Twilio)</h3>
+          <h3 style="font-size:13px;margin-bottom:8px">WhatsApp (Meta Cloud API)</h3>
           <label style="font-size:12px;display:flex;align-items:center;gap:6px;margin-bottom:6px"><input type="checkbox" id="nfWhatsAppEnabled"> מופעל</label>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
-            <input id="nfTwilioSid" placeholder="Twilio Account SID" style="padding:6px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:12px">
-            <input id="nfTwilioToken" placeholder="Twilio Auth Token" type="password" style="padding:6px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:12px">
+            <input id="nfWhatsAppPhoneNumberId" placeholder="Phone Number ID (Meta)" style="padding:6px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:12px">
+            <input id="nfWhatsAppAccessToken" placeholder="Access Token (Meta)" type="password" style="padding:6px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:12px">
           </div>
-          <input id="nfTwilioFrom" placeholder="מספר שולח (לדוגמה: +14155238886)" style="width:100%;padding:6px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:12px;margin-top:8px">
-          <input id="nfWhatsAppRecipients" placeholder="נמענים WhatsApp (מופרדים בפסיק, לדוגמה: +972501234567,+972502345678)" style="width:100%;padding:6px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:12px;margin-top:8px">
+          <input id="nfWhatsAppRecipients" placeholder="נמענים WhatsApp (מופרדים בפסיק, לדוגמה: 972501234567,972502345678)" style="width:100%;padding:6px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:12px;margin-top:8px">
         </div>
         <div>
           <h3 style="font-size:13px;margin-bottom:8px">כללי</h3>
@@ -1206,6 +1206,47 @@ td.log-msg{white-space:pre-wrap;word-break:break-word;max-width:600px;font-famil
 <!-- ═══════════════════════════════════════════════════════════════════ -->
 <!--  PANEL: Claude AI Analysis                                         -->
 <!-- ═══════════════════════════════════════════════════════════════════ -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- Reconciliation Panel -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<div class="nav-panel" id="panel-reconciliation">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:8px">
+    <h2 style="font-size:18px;font-weight:700">&#x1F50D; התאמת הזמנות בין מערכות</h2>
+    <div style="display:flex;gap:8px;align-items:center">
+      <select id="reconHours" style="padding:6px 10px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:12px">
+        <option value="6">6 שעות</option>
+        <option value="24" selected>24 שעות</option>
+        <option value="48">48 שעות</option>
+        <option value="168">שבוע</option>
+      </select>
+      <button onclick="runReconciliation()" style="background:var(--accent);color:#fff;border:none;padding:8px 16px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600">&#x1F504; הרץ בדיקה</button>
+    </div>
+  </div>
+
+  <!-- Status summary -->
+  <div id="reconStatus" style="margin-bottom:16px">
+    <div style="padding:20px;text-align:center;color:var(--text2);font-size:14px">טוען נתוני התאמה אחרונים...</div>
+  </div>
+
+  <!-- Mismatches table -->
+  <div class="section" id="reconMismatchSection" style="display:none">
+    <div class="section-header"><h2>&#x26A0;&#xFE0F; אי-התאמות שזוהו</h2></div>
+    <div id="reconMismatches" style="overflow-x:auto"></div>
+  </div>
+
+  <!-- Breakdown cards -->
+  <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;margin-bottom:16px" id="reconCards"></div>
+
+  <!-- History -->
+  <div class="section">
+    <div class="section-header" style="display:flex;justify-content:space-between;align-items:center">
+      <h2>&#x1F4CB; היסטוריית בדיקות</h2>
+      <button onclick="loadReconHistory()" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);padding:4px 12px;border-radius:4px;cursor:pointer;font-size:12px">&#x1F504; רענן</button>
+    </div>
+    <div id="reconHistory" style="margin-top:8px"></div>
+  </div>
+</div>
+
 <div class="nav-panel" id="panel-ai">
 
   <!-- Status Bar -->
@@ -1323,6 +1364,8 @@ document.querySelectorAll('.nav-tab').forEach(tab => {
     document.querySelectorAll('.nav-panel').forEach(p => p.classList.remove('active'));
     tab.classList.add('active');
     document.getElementById('panel-' + tab.dataset.nav).classList.add('active');
+    // Auto-load data for specific panels
+    if (tab.dataset.nav === 'reconciliation') { loadReconStatus(); loadReconHistory(); }
   });
 });
 
@@ -2902,9 +2945,8 @@ async function loadNotifConfig() {
     document.getElementById('nfTeamsEnabled').checked = c.teamsEnabled;
     document.getElementById('nfTeamsUrl').value = c.teamsWebhookUrl || '';
     document.getElementById('nfWhatsAppEnabled').checked = c.whatsAppEnabled;
-    document.getElementById('nfTwilioSid').value = c.twilioAccountSid || '';
-    document.getElementById('nfTwilioToken').value = c.twilioAuthToken || '';
-    document.getElementById('nfTwilioFrom').value = c.twilioWhatsAppFrom || '';
+    document.getElementById('nfWhatsAppPhoneNumberId').value = c.whatsAppPhoneNumberId || '';
+    document.getElementById('nfWhatsAppAccessToken').value = c.whatsAppAccessToken || '';
     document.getElementById('nfWhatsAppRecipients').value = c.whatsAppRecipients || '';
     document.getElementById('nfMinSeverity').value = c.minSeverity || 'Warning';
     document.getElementById('nfCooldown').value = c.cooldownMinutes || 5;
@@ -2936,9 +2978,8 @@ async function saveNotifConfig() {
     teamsEnabled: document.getElementById('nfTeamsEnabled').checked,
     teamsWebhookUrl: document.getElementById('nfTeamsUrl').value,
     whatsAppEnabled: document.getElementById('nfWhatsAppEnabled').checked,
-    twilioAccountSid: document.getElementById('nfTwilioSid').value,
-    twilioAuthToken: document.getElementById('nfTwilioToken').value,
-    twilioWhatsAppFrom: document.getElementById('nfTwilioFrom').value,
+    whatsAppPhoneNumberId: document.getElementById('nfWhatsAppPhoneNumberId').value,
+    whatsAppAccessToken: document.getElementById('nfWhatsAppAccessToken').value,
     whatsAppRecipients: document.getElementById('nfWhatsAppRecipients').value,
     minSeverity: document.getElementById('nfMinSeverity').value,
     cooldownMinutes: parseInt(document.getElementById('nfCooldown').value) || 5
@@ -3770,6 +3811,138 @@ function scheduleRefresh() {
   if (refreshTimer) clearTimeout(refreshTimer);
   if (!autoRefresh) return;
   refreshTimer = setTimeout(() => { loadData(); scheduleRefresh(); }, 30000);
+}
+
+// ══════════════════════════════════════════════════════════════
+//  Reconciliation Functions
+// ══════════════════════════════════════════════════════════════
+async function runReconciliation() {
+  const hours = document.getElementById('reconHours').value;
+  document.getElementById('reconStatus').innerHTML = '<div style="padding:20px;text-align:center;color:var(--accent)">&#x1F504; מריץ בדיקת התאמה... (יכול לקחת עד דקה)</div>';
+  try {
+    const r = await fetch(`/api/reconciliation/run?hours=${hours}`);
+    const d = await r.json();
+    renderReconciliationReport(d);
+  } catch(e) {
+    document.getElementById('reconStatus').innerHTML = `<div style="padding:12px;color:var(--red)">שגיאה: ${e.message}</div>`;
+  }
+}
+
+async function loadReconStatus() {
+  try {
+    const r = await fetch('/api/reconciliation/status');
+    const d = await r.json();
+    if (d.status === 'NO_RUN_YET') {
+      document.getElementById('reconStatus').innerHTML = '<div style="padding:20px;text-align:center;color:var(--text2)">לא בוצעה בדיקת התאמה עדיין. לחץ "הרץ בדיקה" להתחלה.</div>';
+    } else {
+      renderReconciliationReport(d);
+    }
+  } catch(e) {}
+}
+
+function renderReconciliationReport(d) {
+  const critColor = d.criticalMismatches > 0 ? 'var(--red)' : 'var(--green)';
+  const statusIcon = d.criticalMismatches > 0 ? '&#x1F534;' : d.totalMismatches > 0 ? '&#x1F7E1;' : '&#x1F7E2;';
+  const statusText = d.criticalMismatches > 0 ? 'נמצאו אי-התאמות קריטיות!' : d.totalMismatches > 0 ? 'נמצאו אי-התאמות' : 'הכל תקין — כל המערכות מסונכרנות';
+
+  // Update nav badge
+  const badge = document.getElementById('navReconCount');
+  if (d.criticalMismatches > 0) { badge.textContent = d.criticalMismatches; badge.style.display = ''; badge.className = 'count red'; }
+  else if (d.totalMismatches > 0) { badge.textContent = d.totalMismatches; badge.style.display = ''; badge.className = 'count yellow'; }
+  else { badge.style.display = 'none'; }
+
+  // Summary cards
+  document.getElementById('reconCards').innerHTML = `
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px">
+      <div style="font-size:11px;color:var(--text2)">הזמנות Medici</div>
+      <div style="font-size:22px;font-weight:700;color:var(--accent)">${d.mediciBookingsCount || 0}</div>
+    </div>
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px">
+      <div style="font-size:11px;color:var(--text2)">Reservations Zenith</div>
+      <div style="font-size:22px;font-weight:700;color:var(--cyan)">${d.mediciReservationsCount || 0}</div>
+    </div>
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px">
+      <div style="font-size:11px;color:var(--text2)">אומתו ב-Innstant</div>
+      <div style="font-size:22px;font-weight:700;color:var(--green)">${d.innstantSkipped ? 'N/A' : d.innstantVerifiedCount || 0}</div>
+    </div>
+    <div style="background:var(--surface);border:1px solid ${critColor};border-radius:8px;padding:14px">
+      <div style="font-size:11px;color:var(--text2)">אי-התאמות</div>
+      <div style="font-size:22px;font-weight:700;color:${critColor}">${d.totalMismatches || 0}</div>
+      <div style="font-size:11px;color:var(--text2)">${d.criticalMismatches || 0} קריטיות</div>
+    </div>
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px">
+      <div style="font-size:11px;color:var(--text2)">SalesOrders</div>
+      <div style="font-size:22px;font-weight:700;color:var(--purple)">${d.salesOrdersCount || 0}</div>
+    </div>
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px">
+      <div style="font-size:11px;color:var(--text2)">דפדפן</div>
+      <div style="font-size:22px;font-weight:700;color:${d.browserChecked ? 'var(--green)' : 'var(--text2)'}">${d.browserChecked ? '&#x2705;' : '&#x274C;'}</div>
+    </div>
+  `;
+
+  // Status bar
+  document.getElementById('reconStatus').innerHTML = `
+    <div style="display:flex;align-items:center;gap:12px;padding:14px;background:var(--surface);border:1px solid var(--border);border-radius:8px">
+      <span style="font-size:22px">${statusIcon}</span>
+      <div>
+        <div style="font-weight:600;font-size:14px;color:${critColor}">${statusText}</div>
+        <div style="font-size:12px;color:var(--text2)">
+          בדיקה אחרונה: ${new Date(d.endTime).toLocaleString('he-IL')} | משך: ${d.durationMs}ms | טווח: ${d.lookbackHours} שעות
+          ${d.innstantSkipped ? ' | <span style="color:var(--yellow)">Innstant API לא מוגדר</span>' : ''}
+        </div>
+      </div>
+    </div>
+  `;
+
+  // Mismatches table
+  const mismatchSection = document.getElementById('reconMismatchSection');
+  if (d.mismatches && d.mismatches.length > 0) {
+    mismatchSection.style.display = '';
+    const typeLabels = { 0:'חסר ב-Innstant', 1:'חסר במדיצי', 2:'חסר Reservation', 3:'Reservation יתומה', 4:'פער מחיר', 5:'סטטוס שונה', 6:'תאריך שונה', 7:'בעיית דפדפן' };
+    let html = '<table style="width:100%;font-size:12px;border-collapse:collapse">';
+    html += '<tr style="border-bottom:1px solid var(--border);color:var(--text2)"><th style="padding:8px;text-align:right">חומרה</th><th style="padding:8px;text-align:right">סוג</th><th style="padding:8px;text-align:right">הזמנה</th><th style="padding:8px;text-align:right">מלון</th><th style="padding:8px;text-align:right">תיאור</th><th style="padding:8px;text-align:right">נתוני Medici</th><th style="padding:8px;text-align:right">נתונים חיצוניים</th></tr>';
+    d.mismatches.forEach(m => {
+      const sevColor = m.severity === 'Critical' ? 'var(--red)' : 'var(--yellow)';
+      const sevIcon = m.severity === 'Critical' ? '&#x1F534;' : '&#x1F7E1;';
+      html += `<tr style="border-bottom:1px solid var(--border)">
+        <td style="padding:8px;color:${sevColor}">${sevIcon} ${m.severity}</td>
+        <td style="padding:8px">${typeLabels[m.type] || m.type}</td>
+        <td style="padding:8px;font-family:monospace">${m.contentBookingId || '-'}</td>
+        <td style="padding:8px">${m.mediciHotelId || '-'}</td>
+        <td style="padding:8px">${m.description}</td>
+        <td style="padding:8px;font-size:11px;color:var(--text2)">${m.mediciData || ''}</td>
+        <td style="padding:8px;font-size:11px;color:var(--text2)">${m.externalData || ''}</td>
+      </tr>`;
+    });
+    html += '</table>';
+    document.getElementById('reconMismatches').innerHTML = html;
+  } else {
+    mismatchSection.style.display = 'none';
+  }
+}
+
+async function loadReconHistory() {
+  try {
+    const r = await fetch('/api/reconciliation/history');
+    const list = await r.json();
+    if (!list.length) { document.getElementById('reconHistory').innerHTML = '<div style="color:var(--text2);font-size:13px">אין היסטוריה עדיין</div>'; return; }
+    let html = '<table style="width:100%;font-size:12px;border-collapse:collapse">';
+    html += '<tr style="border-bottom:1px solid var(--border);color:var(--text2)"><th style="padding:6px;text-align:right">זמן</th><th style="padding:6px;text-align:right">הזמנות</th><th style="padding:6px;text-align:right">Reservations</th><th style="padding:6px;text-align:right">Innstant</th><th style="padding:6px;text-align:right">אי-התאמות</th><th style="padding:6px;text-align:right">קריטי</th><th style="padding:6px;text-align:right">משך</th></tr>';
+    list.forEach(h => {
+      const color = h.criticalMismatches > 0 ? 'var(--red)' : h.totalMismatches > 0 ? 'var(--yellow)' : 'var(--green)';
+      html += `<tr style="border-bottom:1px solid var(--border)">
+        <td style="padding:6px">${new Date(h.startTime).toLocaleString('he-IL')}</td>
+        <td style="padding:6px">${h.mediciBookingsCount}</td>
+        <td style="padding:6px">${h.mediciReservationsCount}</td>
+        <td style="padding:6px">${h.innstantSkipped ? 'N/A' : h.innstantVerifiedCount}</td>
+        <td style="padding:6px;color:${color};font-weight:600">${h.totalMismatches}</td>
+        <td style="padding:6px;color:${h.criticalMismatches > 0 ? 'var(--red)' : 'inherit'}">${h.criticalMismatches}</td>
+        <td style="padding:6px">${h.durationMs}ms</td>
+      </tr>`;
+    });
+    html += '</table>';
+    document.getElementById('reconHistory').innerHTML = html;
+  } catch(e) {}
 }
 
 warmupAndHideOverlay();

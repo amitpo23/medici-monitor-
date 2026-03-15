@@ -41,9 +41,14 @@ public class NotificationService
         if (Config.TeamsEnabled && !string.IsNullOrEmpty(Config.TeamsWebhookUrl))
             tasks.Add(SendTeams(title, message, severity, result));
 
-        if (Config.WhatsAppEnabled && !string.IsNullOrEmpty(Config.TwilioAccountSid) &&
-            (!string.IsNullOrEmpty(Config.TwilioAuthToken) || !string.IsNullOrEmpty(Config.TwilioApiKeySid)))
-            tasks.Add(SendWhatsApp(title, message, severity, result));
+        if (Config.WhatsAppEnabled && !string.IsNullOrEmpty(Config.WhatsAppRecipients))
+        {
+            if (!string.IsNullOrEmpty(Config.WhatsAppPhoneNumberId) && !string.IsNullOrEmpty(Config.WhatsAppAccessToken))
+                tasks.Add(SendWhatsAppCloudApi(title, message, severity, result));
+            else if (!string.IsNullOrEmpty(Config.TwilioAccountSid) &&
+                     (!string.IsNullOrEmpty(Config.TwilioAuthToken) || !string.IsNullOrEmpty(Config.TwilioApiKeySid)))
+                tasks.Add(SendWhatsAppTwilioLegacy(title, message, severity, result));
+        }
 
         // Always log
         _logger.LogInformation("Notification [{Severity}] {Title}: {Message}", severity, title, message);
@@ -189,9 +194,65 @@ public class NotificationService
         }
     }
 
-    // ── WhatsApp via Twilio ──
+    // ── WhatsApp via Meta Cloud API ──
 
-    private async Task SendWhatsApp(string title, string message, string severity, NotificationResult result)
+    private async Task SendWhatsAppCloudApi(string title, string message, string severity, NotificationResult result)
+    {
+        try
+        {
+            var emoji = severity switch { "Critical" => "🚨", "Warning" => "⚠️", _ => "ℹ️" };
+            var body = $"{emoji} *MediciMonitor*\n*{title}*\n\n{message}\n\n_{severity} | {DateTime.UtcNow:HH:mm:ss UTC}_";
+
+            var recipients = (Config.WhatsAppRecipients ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            if (recipients.Length == 0)
+            {
+                result.Channels.Add(new ChannelResult { Channel = "WhatsApp", Success = false, Detail = "No recipients configured" });
+                return;
+            }
+
+            var apiUrl = $"https://graph.facebook.com/{Config.WhatsAppApiVersion}/{Config.WhatsAppPhoneNumberId}/messages";
+
+            int sent = 0, failed = 0;
+            foreach (var recipient in recipients)
+            {
+                try
+                {
+                    var payload = JsonSerializer.Serialize(new
+                    {
+                        messaging_product = "whatsapp",
+                        recipient_type = "individual",
+                        to = recipient.TrimStart('+'),
+                        type = "text",
+                        text = new { preview_url = false, body }
+                    });
+
+                    var request = new HttpRequestMessage(HttpMethod.Post, apiUrl);
+                    request.Headers.Add("Authorization", $"Bearer {Config.WhatsAppAccessToken}");
+                    request.Content = new StringContent(payload, Encoding.UTF8, "application/json");
+
+                    var resp = await _http.SendAsync(request);
+                    if (resp.IsSuccessStatusCode) sent++; else failed++;
+                }
+                catch { failed++; }
+            }
+
+            result.Channels.Add(new ChannelResult
+            {
+                Channel = "WhatsApp",
+                Success = sent > 0,
+                Detail = $"Cloud API — sent to {sent}/{recipients.Length} recipients" + (failed > 0 ? $" ({failed} failed)" : "")
+            });
+        }
+        catch (Exception ex)
+        {
+            result.Channels.Add(new ChannelResult { Channel = "WhatsApp", Success = false, Detail = ex.Message });
+            _logger.LogWarning("WhatsApp Cloud API notification failed: {Err}", ex.Message);
+        }
+    }
+
+    // ── WhatsApp via Twilio (legacy fallback) ──
+
+    private async Task SendWhatsAppTwilioLegacy(string title, string message, string severity, NotificationResult result)
     {
         try
         {
@@ -206,7 +267,6 @@ public class NotificationService
             }
 
             var twilioUrl = $"https://api.twilio.com/2010-04-01/Accounts/{Config.TwilioAccountSid}/Messages.json";
-            // Prefer API Key auth (SK...:secret), fall back to Account SID:AuthToken
             var authUser = !string.IsNullOrEmpty(Config.TwilioApiKeySid) ? Config.TwilioApiKeySid : Config.TwilioAccountSid;
             var authPass = !string.IsNullOrEmpty(Config.TwilioApiKeySid) ? Config.TwilioApiKeySecret : Config.TwilioAuthToken;
             var authBytes = Encoding.ASCII.GetBytes($"{authUser}:{authPass}");
@@ -238,13 +298,13 @@ public class NotificationService
             {
                 Channel = "WhatsApp",
                 Success = sent > 0,
-                Detail = $"Sent to {sent}/{recipients.Length} recipients" + (failed > 0 ? $" ({failed} failed)" : "")
+                Detail = $"Twilio (legacy) — sent to {sent}/{recipients.Length} recipients" + (failed > 0 ? $" ({failed} failed)" : "")
             });
         }
         catch (Exception ex)
         {
             result.Channels.Add(new ChannelResult { Channel = "WhatsApp", Success = false, Detail = ex.Message });
-            _logger.LogWarning("WhatsApp notification failed: {Err}", ex.Message);
+            _logger.LogWarning("WhatsApp Twilio notification failed: {Err}", ex.Message);
         }
     }
 
@@ -297,14 +357,19 @@ public class NotificationConfig
     public bool TeamsEnabled { get; set; }
     public string? TeamsWebhookUrl { get; set; }
 
-    // WhatsApp (Twilio)
+    // WhatsApp (Meta Cloud API)
     public bool WhatsAppEnabled { get; set; }
+    public string? WhatsAppPhoneNumberId { get; set; }   // Meta Phone Number ID
+    public string? WhatsAppAccessToken { get; set; }     // Meta permanent access token
+    public string? WhatsAppRecipients { get; set; }      // comma-separated: "972501234567,972502345678"
+    public string WhatsAppApiVersion { get; set; } = "v21.0";
+
+    // Legacy Twilio (fallback — deprecated)
     public string? TwilioAccountSid { get; set; }
-    public string? TwilioAuthToken { get; set; }       // Account-level auth token
-    public string? TwilioApiKeySid { get; set; }       // API Key SID (SK...)
-    public string? TwilioApiKeySecret { get; set; }    // API Key Secret
-    public string? TwilioWhatsAppFrom { get; set; }  // e.g. "+14155238886"
-    public string? WhatsAppRecipients { get; set; }   // comma-separated: "+972501234567,+972502345678"
+    public string? TwilioAuthToken { get; set; }
+    public string? TwilioApiKeySid { get; set; }
+    public string? TwilioApiKeySecret { get; set; }
+    public string? TwilioWhatsAppFrom { get; set; }
 
     // Behavior
     public int CooldownMinutes { get; set; } = 5;

@@ -31,7 +31,7 @@ public class FailSafeBackgroundService : BackgroundService
 
         while (!stoppingToken.IsCancellationRequested)
         {
-            var interval = Math.Max(60, _failSafe.Config.ScanIntervalSeconds); // Min 60s
+            var interval = Math.Max(300, _failSafe.Config.ScanIntervalSeconds); // Min 5 min (was 60s)
             await Task.Delay(TimeSpan.FromSeconds(interval), stoppingToken);
 
             if (!_failSafe.Config.Enabled) continue;

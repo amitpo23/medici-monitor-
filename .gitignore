@@ -1,5 +1,7 @@
 bin/
 obj/
+appsettings.Production.json
+appsettings.*.local.json
 pub/
 pub_out/
 publish/

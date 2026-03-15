@@ -25,8 +25,12 @@ builder.Services.AddSingleton<FailSafeService>();
 builder.Services.AddSingleton<WebJobsMonitoringService>();
 builder.Services.AddSingleton<ClaudeAiService>();
 builder.Services.AddSingleton<StateStorageService>();
+builder.Services.AddSingleton<InnstantApiClient>();
+builder.Services.AddSingleton<BrowserReconciliationService>();
+builder.Services.AddSingleton<BookingReconciliationService>();
 builder.Services.AddHostedService<FailSafeBackgroundService>();
 builder.Services.AddHostedService<AlertNotificationService>();
+builder.Services.AddHostedService<ReconciliationBackgroundService>();
 builder.Services.AddSignalR();
 builder.Services.AddSingleton<MonitorHubNotifier>();
 builder.Services.AddCors(o => o.AddDefaultPolicy(p => p.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader()));
@@ -59,7 +63,18 @@ await app.Services.GetRequiredService<DataService>().EnsureMonitorTablesExist();
 
 // ── Start background services ──
 app.Services.GetRequiredService<HistoricalDataService>().StartAutoCapture(15);
-app.Services.GetRequiredService<SlaTrackingService>().StartTracking(60);
+app.Services.GetRequiredService<SlaTrackingService>().StartTracking(300); // 5 min (was 60s)
+
+// ── Response cache (reduces DB load from repeated dashboard refreshes) ──
+object? _statusCache = null;
+DateTime _statusCacheTime = DateTime.MinValue;
+var _statusCacheLock = new SemaphoreSlim(1, 1);
+const int StatusCacheTtlSeconds = 30;
+
+List<AlertInfo>? _alertsCache = null;
+DateTime _alertsCacheTime = DateTime.MinValue;
+var _alertsCacheLock = new SemaphoreSlim(1, 1);
+const int AlertsCacheTtlSeconds = 60;
 
 // ── SignalR Hub ──
 app.MapHub<MonitorHub>("/hub/monitor");
@@ -84,7 +99,19 @@ app.MapGet("/readyz", async (DataService svc) =>
 app.MapGet("/api/status", async (DataService svc, AuditService audit, HttpContext ctx) =>
 {
     audit.RecordFromHttp(ctx, "ViewStatus");
-    return Results.Ok(await svc.GetFullStatus());
+    if (_statusCache != null && DateTime.UtcNow - _statusCacheTime < TimeSpan.FromSeconds(StatusCacheTtlSeconds))
+        return Results.Ok(_statusCache);
+    await _statusCacheLock.WaitAsync();
+    try
+    {
+        if (_statusCache != null && DateTime.UtcNow - _statusCacheTime < TimeSpan.FromSeconds(StatusCacheTtlSeconds))
+            return Results.Ok(_statusCache);
+        var result = await svc.GetFullStatus();
+        _statusCache = result;
+        _statusCacheTime = DateTime.UtcNow;
+        return Results.Ok(result);
+    }
+    finally { _statusCacheLock.Release(); }
 });
 
 app.MapGet("/api/salesorder/diagnostics", async (DataService svc, AuditService audit, HttpContext ctx) =>
@@ -173,11 +200,33 @@ app.MapGet("/api/history/export/{period?}", async (HistoricalDataService svc, st
 //  Alerting (enhanced)
 // ═══════════════════════════════════════════════════════════════
 app.MapGet("/api/alerts", async (AlertingService svc) =>
-    Results.Ok(await svc.EvaluateAlerts()));
+{
+    if (_alertsCache != null && DateTime.UtcNow - _alertsCacheTime < TimeSpan.FromSeconds(AlertsCacheTtlSeconds))
+        return Results.Ok(_alertsCache);
+    await _alertsCacheLock.WaitAsync();
+    try
+    {
+        if (_alertsCache != null && DateTime.UtcNow - _alertsCacheTime < TimeSpan.FromSeconds(AlertsCacheTtlSeconds))
+            return Results.Ok(_alertsCache);
+        var result = await svc.EvaluateAlerts();
+        _alertsCache = result;
+        _alertsCacheTime = DateTime.UtcNow;
+        return Results.Ok(result);
+    }
+    finally { _alertsCacheLock.Release(); }
+});
 
 app.MapGet("/api/alerts/summary", async (AlertingService svc) =>
 {
-    var alerts = await svc.EvaluateAlerts();
+    List<AlertInfo> alerts;
+    if (_alertsCache != null && DateTime.UtcNow - _alertsCacheTime < TimeSpan.FromSeconds(AlertsCacheTtlSeconds))
+        alerts = _alertsCache;
+    else
+    {
+        alerts = await svc.EvaluateAlerts();
+        _alertsCache = alerts;
+        _alertsCacheTime = DateTime.UtcNow;
+    }
     return Results.Ok(new { Alerts = alerts, Summary = svc.GenerateSummary(alerts) });
 });
 
@@ -569,6 +618,35 @@ app.MapPost("/api/ai/chat", async (ClaudeAiService svc, HttpContext ctx) =>
         return Results.Ok(await svc.Chat(msg));
     }
     catch { return Results.BadRequest(new { error = "Expected JSON: {\"message\":\"...\"}" }); }
+});
+
+// ═══════════════════════════════════════════════════════════════
+//  Booking Reconciliation
+// ═══════════════════════════════════════════════════════════════
+app.MapGet("/api/reconciliation/run", async (BookingReconciliationService svc, AuditService audit, HttpContext ctx) =>
+{
+    audit.RecordFromHttp(ctx, "ReconciliationRun");
+    int hours = int.TryParse(ctx.Request.Query["hours"].FirstOrDefault(), out var h) ? h : 24;
+    return Results.Ok(await svc.RunReconciliation(hours));
+});
+
+app.MapGet("/api/reconciliation/status", (BookingReconciliationService svc) =>
+{
+    var last = svc.LastReport;
+    if (last != null) return Results.Ok(last);
+    return Results.Ok(new { status = "NO_RUN_YET", message = "לא בוצעה בדיקת התאמה עדיין" });
+});
+
+app.MapGet("/api/reconciliation/history", (BookingReconciliationService svc, HttpContext ctx) =>
+{
+    int last = int.TryParse(ctx.Request.Query["last"].FirstOrDefault(), out var n) ? n : 20;
+    return Results.Ok(svc.GetHistory(last));
+});
+
+app.MapGet("/api/reconciliation/innstant/{bookingId:int}", async (InnstantApiClient svc, int bookingId) =>
+{
+    var result = await svc.GetBookingDetails(bookingId);
+    return result != null ? Results.Ok(result) : Results.NotFound(new { error = "Booking not found" });
 });
 
 // ── Dashboard ──

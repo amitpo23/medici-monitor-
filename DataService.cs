@@ -36,27 +36,27 @@ public class DataService
             await conn.OpenAsync();
             s.DbConnected = true;
 
-            // Run all queries — each wrapped in try/catch so one failure doesn't kill everything
-            await Safe(() => LoadBookingSummary(conn, s));
-            await Safe(() => LoadStuckCancellations(conn, s));
-            await Safe(() => LoadCancelStats(conn, s));
-            await Safe(() => LoadRecentCancelErrors(conn, s));
-            await Safe(() => LoadBookingErrors(conn, s));
-            await Safe(() => LoadPushStatus(conn, s));
-            await Safe(() => LoadQueueStatus(conn, s));
-            await Safe(() => LoadBackOfficeErrors(conn, s));
-            await Safe(() => LoadActiveBookingsByHotel(conn, s));
-            await Safe(() => LoadSalesOfficeStatus(conn, s));
-            await Safe(() => LoadSalesOfficeDetails(conn, s));
-            await Safe(() => LoadOpportunitiesAndRooms(conn, s));
-
-            // NEW features
-            await Safe(() => LoadReservations(conn, s));
-            await Safe(() => LoadRoomWaste(conn, s));
-            await Safe(() => LoadConversionRevenue(conn, s));
-            await Safe(() => LoadPriceDrift(conn, s));
-            await Safe(() => LoadBuyRoomsHeartbeat(conn, s));
-            await Safe(() => LoadBuyRoomsFunnel(conn, s));
+            // Run all queries in parallel (MARS enabled) — each wrapped in try/catch
+            await Task.WhenAll(
+                Safe(() => LoadBookingSummary(conn, s)),
+                Safe(() => LoadStuckCancellations(conn, s)),
+                Safe(() => LoadCancelStats(conn, s)),
+                Safe(() => LoadRecentCancelErrors(conn, s)),
+                Safe(() => LoadBookingErrors(conn, s)),
+                Safe(() => LoadPushStatus(conn, s)),
+                Safe(() => LoadQueueStatus(conn, s)),
+                Safe(() => LoadBackOfficeErrors(conn, s)),
+                Safe(() => LoadActiveBookingsByHotel(conn, s)),
+                Safe(() => LoadSalesOfficeStatus(conn, s)),
+                Safe(() => LoadSalesOfficeDetails(conn, s)),
+                Safe(() => LoadOpportunitiesAndRooms(conn, s)),
+                Safe(() => LoadReservations(conn, s)),
+                Safe(() => LoadRoomWaste(conn, s)),
+                Safe(() => LoadConversionRevenue(conn, s)),
+                Safe(() => LoadPriceDrift(conn, s)),
+                Safe(() => LoadBuyRoomsHeartbeat(conn, s)),
+                Safe(() => LoadBuyRoomsFunnel(conn, s))
+            );
         }
         catch (Exception ex)
         {

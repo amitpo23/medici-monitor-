@@ -21,38 +21,62 @@ public class AzureMonitoringService
     private readonly object _metricsLock = new();
     private const int MaxMetricsPerEndpoint = 1440;
 
+    // ── Health check cache (shared across SLA, Alerts, Historical) ──
+    private List<ApiHealthStatus>? _cachedHealthResult;
+    private DateTime _healthCacheTime = DateTime.MinValue;
+    private static readonly TimeSpan HealthCacheTtl = TimeSpan.FromSeconds(60);
+    private readonly SemaphoreSlim _healthCacheLock = new(1, 1);
+
     public AzureMonitoringService(ILogger<AzureMonitoringService> logger) => _logger = logger;
 
     // ── Health Check ──────────────────────────────────────────────
 
     public async Task<List<ApiHealthStatus>> ComprehensiveApiHealthCheck()
     {
-        var endpoints = new (string url, string name, bool isInternal, HashSet<HttpStatusCode> ok)[]
-        {
-            ("https://medici-backend.azurewebsites.net/healthcheck", "Production Backend Health", false, new() { HttpStatusCode.OK }),
-            ("https://medici-backend.azurewebsites.net/ZenithApi/HelloZenith", "Zenith API", false, new() { HttpStatusCode.OK }),
-            ("https://medici-backend-dev-f9h6hxgncha9fbbp.eastus2-01.azurewebsites.net/", "Dev Backend Reachability", false, new() { HttpStatusCode.OK, HttpStatusCode.Moved, HttpStatusCode.Redirect }),
-            ("https://medici-backend.azurewebsites.net/swagger", "API Documentation", false, new() { HttpStatusCode.OK, HttpStatusCode.Unauthorized, HttpStatusCode.Forbidden, HttpStatusCode.Moved, HttpStatusCode.Redirect }),
-            ("https://login.microsoftonline.com/common/v2.0/.well-known/openid-configuration", "Azure AD Connectivity", true, new() { HttpStatusCode.OK })
-        };
+        // Return cached result if fresh enough (prevents duplicate calls from SLA, Alerts, Historical)
+        if (_cachedHealthResult != null && DateTime.UtcNow - _healthCacheTime < HealthCacheTtl)
+            return _cachedHealthResult;
 
-        var tasks = endpoints.Select(e => CheckEndpoint(e.url, e.name, e.isInternal, e.ok)).ToList();
-        tasks.Add(CheckSqlTcpConnectivity("medici-sql-server.database.windows.net", 1433, "SQL Server TCP"));
-        var results = (await Task.WhenAll(tasks)).ToList();
-
-        lock (_metricsLock)
+        await _healthCacheLock.WaitAsync();
+        try
         {
-            foreach (var r in results)
+            // Double-check after acquiring lock
+            if (_cachedHealthResult != null && DateTime.UtcNow - _healthCacheTime < HealthCacheTtl)
+                return _cachedHealthResult;
+
+            var endpoints = new (string url, string name, bool isInternal, HashSet<HttpStatusCode> ok)[]
             {
-                var name = r.Endpoint.Split('(')[0].Trim();
-                if (!_endpointMetrics.ContainsKey(name))
-                    _endpointMetrics[name] = new List<EndpointMetric>();
-                _endpointMetrics[name].Add(new EndpointMetric { Timestamp = DateTime.UtcNow, ResponseTimeMs = r.ResponseTimeMs, IsHealthy = r.IsHealthy, StatusCode = r.StatusCode });
-                while (_endpointMetrics[name].Count > MaxMetricsPerEndpoint) _endpointMetrics[name].RemoveAt(0);
-            }
-        }
+                ("https://medici-backend.azurewebsites.net/healthcheck", "Production Backend Health", false, new() { HttpStatusCode.OK }),
+                ("https://medici-backend.azurewebsites.net/ZenithApi/HelloZenith", "Zenith API", false, new() { HttpStatusCode.OK }),
+                ("https://medici-backend-dev-f9h6hxgncha9fbbp.eastus2-01.azurewebsites.net/", "Dev Backend Reachability", false, new() { HttpStatusCode.OK, HttpStatusCode.Moved, HttpStatusCode.Redirect }),
+                ("https://medici-backend.azurewebsites.net/swagger", "API Documentation", false, new() { HttpStatusCode.OK, HttpStatusCode.Unauthorized, HttpStatusCode.Forbidden, HttpStatusCode.Moved, HttpStatusCode.Redirect }),
+                ("https://login.microsoftonline.com/common/v2.0/.well-known/openid-configuration", "Azure AD Connectivity", true, new() { HttpStatusCode.OK })
+            };
 
-        return results;
+            var tasks = endpoints.Select(e => CheckEndpoint(e.url, e.name, e.isInternal, e.ok)).ToList();
+            tasks.Add(CheckSqlTcpConnectivity("medici-sql-server.database.windows.net", 1433, "SQL Server TCP"));
+            var results = (await Task.WhenAll(tasks)).ToList();
+
+            lock (_metricsLock)
+            {
+                foreach (var r in results)
+                {
+                    var name = r.Endpoint.Split('(')[0].Trim();
+                    if (!_endpointMetrics.ContainsKey(name))
+                        _endpointMetrics[name] = new List<EndpointMetric>();
+                    _endpointMetrics[name].Add(new EndpointMetric { Timestamp = DateTime.UtcNow, ResponseTimeMs = r.ResponseTimeMs, IsHealthy = r.IsHealthy, StatusCode = r.StatusCode });
+                    while (_endpointMetrics[name].Count > MaxMetricsPerEndpoint) _endpointMetrics[name].RemoveAt(0);
+                }
+            }
+
+            _cachedHealthResult = results;
+            _healthCacheTime = DateTime.UtcNow;
+            return results;
+        }
+        finally
+        {
+            _healthCacheLock.Release();
+        }
     }
 
     private async Task<ApiHealthStatus> CheckEndpoint(string url, string name, bool isInternal, HashSet<HttpStatusCode> expected)
@@ -89,13 +113,22 @@ public class AzureMonitoringService
         return s;
     }
 
-    // ── SSL Certificate Monitoring ──────────────────────────────
+    // ── SSL Certificate Monitoring (cached — certs change rarely) ──
+
+    private List<SslCertInfo>? _cachedSslResult;
+    private DateTime _sslCacheTime = DateTime.MinValue;
+    private static readonly TimeSpan SslCacheTtl = TimeSpan.FromMinutes(10);
 
     public async Task<List<SslCertInfo>> CheckSslCertificates()
     {
+        if (_cachedSslResult != null && DateTime.UtcNow - _sslCacheTime < SslCacheTtl)
+            return _cachedSslResult;
+
         var hosts = new[] { "medici-backend.azurewebsites.net", "medici-backend-dev-f9h6hxgncha9fbbp.eastus2-01.azurewebsites.net", "medici-monitor-dashboard.azurewebsites.net", "medici-sql-server.database.windows.net" };
         var tasks = hosts.Select(CheckSslCert);
-        return (await Task.WhenAll(tasks)).ToList();
+        _cachedSslResult = (await Task.WhenAll(tasks)).ToList();
+        _sslCacheTime = DateTime.UtcNow;
+        return _cachedSslResult;
     }
 
     private async Task<SslCertInfo> CheckSslCert(string host)
@@ -123,10 +156,17 @@ public class AzureMonitoringService
         return info;
     }
 
-    // ── DNS Health Check ─────────────────────────────────────────
+    // ── DNS Health Check (cached — DNS changes rarely) ──────────
+
+    private List<DnsCheckResult>? _cachedDnsResult;
+    private DateTime _dnsCacheTime = DateTime.MinValue;
+    private static readonly TimeSpan DnsCacheTtl = TimeSpan.FromMinutes(10);
 
     public async Task<List<DnsCheckResult>> CheckDnsHealth()
     {
+        if (_cachedDnsResult != null && DateTime.UtcNow - _dnsCacheTime < DnsCacheTtl)
+            return _cachedDnsResult;
+
         var hosts = new[] { "medici-backend.azurewebsites.net", "medici-sql-server.database.windows.net", "login.microsoftonline.com" };
         var tasks = hosts.Select(async h =>
         {
@@ -143,7 +183,9 @@ public class AzureMonitoringService
             catch (Exception ex) { sw.Stop(); result.IsResolved = false; result.Error = ex.Message; result.ResolutionTimeMs = (int)sw.ElapsedMilliseconds; }
             return result;
         });
-        return (await Task.WhenAll(tasks)).ToList();
+        _cachedDnsResult = (await Task.WhenAll(tasks)).ToList();
+        _dnsCacheTime = DateTime.UtcNow;
+        return _cachedDnsResult;
     }
 
     // ── Endpoint-Level Metrics ──────────────────────────────────
