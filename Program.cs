@@ -31,6 +31,7 @@ builder.Services.AddSingleton<BookingReconciliationService>();
 builder.Services.AddHostedService<FailSafeBackgroundService>();
 builder.Services.AddHostedService<AlertNotificationService>();
 builder.Services.AddHostedService<ReconciliationBackgroundService>();
+builder.Services.AddHostedService<TelegramBotService>();
 builder.Services.AddSignalR();
 builder.Services.AddSingleton<MonitorHubNotifier>();
 builder.Services.AddCors(o => o.AddDefaultPolicy(p => p.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader()));
