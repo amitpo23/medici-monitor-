@@ -996,6 +996,14 @@ td.log-msg{white-space:pre-wrap;word-break:break-word;max-width:600px;font-famil
           </div>
           <input id="nfWhatsAppRecipients" placeholder="נמענים WhatsApp (מופרדים בפסיק, לדוגמה: 972501234567,972502345678)" style="width:100%;padding:6px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:12px;margin-top:8px">
         </div>
+        <div style="margin-bottom:16px">
+          <h3 style="font-size:13px;margin-bottom:8px">Telegram</h3>
+          <label style="font-size:12px;display:flex;align-items:center;gap:6px;margin-bottom:6px"><input type="checkbox" id="nfTelegramEnabled"> מופעל</label>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+            <input id="nfTelegramBotToken" placeholder="Bot Token (מ-@BotFather)" type="password" style="padding:6px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:12px">
+            <input id="nfTelegramChatId" placeholder="Chat ID (משתמש או קבוצה)" style="padding:6px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:12px">
+          </div>
+        </div>
         <div>
           <h3 style="font-size:13px;margin-bottom:8px">כללי</h3>
           <div style="display:flex;gap:12px;align-items:center">
@@ -2948,6 +2956,9 @@ async function loadNotifConfig() {
     document.getElementById('nfWhatsAppPhoneNumberId').value = c.whatsAppPhoneNumberId || '';
     document.getElementById('nfWhatsAppAccessToken').value = c.whatsAppAccessToken || '';
     document.getElementById('nfWhatsAppRecipients').value = c.whatsAppRecipients || '';
+    document.getElementById('nfTelegramEnabled').checked = c.telegramEnabled;
+    document.getElementById('nfTelegramBotToken').value = c.telegramBotToken || '';
+    document.getElementById('nfTelegramChatId').value = c.telegramChatId || '';
     document.getElementById('nfMinSeverity').value = c.minSeverity || 'Warning';
     document.getElementById('nfCooldown').value = c.cooldownMinutes || 5;
 
@@ -2981,6 +2992,9 @@ async function saveNotifConfig() {
     whatsAppPhoneNumberId: document.getElementById('nfWhatsAppPhoneNumberId').value,
     whatsAppAccessToken: document.getElementById('nfWhatsAppAccessToken').value,
     whatsAppRecipients: document.getElementById('nfWhatsAppRecipients').value,
+    telegramEnabled: document.getElementById('nfTelegramEnabled').checked,
+    telegramBotToken: document.getElementById('nfTelegramBotToken').value,
+    telegramChatId: document.getElementById('nfTelegramChatId').value,
     minSeverity: document.getElementById('nfMinSeverity').value,
     cooldownMinutes: parseInt(document.getElementById('nfCooldown').value) || 5
   };

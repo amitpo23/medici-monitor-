@@ -50,6 +50,9 @@ public class NotificationService
                 tasks.Add(SendWhatsAppTwilioLegacy(title, message, severity, result));
         }
 
+        if (Config.TelegramEnabled && !string.IsNullOrEmpty(Config.TelegramBotToken) && !string.IsNullOrEmpty(Config.TelegramChatId))
+            tasks.Add(SendTelegram(title, message, severity, result));
+
         // Always log
         _logger.LogInformation("Notification [{Severity}] {Title}: {Message}", severity, title, message);
         result.Channels.Add(new ChannelResult { Channel = "Log", Success = true });
@@ -308,6 +311,37 @@ public class NotificationService
         }
     }
 
+    // ── Telegram ──
+
+    private async Task SendTelegram(string title, string message, string severity, NotificationResult result)
+    {
+        try
+        {
+            var emoji = severity switch { "Critical" => "🚨", "Warning" => "⚠️", _ => "ℹ️" };
+            var text = $"{emoji} *MediciMonitor*\n*{title}*\n\n{message}\n\n_{severity} | {DateTime.UtcNow:HH:mm:ss UTC}_";
+
+            // Telegram has 4096 char limit
+            if (text.Length > 4000) text = text[..4000] + "\n...";
+
+            var url = $"https://api.telegram.org/bot{Config.TelegramBotToken}/sendMessage";
+            var payload = JsonSerializer.Serialize(new
+            {
+                chat_id = Config.TelegramChatId,
+                text,
+                parse_mode = "Markdown",
+                disable_web_page_preview = true
+            });
+            var content = new StringContent(payload, Encoding.UTF8, "application/json");
+            var resp = await _http.PostAsync(url, content);
+            result.Channels.Add(new ChannelResult { Channel = "Telegram", Success = resp.IsSuccessStatusCode, Detail = $"HTTP {(int)resp.StatusCode}" });
+        }
+        catch (Exception ex)
+        {
+            result.Channels.Add(new ChannelResult { Channel = "Telegram", Success = false, Detail = ex.Message });
+            _logger.LogWarning("Telegram notification failed: {Err}", ex.Message);
+        }
+    }
+
     // ── Test notification ──
 
     public async Task<NotificationResult> SendTestAsync()
@@ -356,6 +390,11 @@ public class NotificationConfig
     // Teams
     public bool TeamsEnabled { get; set; }
     public string? TeamsWebhookUrl { get; set; }
+
+    // Telegram
+    public bool TelegramEnabled { get; set; }
+    public string? TelegramBotToken { get; set; }   // from @BotFather
+    public string? TelegramChatId { get; set; }     // user or group chat ID
 
     // WhatsApp (Meta Cloud API)
     public bool WhatsAppEnabled { get; set; }
