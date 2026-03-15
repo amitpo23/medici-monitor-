@@ -319,7 +319,7 @@ public class AlertingService
                     {
                         try
                         {
-                            unprocessed = await ScalarInt(conn, $"SELECT COUNT(*) FROM {tbl} WHERE IsProcessedCallback = 0");
+                            unprocessed = await ScalarInt(conn, $"SELECT COUNT(*) FROM {tbl} WHERE IsProcessedCallback = 0 AND (IsDeleted = 0 OR IsDeleted IS NULL)");
                             break;
                         }
                         catch { /* try next */ }
