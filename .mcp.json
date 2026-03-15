@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "medici-monitor": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["mcp-server/server.mjs"],
+      "env": {
+        "MEDICI_MONITOR_URL": "http://localhost:5000"
+      }
+    }
+  }
+}

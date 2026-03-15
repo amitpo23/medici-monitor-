@@ -1,0 +1,14 @@
+{
+  "name": "medici-monitor-mcp",
+  "version": "1.0.0",
+  "description": "MCP server for MediciMonitor — exposes monitoring data as tools for Claude",
+  "type": "module",
+  "main": "server.mjs",
+  "scripts": {
+    "start": "node server.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.1",
+    "zod": "^4.3.6"
+  }
+}
