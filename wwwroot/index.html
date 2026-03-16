@@ -244,6 +244,9 @@ td.log-msg{white-space:pre-wrap;word-break:break-word;max-width:600px;font-famil
   <div class="nav-tab" data-nav="notifications">&#x1F4E7; התראות חיצוניות</div>
   <div class="nav-tab" data-nav="failsafe">&#x1F6D1; Kill Switch <span class="count red" id="navFailSafeCount" style="display:none">0</span></div>
   <div class="nav-tab" data-nav="webjobs">&#x2699;&#xFE0F; WebJobs <span class="count blue" id="navWebJobsCount" style="display:none">0</span></div>
+  <div class="nav-tab" data-nav="financial">&#x1F4B5; P&L פיננסי</div>
+  <div class="nav-tab" data-nav="suppliers">&#x1F4CA; ביצועי ספקים</div>
+  <div class="nav-tab" data-nav="occupancy">&#x1F3E8; תפוסה</div>
   <div class="nav-tab" data-nav="reconciliation">&#x1F50D; התאמת הזמנות <span class="count red" id="navReconCount" style="display:none">0</span></div>
   <div class="nav-tab" data-nav="ai">&#x1F9E0; Claude AI</div>
   <div class="nav-tab" data-nav="logs">&#x1F4DC; Logs <span class="count blue" id="navLogCount">0</span></div>
@@ -1215,6 +1218,52 @@ td.log-msg{white-space:pre-wrap;word-break:break-word;max-width:600px;font-famil
 <!--  PANEL: Claude AI Analysis                                         -->
 <!-- ═══════════════════════════════════════════════════════════════════ -->
 <!-- ═══════════════════════════════════════════════════════════ -->
+<!-- Financial P&L Panel -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<div class="nav-panel" id="panel-financial">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:8px">
+    <h2 style="font-size:18px;font-weight:700">&#x1F4B5; P&L — רווח והפסד</h2>
+    <div style="display:flex;gap:8px">
+      <select id="pnlPeriod" style="padding:6px 10px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:12px">
+        <option value="today">היום</option>
+        <option value="week" selected>שבוע</option>
+        <option value="month">חודש</option>
+      </select>
+      <button onclick="loadPnl()" style="background:var(--accent);color:#fff;border:none;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px">&#x1F504; טען</button>
+      <a href="/api/export/pnl.xlsx" style="background:var(--green);color:#000;padding:6px 14px;border-radius:6px;font-size:12px;text-decoration:none;display:flex;align-items:center">&#x1F4E5; Excel</a>
+    </div>
+  </div>
+  <div id="pnlCards" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px;margin-bottom:16px"></div>
+  <div class="section">
+    <div class="section-header"><h2>&#x1F3E8; פירוט לפי מלון</h2></div>
+    <div id="pnlTable" style="overflow-x:auto"></div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- Supplier Scorecard Panel -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<div class="nav-panel" id="panel-suppliers">
+  <h2 style="font-size:18px;font-weight:700;margin-bottom:16px">&#x1F4CA; ביצועי ספקים / Endpoints</h2>
+  <div id="supplierCards" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px"></div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- Occupancy Heatmap Panel -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<div class="nav-panel" id="panel-occupancy">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+    <h2 style="font-size:18px;font-weight:700">&#x1F3E8; מפת תפוסה</h2>
+    <select id="heatmapDays" onchange="loadHeatmap()" style="padding:6px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:12px">
+      <option value="7">7 ימים</option>
+      <option value="14" selected>14 ימים</option>
+      <option value="30">30 ימים</option>
+    </select>
+  </div>
+  <div id="heatmapGrid" style="overflow-x:auto"></div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
 <!-- Reconciliation Panel -->
 <!-- ═══════════════════════════════════════════════════════════ -->
 <div class="nav-panel" id="panel-reconciliation">
@@ -1374,6 +1423,9 @@ document.querySelectorAll('.nav-tab').forEach(tab => {
     document.getElementById('panel-' + tab.dataset.nav).classList.add('active');
     // Auto-load data for specific panels
     if (tab.dataset.nav === 'reconciliation') { loadReconStatus(); loadReconHistory(); }
+    if (tab.dataset.nav === 'financial') loadPnl();
+    if (tab.dataset.nav === 'suppliers') loadSupplierScorecard();
+    if (tab.dataset.nav === 'occupancy') loadHeatmap();
   });
 });
 
@@ -3825,6 +3877,117 @@ function scheduleRefresh() {
   if (refreshTimer) clearTimeout(refreshTimer);
   if (!autoRefresh) return;
   refreshTimer = setTimeout(() => { loadData(); scheduleRefresh(); }, 30000);
+}
+
+// ══════════════════════════════════════════════════════════════
+//  Financial P&L
+// ══════════════════════════════════════════════════════════════
+async function loadPnl() {
+  const period = document.getElementById('pnlPeriod').value;
+  try {
+    const r = await fetch(`/api/financial/pnl?period=${period}`);
+    const d = await r.json();
+    if (d.error) { document.getElementById('pnlCards').innerHTML = `<div style="color:var(--red)">${d.error}</div>`; return; }
+
+    const marginColor = d.overallMargin > 10 ? 'var(--green)' : d.overallMargin > 0 ? 'var(--yellow)' : 'var(--red)';
+    document.getElementById('pnlCards').innerHTML = `
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px">
+        <div style="font-size:11px;color:var(--text2)">עלות (Buy)</div>
+        <div style="font-size:22px;font-weight:700;color:var(--red)">$${(d.totalBuyCost||0).toLocaleString()}</div>
+      </div>
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px">
+        <div style="font-size:11px;color:var(--text2)">הכנסה (Sell)</div>
+        <div style="font-size:22px;font-weight:700;color:var(--green)">$${(d.totalSellRevenue||0).toLocaleString()}</div>
+      </div>
+      <div style="background:var(--surface);border:1px solid ${marginColor};border-radius:8px;padding:14px">
+        <div style="font-size:11px;color:var(--text2)">רווח</div>
+        <div style="font-size:22px;font-weight:700;color:${marginColor}">$${(d.totalProfit||0).toLocaleString()}</div>
+      </div>
+      <div style="background:var(--surface);border:1px solid ${marginColor};border-radius:8px;padding:14px">
+        <div style="font-size:11px;color:var(--text2)">Margin</div>
+        <div style="font-size:22px;font-weight:700;color:${marginColor}">${(d.overallMargin||0).toFixed(1)}%</div>
+      </div>`;
+
+    const hotels = d.hotelBreakdown || [];
+    if (!hotels.length) { document.getElementById('pnlTable').innerHTML = '<div style="color:var(--text2);padding:12px">אין נתונים</div>'; return; }
+    let html = '<table style="width:100%;font-size:12px;border-collapse:collapse"><tr style="border-bottom:1px solid var(--border);color:var(--text2)"><th style="padding:8px;text-align:right">מלון</th><th style="padding:8px">הזמנות</th><th style="padding:8px">עלות</th><th style="padding:8px">הכנסה</th><th style="padding:8px">רווח</th><th style="padding:8px">Margin</th></tr>';
+    hotels.forEach(h => {
+      const mc = h.margin > 10 ? 'var(--green)' : h.margin > 0 ? 'var(--yellow)' : 'var(--red)';
+      html += `<tr style="border-bottom:1px solid var(--border)"><td style="padding:8px">${h.hotelName}</td><td style="padding:8px;text-align:center">${h.bookings}</td><td style="padding:8px">$${h.buyCost.toLocaleString()}</td><td style="padding:8px">$${h.sellRevenue.toLocaleString()}</td><td style="padding:8px;color:${mc}">$${h.profit.toLocaleString()}</td><td style="padding:8px;color:${mc}">${h.margin.toFixed(1)}%</td></tr>`;
+    });
+    html += '</table>';
+    document.getElementById('pnlTable').innerHTML = html;
+  } catch(e) { document.getElementById('pnlCards').innerHTML = `<div style="color:var(--red)">${e.message}</div>`; }
+}
+
+// ══════════════════════════════════════════════════════════════
+//  Supplier Scorecard
+// ══════════════════════════════════════════════════════════════
+async function loadSupplierScorecard() {
+  try {
+    const r = await fetch('/api/suppliers/scorecard');
+    const data = await r.json();
+    let html = '';
+    data.forEach(s => {
+      const upColor = s.uptime >= 99 ? 'var(--green)' : s.uptime >= 95 ? 'var(--yellow)' : 'var(--red)';
+      const rtColor = s.avgResponseMs < 1000 ? 'var(--green)' : s.avgResponseMs < 3000 ? 'var(--yellow)' : 'var(--red)';
+      html += `<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:16px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <div style="font-weight:700;font-size:13px">${s.supplier}</div>
+          <span style="color:${s.isHealthy ? 'var(--green)' : 'var(--red)'};font-size:18px">${s.isHealthy ? '&#x2705;' : '&#x274C;'}</span>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:12px">
+          <div>Uptime: <span style="color:${upColor};font-weight:600">${s.uptime.toFixed(1)}%</span></div>
+          <div>Avg: <span style="color:${rtColor};font-weight:600">${s.avgResponseMs.toFixed(0)}ms</span></div>
+          <div>P95: <span style="font-weight:600">${s.p95ResponseMs.toFixed(0)}ms</span></div>
+          <div>P99: <span style="font-weight:600">${s.p99ResponseMs.toFixed(0)}ms</span></div>
+          <div>Checks: ${s.totalChecks}</div>
+          <div>Last: ${s.lastResponseMs}ms</div>
+        </div>
+      </div>`;
+    });
+    document.getElementById('supplierCards').innerHTML = html || '<div style="color:var(--text2)">אין נתוני ספקים</div>';
+  } catch(e) {}
+}
+
+// ══════════════════════════════════════════════════════════════
+//  Occupancy Heatmap
+// ══════════════════════════════════════════════════════════════
+async function loadHeatmap() {
+  const days = document.getElementById('heatmapDays').value;
+  try {
+    const r = await fetch(`/api/occupancy/heatmap?days=${days}`);
+    const d = await r.json();
+    if (!d.data || !d.data.length) { document.getElementById('heatmapGrid').innerHTML = '<div style="color:var(--text2);padding:12px">אין נתוני תפוסה</div>'; return; }
+
+    // Build hotel→dates matrix
+    const hotels = {};
+    const allDates = new Set();
+    d.data.forEach(item => {
+      if (!hotels[item.hotelName]) hotels[item.hotelName] = {};
+      hotels[item.hotelName][item.date] = item;
+      allDates.add(item.date);
+    });
+    const dates = [...allDates].sort();
+
+    let html = '<table style="font-size:11px;border-collapse:collapse"><tr><th style="padding:4px 8px;text-align:right;position:sticky;left:0;background:var(--bg)">מלון</th>';
+    dates.forEach(dt => html += `<th style="padding:4px 6px;writing-mode:vertical-rl;transform:rotate(180deg);font-weight:400;color:var(--text2)">${dt.slice(5)}</th>`);
+    html += '</tr>';
+
+    Object.entries(hotels).forEach(([name, dateMap]) => {
+      html += `<tr><td style="padding:4px 8px;white-space:nowrap;position:sticky;left:0;background:var(--bg)">${name}</td>`;
+      dates.forEach(dt => {
+        const item = dateMap[dt];
+        if (!item) { html += '<td style="padding:2px;text-align:center">-</td>'; return; }
+        const pct = item.rooms > 0 ? item.sold / item.rooms * 100 : 0;
+        const bg = pct >= 80 ? '#3fb95044' : pct >= 40 ? '#d2992244' : pct > 0 ? '#f8514944' : 'var(--surface2)';
+        html += `<td style="padding:2px 4px;text-align:center;background:${bg};border-radius:3px" title="${name} ${dt}: ${item.sold}/${item.rooms} rooms">${item.rooms}</td>`;
+      });
+      html += '</tr>';
+    });
+    html += '</table>';
+    document.getElementById('heatmapGrid').innerHTML = html;
+  } catch(e) {}
 }
 
 // ══════════════════════════════════════════════════════════════

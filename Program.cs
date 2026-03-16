@@ -621,6 +621,143 @@ app.MapPost("/api/ai/chat", async (ClaudeAiService svc, HttpContext ctx) =>
 });
 
 // ═══════════════════════════════════════════════════════════════
+//  Financial P&L, Supplier Scorecard, Occupancy, Excel Export
+// ═══════════════════════════════════════════════════════════════
+app.MapGet("/api/financial/pnl", async (DataService svc, HttpContext ctx) =>
+{
+    var period = ctx.Request.Query["period"].FirstOrDefault() ?? "week";
+    var days = period switch { "today" => 1, "week" => 7, "month" => 30, _ => 7 };
+    try
+    {
+        using var conn = new Microsoft.Data.SqlClient.SqlConnection(builder.Configuration.GetConnectionString("SqlServer"));
+        await conn.OpenAsync();
+
+        var sql = $@"
+            SELECT b.HotelId, h.Name AS HotelName,
+                   COUNT(*) AS Bookings,
+                   SUM(b.Price) AS TotalBuyCost,
+                   SUM(ISNULL(r.AmountAfterTax, 0)) AS TotalSellRevenue,
+                   SUM(ISNULL(r.AmountAfterTax, 0)) - SUM(b.Price) AS Profit
+            FROM MED_Book b
+            LEFT JOIN Med_Reservation r ON r.HotelCode = CAST(b.HotelId AS NVARCHAR(20))
+                AND r.Datefrom = b.StartDate AND r.Dateto = b.EndDate
+                AND r.ResStatus IN ('Committed', 'New')
+            LEFT JOIN Med_Hotels h ON h.HotelId = b.HotelId
+            WHERE b.IsActive = 1 AND b.IsSold = 1 AND b.Price IS NOT NULL
+              AND b.DateInsert >= DATEADD(DAY, -{days}, GETDATE())
+            GROUP BY b.HotelId, h.Name
+            ORDER BY SUM(ISNULL(r.AmountAfterTax, 0)) - SUM(b.Price) DESC";
+
+        using var cmd = new Microsoft.Data.SqlClient.SqlCommand(sql, conn) { CommandTimeout = 20 };
+        using var rdr = await cmd.ExecuteReaderAsync();
+        var hotels = new List<object>();
+        double totalBuy = 0, totalSell = 0;
+        while (await rdr.ReadAsync())
+        {
+            var buy = rdr.IsDBNull(3) ? 0 : rdr.GetDouble(3);
+            var sell = rdr.IsDBNull(4) ? 0 : rdr.GetDouble(4);
+            totalBuy += buy; totalSell += sell;
+            hotels.Add(new { hotelId = rdr.IsDBNull(0) ? 0 : rdr.GetInt32(0), hotelName = rdr.IsDBNull(1) ? "?" : rdr.GetString(1),
+                bookings = rdr.GetInt32(2), buyCost = buy, sellRevenue = sell, profit = rdr.IsDBNull(5) ? 0 : rdr.GetDouble(5),
+                margin = buy > 0 ? ((sell - buy) / buy * 100) : 0 });
+        }
+        return Results.Ok(new { period, days, totalBuyCost = totalBuy, totalSellRevenue = totalSell,
+            totalProfit = totalSell - totalBuy, overallMargin = totalBuy > 0 ? (totalSell - totalBuy) / totalBuy * 100 : 0,
+            hotelBreakdown = hotels });
+    }
+    catch (Exception ex) { return Results.Ok(new { error = ex.Message }); }
+});
+
+app.MapGet("/api/suppliers/scorecard", (AzureMonitoringService azure) =>
+{
+    var metrics = azure.GetEndpointMetrics();
+    var scorecard = metrics.Select(kv => new {
+        supplier = kv.Key, uptime = kv.Value.SuccessRate, avgResponseMs = kv.Value.AvgResponseMs,
+        p95ResponseMs = kv.Value.P95ResponseMs, p99ResponseMs = kv.Value.P99ResponseMs,
+        totalChecks = kv.Value.TotalChecks, isHealthy = kv.Value.IsCurrentlyHealthy,
+        lastChecked = kv.Value.LastChecked, lastResponseMs = kv.Value.LastResponseMs
+    }).OrderByDescending(s => s.totalChecks);
+    return Results.Ok(scorecard);
+});
+
+app.MapGet("/api/occupancy/heatmap", async (DataService svc, HttpContext ctx) =>
+{
+    int days = int.TryParse(ctx.Request.Query["days"].FirstOrDefault(), out var d) ? d : 14;
+    try
+    {
+        using var conn = new Microsoft.Data.SqlClient.SqlConnection(builder.Configuration.GetConnectionString("SqlServer"));
+        await conn.OpenAsync();
+        var sql = $@"
+            SELECT b.HotelId, h.Name, CAST(b.StartDate AS DATE) AS BookDate,
+                   COUNT(*) AS RoomCount, SUM(b.Price) AS TotalValue,
+                   SUM(CASE WHEN b.IsSold = 1 THEN 1 ELSE 0 END) AS SoldCount
+            FROM MED_Book b
+            LEFT JOIN Med_Hotels h ON h.HotelId = b.HotelId
+            WHERE b.IsActive = 1 AND b.StartDate >= CAST(GETDATE() AS DATE)
+              AND b.StartDate <= DATEADD(DAY, {days}, GETDATE())
+            GROUP BY b.HotelId, h.Name, CAST(b.StartDate AS DATE)
+            ORDER BY h.Name, CAST(b.StartDate AS DATE)";
+        using var cmd = new Microsoft.Data.SqlClient.SqlCommand(sql, conn) { CommandTimeout = 20 };
+        using var rdr = await cmd.ExecuteReaderAsync();
+        var data = new List<object>();
+        while (await rdr.ReadAsync())
+        {
+            data.Add(new { hotelId = rdr.GetInt32(0), hotelName = rdr.IsDBNull(1) ? "?" : rdr.GetString(1),
+                date = rdr.GetDateTime(2).ToString("yyyy-MM-dd"), rooms = rdr.GetInt32(3),
+                value = rdr.IsDBNull(4) ? 0 : rdr.GetDouble(4), sold = rdr.GetInt32(5) });
+        }
+        return Results.Ok(new { days, data });
+    }
+    catch (Exception ex) { return Results.Ok(new { error = ex.Message }); }
+});
+
+app.MapGet("/api/export/{type}.xlsx", async (HttpContext ctx, string type, DataService dataSvc, AlertingService alertSvc, BookingReconciliationService reconSvc) =>
+{
+    using var wb = new ClosedXML.Excel.XLWorkbook();
+    var ws = wb.Worksheets.Add(type);
+
+    if (type == "alerts")
+    {
+        var alerts = await alertSvc.EvaluateAlerts();
+        ws.Cell(1, 1).Value = "ID"; ws.Cell(1, 2).Value = "Severity"; ws.Cell(1, 3).Value = "Title"; ws.Cell(1, 4).Value = "Message"; ws.Cell(1, 5).Value = "Category";
+        ws.Row(1).Style.Font.Bold = true;
+        for (int i = 0; i < alerts.Count; i++)
+        {
+            ws.Cell(i + 2, 1).Value = alerts[i].Id; ws.Cell(i + 2, 2).Value = alerts[i].Severity;
+            ws.Cell(i + 2, 3).Value = alerts[i].Title; ws.Cell(i + 2, 4).Value = alerts[i].Message;
+            ws.Cell(i + 2, 5).Value = alerts[i].Category;
+        }
+    }
+    else if (type == "reconciliation")
+    {
+        var report = reconSvc.LastReport;
+        ws.Cell(1, 1).Value = "Type"; ws.Cell(1, 2).Value = "Severity"; ws.Cell(1, 3).Value = "BookingId";
+        ws.Cell(1, 4).Value = "HotelId"; ws.Cell(1, 5).Value = "Description"; ws.Cell(1, 6).Value = "MediciData"; ws.Cell(1, 7).Value = "ExternalData";
+        ws.Row(1).Style.Font.Bold = true;
+        if (report?.Mismatches != null)
+            for (int i = 0; i < report.Mismatches.Count; i++)
+            {
+                var m = report.Mismatches[i];
+                ws.Cell(i + 2, 1).Value = m.Type.ToString(); ws.Cell(i + 2, 2).Value = m.Severity;
+                ws.Cell(i + 2, 3).Value = m.ContentBookingId; ws.Cell(i + 2, 4).Value = m.MediciHotelId;
+                ws.Cell(i + 2, 5).Value = m.Description; ws.Cell(i + 2, 6).Value = m.MediciData; ws.Cell(i + 2, 7).Value = m.ExternalData;
+            }
+    }
+    else if (type == "pnl")
+    {
+        ws.Cell(1, 1).Value = "Hotel"; ws.Cell(1, 2).Value = "Bookings"; ws.Cell(1, 3).Value = "Buy Cost";
+        ws.Cell(1, 4).Value = "Sell Revenue"; ws.Cell(1, 5).Value = "Profit"; ws.Cell(1, 6).Value = "Margin %";
+        ws.Row(1).Style.Font.Bold = true;
+    }
+
+    ws.Columns().AdjustToContents();
+    using var ms = new MemoryStream();
+    wb.SaveAs(ms);
+    ms.Position = 0;
+    return Results.File(ms.ToArray(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", $"{type}_{DateTime.UtcNow:yyyyMMdd}.xlsx");
+});
+
+// ═══════════════════════════════════════════════════════════════
 //  Booking Reconciliation
 // ═══════════════════════════════════════════════════════════════
 app.MapGet("/api/reconciliation/run", async (BookingReconciliationService svc, AuditService audit, HttpContext ctx) =>

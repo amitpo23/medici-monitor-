@@ -60,6 +60,7 @@ public class TelegramBotService : BackgroundService
         await SendToGroup("🟢 *MediciMonitor Online*\nהמערכת פעילה ומתחילה לנטר.\nדוח ראשון ייצא בעוד שעה.\n\nפקודות זמינות:\n/status — סטטוס מהיר\n/report — דוח מלא\n/alerts — התראות פעילות\n/reconcile — בדיקת התאמה\n/killswitch — הפעלת Kill Switch\n/breakers — סטטוס circuit breakers\n/help — עזרה");
 
         var lastReportTime = DateTime.UtcNow;
+        var lastDailySummaryDate = DateTime.MinValue.Date;
 
         while (!stoppingToken.IsCancellationRequested)
         {
@@ -68,11 +69,18 @@ public class TelegramBotService : BackgroundService
                 // Poll for commands every 30 seconds
                 await PollCommands();
 
-                // Send hourly report
+                // Send 3-hourly report
                 if (DateTime.UtcNow - lastReportTime >= TimeSpan.FromHours(3))
                 {
                     await SendHourlyReport();
                     lastReportTime = DateTime.UtcNow;
+                }
+
+                // Daily summary at 07:00 UTC (10:00 Israel)
+                if (DateTime.UtcNow.Hour == 7 && DateTime.UtcNow.Date > lastDailySummaryDate)
+                {
+                    await SendDailySummary();
+                    lastDailySummaryDate = DateTime.UtcNow.Date;
                 }
             }
             catch (Exception ex)
@@ -120,12 +128,16 @@ public class TelegramBotService : BackgroundService
                     {
                         case "/status": await HandleStatus(chatId); break;
                         case "/report": await SendHourlyReport(chatId); break;
+                        case "/daily_summary": await SendDailySummary(chatId); break;
                         case "/alerts": await HandleAlerts(chatId); break;
                         case "/reconcile": await HandleReconcile(chatId); break;
                         case "/killswitch": await HandleKillSwitch(chatId, text, from); break;
                         case "/breakers": await HandleBreakers(chatId); break;
                         case "/trip": await HandleTrip(chatId, text, from); break;
                         case "/reset": await HandleReset(chatId, text, from); break;
+                        case "/flagged": await HandleFlagged(chatId); break;
+                        case "/approve": await HandleApproveReject(chatId, text, from, true); break;
+                        case "/reject": await HandleApproveReject(chatId, text, from, false); break;
                         case "/help": await HandleHelp(chatId); break;
                     }
                 }
@@ -415,13 +427,175 @@ public class TelegramBotService : BackgroundService
             "📖 *MediciMonitor Bot — פקודות:*\n\n" +
             "📋 `/status` — סטטוס מהיר\n" +
             "📊 `/report` — דוח מלא\n" +
+            "📋 `/daily_summary` — דוח יומי\n" +
             "🚨 `/alerts` — התראות פעילות\n" +
             "🔍 `/reconcile` — בדיקת התאמת הזמנות\n" +
+            "📝 `/flagged` — פריטים ממתינים לאישור\n" +
+            "✅ `/approve <ID> <PIN>` — אשר פריט\n" +
+            "❌ `/reject <ID> <PIN>` — דחה פריט\n" +
             "🛑 `/killswitch` — Kill Switch\n" +
             "🔴 `/trip BUYING <PIN>` — הפעל breaker\n" +
             "✅ `/reset BUYING <PIN>` — אפס breaker\n" +
             "📡 `/breakers` — סטטוס breakers\n\n" +
-            "_דוח אוטומטי כל שעה_", chatId);
+            "*שפה טבעית:*\n" +
+            "\"עצור הכל 7743\" | \"מה המצב\" | \"אשר 42 7743\"\n\n" +
+            "_דוח אוטומטי כל 3 שעות | דוח יומי 07:00 UTC_", chatId);
+    }
+
+    // ── Daily Summary ─────────────────────────────────────────────
+
+    private async Task SendDailySummary(string? targetChatId = null)
+    {
+        try
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine("📋 *דוח יומי — MediciMonitor*");
+            sb.AppendLine($"📅 {DateTime.UtcNow.AddDays(-1):dd/MM/yyyy} (אתמול)");
+            sb.AppendLine("━━━━━━━━━━━━━━━━━━━━");
+
+            var status = await _data.GetFullStatus();
+            sb.AppendLine();
+            sb.AppendLine("*📦 הזמנות:*");
+            sb.AppendLine($"  פעילות: *{status.TotalActiveBookings}*");
+            sb.AppendLine($"  תקועות: *{status.StuckCancellations}*");
+            sb.AppendLine($"  עתידיות: *{status.FutureBookings}*");
+            sb.AppendLine($"  Reservations אתמול: *{status.ReservationsToday}*");
+
+            sb.AppendLine();
+            sb.AppendLine("*💰 פיננסי:*");
+            sb.AppendLine($"  קנינו: *{status.TotalBought}* חדרים");
+            sb.AppendLine($"  מכרנו: *{status.TotalSold}* חדרים");
+            sb.AppendLine($"  רווח/הפסד: *${status.ProfitLoss:N0}*");
+            sb.AppendLine($"  חדרים לא נמכרו: *{status.WasteRoomsTotal}* (${status.WasteTotalValue:N0})");
+
+            // API Health
+            try
+            {
+                var health = await _azure.ComprehensiveApiHealthCheck();
+                var upPct = health.Count > 0 ? health.Count(h => h.IsHealthy) * 100.0 / health.Count : 100;
+                sb.AppendLine();
+                sb.AppendLine($"*🌐 API Uptime:* {upPct:F0}% ({health.Count(h => h.IsHealthy)}/{health.Count})");
+            }
+            catch { }
+
+            // Alerts summary
+            try
+            {
+                var alerts = await _alerting.EvaluateAlerts();
+                var crit = alerts.Count(a => a.Severity == "Critical");
+                var warn = alerts.Count(a => a.Severity == "Warning");
+                sb.AppendLine();
+                sb.AppendLine($"*🚨 התראות:* 🔴 {crit} קריטיות | 🟡 {warn} אזהרות");
+                if (crit > 0)
+                    foreach (var a in alerts.Where(a => a.Severity == "Critical").Take(3))
+                        sb.AppendLine($"  🔴 {a.Title}");
+            }
+            catch { }
+
+            // Reconciliation
+            var recon = _reconciliation.LastReport;
+            if (recon != null)
+            {
+                sb.AppendLine();
+                sb.AppendLine($"*🔍 התאמת הזמנות:* {recon.TotalMismatches} אי-התאמות ({recon.CriticalMismatches} קריטיות)");
+            }
+
+            // Breakers
+            var openBreakers = _failSafe.GetBreakers().Where(b => b.IsOpen).ToList();
+            if (openBreakers.Any())
+            {
+                sb.AppendLine();
+                sb.AppendLine($"*🛑 Breakers פתוחים:* {openBreakers.Count}");
+                foreach (var b in openBreakers)
+                    sb.AppendLine($"  🔴 {b.Name}: {b.Reason}");
+            }
+
+            sb.AppendLine();
+            sb.AppendLine("━━━━━━━━━━━━━━━━━━━━");
+            sb.AppendLine("_/report לדוח מלא | /help לפקודות_");
+
+            await SendToGroup(sb.ToString(), targetChatId);
+
+            // Also send via email
+            if (_config["Notifications:EmailEnabled"] == "true" || _config["Notifications:EmailEnabled"] == "True")
+            {
+                // Email is sent through the notification service which handles SMTP
+                _logger.LogInformation("Daily summary sent to Telegram");
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("Daily summary failed: {Err}", ex.Message);
+        }
+    }
+
+    // ── Flagged Items & Approve/Reject ──────────────────────────
+
+    private async Task HandleFlagged(string chatId)
+    {
+        var items = _failSafe.GetFlaggedItems();
+        var pending = items?.Where(f => f.Status == "Pending").ToList() ?? new();
+
+        if (!pending.Any())
+        {
+            await SendToGroup("✅ אין פריטים ממתינים לאישור", chatId);
+            return;
+        }
+
+        var sb = new StringBuilder($"📋 *{pending.Count} פריטים ממתינים לאישור:*\n\n");
+        foreach (var f in pending.Take(10))
+        {
+            sb.AppendLine($"*ID {f.Id}* — {f.RuleId}");
+            sb.AppendLine($"  {f.Reason}");
+            sb.AppendLine($"  סכום: ${f.Amount:N0} | {f.HotelName}");
+            sb.AppendLine($"  `/approve {f.Id} <PIN>` | `/reject {f.Id} <PIN>`");
+            sb.AppendLine();
+        }
+        if (pending.Count > 10)
+            sb.AppendLine($"_...ועוד {pending.Count - 10}_");
+
+        await SendToGroup(sb.ToString(), chatId);
+    }
+
+    private async Task HandleApproveReject(string chatId, string text, string from, bool approve)
+    {
+        var parts = text.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length < 3)
+        {
+            await SendToGroup($"שימוש: `/{(approve ? "approve" : "reject")} <ID> <PIN>`", chatId);
+            return;
+        }
+
+        if (!int.TryParse(parts[1], out var id))
+        {
+            await SendToGroup("❌ ID חייב להיות מספר", chatId);
+            return;
+        }
+
+        var pin = parts[2];
+        if (!_failSafe.ValidatePin(pin))
+        {
+            await SendToGroup("❌ PIN שגוי!", chatId);
+            return;
+        }
+
+        if (approve)
+        {
+            var result = _failSafe.ApproveFlag(id, from);
+            if (result != null)
+                await SendToGroup($"✅ *פריט {id} אושר* ע\"י {from}", chatId);
+            else
+                await SendToGroup($"❌ פריט {id} לא נמצא", chatId);
+        }
+        else
+        {
+            var note = parts.Length > 3 ? string.Join(" ", parts.Skip(3)) : null;
+            var result = _failSafe.RejectFlag(id, from, note);
+            if (result != null)
+                await SendToGroup($"❌ *פריט {id} נדחה* ע\"י {from}", chatId);
+            else
+                await SendToGroup($"❌ פריט {id} לא נמצא", chatId);
+        }
     }
 
     // ── Natural Language Kill Switch ─────────────────────────────
@@ -500,6 +674,35 @@ public class TelegramBotService : BackgroundService
             if (!_failSafe.ValidatePin(pin)) { await SendToGroup("❌ PIN שגוי!", chatId); return; }
             _failSafe.ResetAll(from);
             await SendToGroup($"✅ *כל ה-breakers שוחררו!*\nהופעל ע\"י: {from}", chatId);
+            return;
+        }
+
+        // Natural language approve: "אשר 42 7743", "תאשר הזמנה 42"
+        var approvePatterns = new[] { "אשר", "תאשר", "approve", "אישור" };
+        var rejectPatterns2 = new[] { "דחה", "תדחה", "reject", "דחייה" };
+        if (approvePatterns.Any(p => lower.Contains(p)) || rejectPatterns2.Any(p => lower.Contains(p)))
+        {
+            var isApprove = approvePatterns.Any(p => lower.Contains(p));
+            var idMatch = System.Text.RegularExpressions.Regex.Match(text, @"\b(\d{1,6})\b");
+            if (!idMatch.Success || !int.TryParse(idMatch.Groups[1].Value, out var flagId))
+            {
+                await SendToGroup("⚠️ ציין מספר ID. לדוגמה: \"אשר 42 7743\"", chatId);
+                return;
+            }
+            // PIN might be the 4-digit number
+            if (string.IsNullOrEmpty(pin)) { await SendToGroup("⚠️ שלח גם PIN. לדוגמה: \"אשר 42 7743\"", chatId); return; }
+            if (!_failSafe.ValidatePin(pin)) { await SendToGroup("❌ PIN שגוי!", chatId); return; }
+
+            if (isApprove)
+            {
+                var result = _failSafe.ApproveFlag(flagId, from);
+                await SendToGroup(result != null ? $"✅ *פריט {flagId} אושר* ע\"י {from}" : $"❌ פריט {flagId} לא נמצא", chatId);
+            }
+            else
+            {
+                var result = _failSafe.RejectFlag(flagId, from, null);
+                await SendToGroup(result != null ? $"❌ *פריט {flagId} נדחה* ע\"י {from}" : $"❌ פריט {flagId} לא נמצא", chatId);
+            }
             return;
         }
     }

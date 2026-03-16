@@ -583,6 +583,45 @@ public class AlertingService
                     Message = _webJobs.MonitoringIssue ?? "ניטור WebJobs לא מחזיר תוצאות",
                     Severity = "Warning", Category = "Infrastructure" });
 
+            // 27. API_SLOW — endpoint response time > 5s
+            try
+            {
+                var metrics = _azure.GetEndpointMetrics();
+                foreach (var (name, summary) in metrics)
+                {
+                    if (summary.P95ResponseMs > 10000)
+                        alerts.Add(new AlertInfo { Id = $"API_SLOW_{name.Replace(" ", "_").ToUpper()}", Title = "API Slow Response", Message = $"{name}: p95 = {summary.P95ResponseMs:F0}ms (> 10s)", Severity = "Critical", Category = "Infrastructure" });
+                    else if (summary.P95ResponseMs > 5000)
+                        alerts.Add(new AlertInfo { Id = $"API_SLOW_{name.Replace(" ", "_").ToUpper()}", Title = "API Slow Response", Message = $"{name}: p95 = {summary.P95ResponseMs:F0}ms (> 5s)", Severity = "Warning", Category = "Infrastructure" });
+                }
+            }
+            catch (Exception ex) { _logger.LogDebug("API slow check skipped: {Err}", ex.Message); }
+
+            // 28. LOW_MARGIN — average margin < 5%
+            try
+            {
+                using var conn2 = new Microsoft.Data.SqlClient.SqlConnection(_connStr);
+                await conn2.OpenAsync();
+                var marginData = await ScalarDouble(conn2,
+                    @"SELECT CASE WHEN SUM(b.Price) > 0
+                        THEN (SUM(ISNULL(r.AmountAfterTax, 0)) - SUM(b.Price)) / SUM(b.Price) * 100.0
+                        ELSE 0 END
+                      FROM MED_Book b
+                      INNER JOIN Med_Reservation r ON r.HotelCode = CAST(b.HotelId AS NVARCHAR(20))
+                          AND r.Datefrom = b.StartDate AND r.Dateto = b.EndDate
+                          AND r.ResStatus IN ('Committed', 'New')
+                      WHERE b.IsActive = 1 AND b.IsSold = 1
+                        AND b.Price IS NOT NULL AND b.Price > 0
+                        AND r.AmountAfterTax IS NOT NULL
+                        AND r.DateInsert >= DATEADD(DAY, -7, GETDATE())");
+
+                if (marginData < 0)
+                    alerts.Add(new AlertInfo { Id = "LOW_MARGIN", Title = "הפסד כולל!", Message = $"מרווח ממוצע ב-7 ימים: {marginData:F1}% — המערכת מוכרת בהפסד!", Severity = "Critical", Category = "Business" });
+                else if (marginData < 5 && marginData >= 0)
+                    alerts.Add(new AlertInfo { Id = "LOW_MARGIN", Title = "מרווח נמוך", Message = $"מרווח ממוצע ב-7 ימים: {marginData:F1}% (סף: 5%)", Severity = "Warning", Category = "Business" });
+            }
+            catch (Exception ex) { _logger.LogDebug("Low margin check skipped: {Err}", ex.Message); }
+
             // Set timestamp & active status, filter acknowledged/snoozed
             lock (_lock)
             {

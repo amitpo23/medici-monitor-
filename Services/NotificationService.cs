@@ -27,6 +27,20 @@ public class NotificationService
     public async Task<NotificationResult> SendAsync(string title, string message, string severity = "Info", string? category = null)
     {
         var result = new NotificationResult { Title = title, Severity = severity, Timestamp = DateTime.UtcNow };
+
+        // Quiet Hours — skip non-critical alerts during quiet hours (23:00-07:00 Israel time)
+        if (Config.QuietHoursEnabled && severity != "Critical")
+        {
+            var israelTime = DateTime.UtcNow.AddHours(3); // Israel = UTC+3 (summer) / UTC+2 (winter)
+            var hour = israelTime.Hour;
+            if (hour >= Config.QuietHoursStart || hour < Config.QuietHoursEnd)
+            {
+                _logger.LogDebug("Notification suppressed (quiet hours): [{Severity}] {Title}", severity, title);
+                result.Channels.Add(new ChannelResult { Channel = "QuietHours", Success = true, Detail = $"Suppressed — quiet hours ({Config.QuietHoursStart}:00-{Config.QuietHoursEnd}:00)" });
+                return result;
+            }
+        }
+
         var tasks = new List<Task>();
 
         if (Config.WebhookEnabled && !string.IsNullOrEmpty(Config.WebhookUrl))
@@ -91,8 +105,15 @@ public class NotificationService
                 source = "MediciMonitor"
             });
             var content = new StringContent(payload, Encoding.UTF8, "application/json");
-            var resp = await _http.PostAsync(Config.WebhookUrl, content);
-            result.Channels.Add(new ChannelResult { Channel = "Webhook", Success = resp.IsSuccessStatusCode, Detail = $"HTTP {(int)resp.StatusCode}" });
+            // Retry with exponential backoff (3 attempts)
+            System.Net.Http.HttpResponseMessage? resp = null;
+            for (int attempt = 1; attempt <= 3; attempt++)
+            {
+                resp = await _http.PostAsync(Config.WebhookUrl, new StringContent(payload, Encoding.UTF8, "application/json"));
+                if (resp.IsSuccessStatusCode) break;
+                if (attempt < 3) await Task.Delay(TimeSpan.FromSeconds(Math.Pow(2, attempt)));
+            }
+            result.Channels.Add(new ChannelResult { Channel = "Webhook", Success = resp?.IsSuccessStatusCode ?? false, Detail = $"HTTP {(int)(resp?.StatusCode ?? 0)}" });
         }
         catch (Exception ex)
         {
@@ -390,6 +411,11 @@ public class NotificationConfig
     // Teams
     public bool TeamsEnabled { get; set; }
     public string? TeamsWebhookUrl { get; set; }
+
+    // Quiet Hours (suppress non-critical during night)
+    public bool QuietHoursEnabled { get; set; }
+    public int QuietHoursStart { get; set; } = 23;  // 23:00 Israel time
+    public int QuietHoursEnd { get; set; } = 7;      // 07:00 Israel time
 
     // Telegram
     public bool TelegramEnabled { get; set; }
