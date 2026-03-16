@@ -11,9 +11,11 @@ namespace MediciMonitor.Services;
 public class DeepVerificationService
 {
     private readonly string _connStr;
+    private readonly IConfiguration _config;
     private readonly InnstantApiClient _innstant;
     private readonly ILogger<DeepVerificationService> _logger;
     private readonly NotificationService _notification;
+    private readonly HttpClient _backendHttp = new() { Timeout = TimeSpan.FromSeconds(30) };
 
     private readonly List<VerificationReport> _history = new();
     private readonly object _lock = new();
@@ -27,6 +29,7 @@ public class DeepVerificationService
     {
         _connStr = config.GetConnectionString("SqlServer")
             ?? throw new InvalidOperationException("Missing SqlServer connection string");
+        _config = config;
         _innstant = innstant;
         _notification = notification;
         _logger = logger;
@@ -174,6 +177,57 @@ public class DeepVerificationService
 
                 report.InnstantVerifiedOk = report.VerifiedBookings.Count;
             }
+
+            // ── 4b. Pull reservations from backend API (הנובי/Zenith source of truth) ──
+            try
+            {
+                var backendUrl = _config["Reconciliation:BackendApiUrl"] ?? "https://medici-backend.azurewebsites.net";
+                var resp = await _backendHttp.GetAsync($"{backendUrl}/SalesRoom/Reservations?force=true");
+                if (resp.IsSuccessStatusCode)
+                {
+                    var json = await resp.Content.ReadAsStringAsync();
+                    var backendReservations = JsonSerializer.Deserialize<List<JsonElement>>(json);
+                    report.BackendReservationsCount = backendReservations?.Count ?? 0;
+
+                    if (backendReservations != null)
+                    {
+                        foreach (var br in backendReservations)
+                        {
+                            var soldId = br.TryGetProperty("soldId", out var sid) ? sid.GetInt32() : 0;
+                            var hotelId = br.TryGetProperty("hotelId", out var hid) ? hid.GetInt32() : 0;
+                            var hotelName = br.TryGetProperty("hotelName", out var hn) && hn.ValueKind == JsonValueKind.String ? hn.GetString() : "";
+                            var isCanceled = br.TryGetProperty("isCanceled", out var ic) && ic.GetBoolean();
+
+                            if (isCanceled) continue; // Skip cancelled
+
+                            // Check if this reservation exists in our Med_Reservation table
+                            var existsInMedici = reservations.Any(r =>
+                                r.HotelCode == hotelId.ToString() &&
+                                (r.ResStatus == "New" || r.ResStatus == "Committed" || r.ResStatus == "Commit"));
+
+                            if (!existsInMedici && soldId > 0)
+                            {
+                                report.Anomalies.Add(new VerificationAnomaly
+                                {
+                                    Type = AnomalyType.MissingInMedici,
+                                    Severity = "Critical",
+                                    System = "הנובי",
+                                    BookingId = soldId,
+                                    HotelId = hotelId,
+                                    Description = $"הזמנה מהנובי לא נמצאה ב-Med_Reservation! SoldId={soldId}, Hotel={hotelName ?? hotelId.ToString()}",
+                                    MediciValue = "Not found in Med_Reservation",
+                                    ExternalValue = $"Backend SoldId={soldId}, Hotel={hotelName}"
+                                });
+                            }
+                        }
+                    }
+                }
+                else
+                {
+                    _logger.LogDebug("Backend API returned {Code} — skipping Nobi check", (int)resp.StatusCode);
+                }
+            }
+            catch (Exception ex) { _logger.LogDebug("Backend reservation check skipped: {Err}", ex.Message); }
 
             // ── 5. Cross-reference: Sold bookings vs Zenith reservations ──
             foreach (var booking in bookings.Where(b => b.IsSold && b.IsActive))
@@ -440,6 +494,7 @@ public class VerificationReport
     public int TotalCancelErrors { get; set; }
     public int InnstantBookingsToVerify { get; set; }
     public int InnstantVerifiedOk { get; set; }
+    public int BackendReservationsCount { get; set; }
     public int TotalAnomalies { get; set; }
     public int CriticalAnomalies { get; set; }
     public string? Error { get; set; }
