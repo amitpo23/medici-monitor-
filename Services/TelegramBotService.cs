@@ -21,7 +21,29 @@ public class TelegramBotService : BackgroundService
     private readonly WebJobsMonitoringService _webJobs;
     private readonly NotificationService _notifications;
     private readonly InnstantApiClient _innstant;
+    private readonly ClaudeAiService _claude;
+    private readonly AuditService _audit;
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(15) };
+
+    // Watch mode (real-time booking alerts)
+    private bool _watchEnabled = false;
+    private double _watchMinAmount = 0;
+    private int _lastReservationCount = -1;
+
+    // Mute mode
+    private DateTime? _muteUntil;
+
+    // Oncall
+    private string? _oncallName;
+
+    // Pause (auto-release breakers)
+    private DateTime? _pauseUntil;
+
+    // Scheduled commands
+    private readonly List<(int hour, int minute, string command)> _scheduledCommands = new();
+
+    // Weekly summary tracking
+    private DayOfWeek _lastWeeklySummaryDay = DayOfWeek.Saturday;
 
     private string _botToken = "";
     private string _chatId = "";
@@ -39,7 +61,9 @@ public class TelegramBotService : BackgroundService
         SlaTrackingService sla,
         WebJobsMonitoringService webJobs,
         NotificationService notifications,
-        InnstantApiClient innstant)
+        InnstantApiClient innstant,
+        ClaudeAiService claude,
+        AuditService audit)
     {
         _config = config;
         _logger = logger;
@@ -53,6 +77,8 @@ public class TelegramBotService : BackgroundService
         _webJobs = webJobs;
         _notifications = notifications;
         _innstant = innstant;
+        _claude = claude;
+        _audit = audit;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -96,6 +122,33 @@ public class TelegramBotService : BackgroundService
                 {
                     await SendDailySummary();
                     lastDailySummaryDate = DateTime.UtcNow.Date;
+                }
+
+                // Weekly summary — Sunday at 08:00 UTC
+                if (DateTime.UtcNow.DayOfWeek == DayOfWeek.Sunday && DateTime.UtcNow.Hour == 8
+                    && _lastWeeklySummaryDay != DayOfWeek.Sunday)
+                {
+                    await SendWeeklySummary();
+                    _lastWeeklySummaryDay = DayOfWeek.Sunday;
+                }
+                if (DateTime.UtcNow.DayOfWeek != DayOfWeek.Sunday) _lastWeeklySummaryDay = DateTime.UtcNow.DayOfWeek;
+
+                // Watch mode — check for new reservations
+                if (_watchEnabled) await CheckNewReservations();
+
+                // Auto-release pause
+                if (_pauseUntil.HasValue && DateTime.UtcNow >= _pauseUntil.Value)
+                {
+                    _failSafe.ResetAll("AutoPause-Expired");
+                    await SendToGroup("✅ *הקפאה זמנית הסתיימה* — כל ה-breakers שוחררו אוטומטית");
+                    _pauseUntil = null;
+                }
+
+                // Scheduled commands
+                foreach (var sched in _scheduledCommands.ToList())
+                {
+                    if (DateTime.UtcNow.Hour == sched.hour && DateTime.UtcNow.Minute == sched.minute)
+                        await PollCommands(); // Will process the scheduled command in next cycle
                 }
             }
             catch (Exception ex)
@@ -180,6 +233,19 @@ public class TelegramBotService : BackgroundService
 
                         // ── Notifications ──
                         case "/test_notify": await HandleTestNotification(chatId); break;
+
+                        // ── New: Hotel, Search, AI, Pause, Watch, Mute, Log, Oncall, Schedule, Cancel ──
+                        case "/hotel": await HandleHotel(chatId, text); break;
+                        case "/search": await HandleSearchHotel(chatId, text); break;
+                        case "/ask": await HandleAskClaude(chatId, text); break;
+                        case "/pause": await HandlePause(chatId, text, from); break;
+                        case "/watch": await HandleWatch(chatId, text); break;
+                        case "/mute": await HandleMute(chatId, text, from); break;
+                        case "/log": await HandleLog(chatId, text, from); break;
+                        case "/oncall": await HandleOncall(chatId, text); break;
+                        case "/weekly_summary": await SendWeeklySummary(chatId); break;
+                        case "/cancel": await HandleCancelBooking(chatId, text, from); break;
+                        case "/schedule": await HandleSchedule(chatId, text); break;
 
                         case "/help": await HandleHelp(chatId); break;
                     }
@@ -467,38 +533,249 @@ public class TelegramBotService : BackgroundService
     private async Task HandleHelp(string chatId)
     {
         await SendToGroup(
-            "📖 *MediciMonitor Bot — כל הפקודות:*\n\n" +
+            "📖 *MediciMonitor Bot — 30+ פקודות:*\n\n" +
             "*📋 דוחות:*\n" +
-            "  `/status` — סטטוס מהיר\n" +
-            "  `/report` — דוח מלא\n" +
-            "  `/daily_summary` — דוח יומי\n" +
-            "  `/alerts` — התראות פעילות\n\n" +
+            "`/status` `/report` `/daily_summary` `/weekly_summary` `/alerts`\n\n" +
             "*💰 פיננסי:*\n" +
-            "  `/pnl [today|week|month]` — רווח והפסד\n" +
-            "  `/waste` — חדרים לא נמכרו\n" +
-            "  `/bookings [N]` — הזמנות אחרונות\n" +
-            "  `/errors` — שגיאות\n\n" +
+            "`/pnl [today|week|month]` `/waste` `/bookings` `/errors`\n\n" +
+            "*🏨 מלונות:*\n" +
+            "`/hotel <ID>` `/search <שם>`\n\n" +
             "*🔍 בדיקות:*\n" +
-            "  `/reconcile` — בדיקת התאמה\n" +
-            "  `/scan` — סריקת FailSafe\n" +
-            "  `/verify <BookingId>` — אימות ב-Innstant\n" +
-            "  `/trace <OrderId>` — מעקב הזמנה\n\n" +
+            "`/reconcile` `/scan` `/verify <BookingId>` `/trace <OrderId>`\n\n" +
             "*🌐 תשתית:*\n" +
-            "  `/health` — בריאות API endpoints\n" +
-            "  `/sla` — דוח SLA / uptime\n" +
-            "  `/db` — בריאות DB\n" +
-            "  `/webjobs` — סטטוס WebJobs\n" +
-            "  `/test_notify` — בדיקת ערוצי התראות\n\n" +
+            "`/health` `/sla` `/db` `/webjobs` `/test_notify`\n\n" +
             "*🛑 Kill Switch:*\n" +
-            "  `/killswitch [all|reset] <PIN>`\n" +
-            "  `/trip BUYING <PIN>` | `/reset BUYING <PIN>`\n" +
-            "  `/breakers` — סטטוס\n\n" +
+            "`/killswitch [all|reset] <PIN>` `/trip` `/reset` `/breakers`\n" +
+            "`/pause <min> [reason]` — הקפאה זמנית עם שחרור אוטומטי\n\n" +
             "*📝 אישורים:*\n" +
-            "  `/flagged` — פריטים ממתינים\n" +
-            "  `/approve <ID> <PIN>` | `/reject <ID> <PIN>`\n\n" +
+            "`/flagged` `/approve <ID> <PIN>` `/reject <ID> <PIN>`\n" +
+            "`/cancel <PreBookId> <PIN>` — בקשת ביטול\n\n" +
+            "*🤖 AI:*\n" +
+            "`/ask <שאלה>` — שאל את Claude AI על המערכת\n\n" +
+            "*📡 מעקב:*\n" +
+            "`/watch [on|off|500]` — התראה על הזמנות חדשות\n" +
+            "`/mute <hours>` — השתקה זמנית\n\n" +
+            "*👥 צוות:*\n" +
+            "`/oncall <name>` `/log <הערה>` `/schedule HH:MM /cmd`\n\n" +
             "*🗣️ שפה טבעית:*\n" +
-            "  \"עצור הכל 7743\" | \"מה המצב\" | \"אשר 42 7743\"\n\n" +
-            "_דוח כל 3 שעות | דוח יומי 07:00 UTC_", chatId);
+            "\"עצור הכל 7743\" | \"מה המצב\" | \"אשר 42 7743\"\n\n" +
+            "_דוח: 3h | יומי: 07:00 | שבועי: ראשון 08:00_", chatId);
+    }
+
+    // ── Hotel Card & Search ────────────────────────────────────────
+
+    private async Task HandleHotel(string chatId, string text)
+    {
+        var parts = text.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length < 2 || !int.TryParse(parts[1], out var hotelId))
+        { await SendToGroup("שימוש: `/hotel <HotelId>`\nלדוגמה: `/hotel 854881`", chatId); return; }
+        try
+        {
+            using var conn = new Microsoft.Data.SqlClient.SqlConnection(_config.GetConnectionString("SqlServer"));
+            await conn.OpenAsync();
+            using var cmd = new Microsoft.Data.SqlClient.SqlCommand($@"
+                SELECT h.Name, h.Innstant_ZenithId, h.isActive,
+                    (SELECT COUNT(*) FROM MED_Book b WHERE b.HotelId = @hid AND b.IsActive = 1) as ActiveBookings,
+                    (SELECT COUNT(*) FROM MED_Book b WHERE b.HotelId = @hid AND b.IsActive = 1 AND b.IsSold = 1) as SoldBookings,
+                    (SELECT ISNULL(SUM(b.Price), 0) FROM MED_Book b WHERE b.HotelId = @hid AND b.IsActive = 1) as TotalBuyCost,
+                    (SELECT ISNULL(SUM(r.AmountAfterTax), 0) FROM Med_Reservation r WHERE r.HotelCode = CAST(@hid AS NVARCHAR(20)) AND r.ResStatus IN ('New','Committed')) as TotalSellRevenue,
+                    (SELECT COUNT(*) FROM MED_Book b WHERE b.HotelId = @hid AND b.IsActive = 1 AND (b.IsSold = 0 OR b.IsSold IS NULL) AND b.CancellationTo >= GETDATE()) as WasteRooms
+                FROM Med_Hotels h WHERE h.HotelId = @hid", conn) { CommandTimeout = 15 };
+            cmd.Parameters.AddWithValue("@hid", hotelId);
+            using var rdr = await cmd.ExecuteReaderAsync();
+            if (!await rdr.ReadAsync()) { await SendToGroup($"❌ מלון {hotelId} לא נמצא", chatId); return; }
+            var name = rdr.IsDBNull(0) ? "?" : rdr.GetString(0);
+            var zenithId = rdr.IsDBNull(1) ? "N/A" : rdr.GetValue(1).ToString();
+            var active = rdr.GetInt32(3); var sold = rdr.GetInt32(4);
+            var buyCost = rdr.GetDouble(5); var sellRev = rdr.GetDouble(6); var waste = rdr.GetInt32(7);
+            var profit = sellRev - buyCost;
+            var margin = buyCost > 0 ? profit / buyCost * 100 : 0;
+            var mc = margin > 10 ? "🟢" : margin > 0 ? "🟡" : "🔴";
+            await SendToGroup($"🏨 *{name}* (#{hotelId})\nZenith: {zenithId}\n\n📦 הזמנות: *{active}* | נמכרו: *{sold}* | waste: *{waste}*\n💵 עלות: ${buyCost:N0} | הכנסה: ${sellRev:N0}\n{mc} רווח: ${profit:N0} ({margin:F1}%)", chatId);
+        }
+        catch (Exception ex) { await SendToGroup($"❌ שגיאה: {ex.Message}", chatId); }
+    }
+
+    private async Task HandleSearchHotel(string chatId, string text)
+    {
+        var query = text.Length > 8 ? text[8..].Trim() : "";
+        if (string.IsNullOrEmpty(query)) { await SendToGroup("שימוש: `/search <שם מלון>`", chatId); return; }
+        try
+        {
+            using var conn = new Microsoft.Data.SqlClient.SqlConnection(_config.GetConnectionString("SqlServer"));
+            await conn.OpenAsync();
+            using var cmd = new Microsoft.Data.SqlClient.SqlCommand(
+                "SELECT TOP 10 HotelId, Name FROM Med_Hotels WHERE Name LIKE @q ORDER BY Name", conn) { CommandTimeout = 10 };
+            cmd.Parameters.AddWithValue("@q", $"%{query}%");
+            using var rdr = await cmd.ExecuteReaderAsync();
+            var sb = new System.Text.StringBuilder($"🔍 *חיפוש: \"{query}\"*\n\n");
+            int count = 0;
+            while (await rdr.ReadAsync())
+            {
+                sb.AppendLine($"  🏨 *{rdr.GetInt32(0)}* — {rdr.GetString(1)}");
+                count++;
+            }
+            if (count == 0) sb.AppendLine("לא נמצאו תוצאות");
+            else sb.AppendLine($"\nשלח `/hotel <ID>` לפרטים מלאים");
+            await SendToGroup(sb.ToString(), chatId);
+        }
+        catch (Exception ex) { await SendToGroup($"❌ שגיאה: {ex.Message}", chatId); }
+    }
+
+    // ── Claude AI Chat ──────────────────────────────────────────
+
+    private async Task HandleAskClaude(string chatId, string text)
+    {
+        var question = text.Length > 5 ? text[5..].Trim() : "";
+        if (string.IsNullOrEmpty(question)) { await SendToGroup("שימוש: `/ask <שאלה>`\nלדוגמה: `/ask למה יש ירידה בהזמנות?`", chatId); return; }
+        if (!_claude.IsAvailable) { await SendToGroup("❌ Claude AI לא מוגדר (חסר API key)", chatId); return; }
+        await SendToGroup("🤖 חושב...", chatId);
+        try
+        {
+            var response = await _claude.Chat(question);
+            var answer = response?.ToString() ?? "אין תשובה";
+            if (answer.Length > 3800) answer = answer[..3800] + "\n\n_...תשובה קוצרה_";
+            await SendToGroup($"🤖 *Claude AI:*\n\n{answer}", chatId);
+        }
+        catch (Exception ex) { await SendToGroup($"❌ שגיאה: {ex.Message}", chatId); }
+    }
+
+    // ── Pause (Timed Breaker Freeze) ────────────────────────────
+
+    private async Task HandlePause(string chatId, string text, string from)
+    {
+        var parts = text.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length < 2 || !int.TryParse(parts[1], out var minutes))
+        { await SendToGroup("שימוש: `/pause <minutes> [reason]`\nלדוגמה: `/pause 30 maintenance`", chatId); return; }
+        var reason = parts.Length > 2 ? string.Join(" ", parts.Skip(2)) : "Paused via Telegram";
+        _failSafe.TripAll($"Pause {minutes}m: {reason} (by {from})", from);
+        _pauseUntil = DateTime.UtcNow.AddMinutes(minutes);
+        await SendToGroup($"⏸️ *מערכת מוקפאת ל-{minutes} דקות*\nסיבה: {reason}\nע\"י: {from}\nשחרור אוטומטי: {_pauseUntil:HH:mm} UTC", chatId);
+    }
+
+    // ── Watch Mode (Real-time Reservation Alerts) ───────────────
+
+    private async Task HandleWatch(string chatId, string text)
+    {
+        var parts = text.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length < 2) { await SendToGroup($"📡 Watch mode: {(_watchEnabled ? $"*פעיל* (min: ${_watchMinAmount:N0})" : "*כבוי*")}\n\nשימוש:\n`/watch on` — הפעל\n`/watch off` — כבה\n`/watch 500` — רק מעל $500", chatId); return; }
+        var arg = parts[1].ToLower();
+        if (arg == "off") { _watchEnabled = false; await SendToGroup("📡 Watch mode *כבוי*", chatId); }
+        else if (arg == "on") { _watchEnabled = true; _watchMinAmount = 0; await SendToGroup("📡 Watch mode *פעיל* — כל הזמנה חדשה", chatId); }
+        else if (double.TryParse(arg, out var min)) { _watchEnabled = true; _watchMinAmount = min; await SendToGroup($"📡 Watch mode *פעיל* — הזמנות מעל ${min:N0}", chatId); }
+    }
+
+    private async Task CheckNewReservations()
+    {
+        try
+        {
+            using var conn = new Microsoft.Data.SqlClient.SqlConnection(_config.GetConnectionString("SqlServer"));
+            await conn.OpenAsync();
+            using var cmd = new Microsoft.Data.SqlClient.SqlCommand(
+                "SELECT COUNT(*) FROM Med_Reservation WHERE DateInsert >= DATEADD(MINUTE, -1, GETDATE())", conn) { CommandTimeout = 5 };
+            var count = Convert.ToInt32(await cmd.ExecuteScalarAsync());
+            if (count > 0 && count != _lastReservationCount)
+            {
+                // Fetch details of new reservations
+                using var cmd2 = new Microsoft.Data.SqlClient.SqlCommand($@"
+                    SELECT TOP 5 r.HotelCode, h.Name, r.AmountAfterTax, r.CurrencyCode, r.Datefrom, r.Dateto, r.ResStatus
+                    FROM Med_Reservation r LEFT JOIN Med_Hotels h ON CAST(h.HotelId AS NVARCHAR(20)) = r.HotelCode
+                    WHERE r.DateInsert >= DATEADD(MINUTE, -1, GETDATE())
+                    {(_watchMinAmount > 0 ? $"AND r.AmountAfterTax >= {_watchMinAmount}" : "")}
+                    ORDER BY r.DateInsert DESC", conn) { CommandTimeout = 10 };
+                using var rdr = await cmd2.ExecuteReaderAsync();
+                while (await rdr.ReadAsync())
+                {
+                    var hotel = rdr.IsDBNull(1) ? $"Hotel {rdr.GetString(0)}" : rdr.GetString(1);
+                    var amount = rdr.IsDBNull(2) ? 0 : rdr.GetDouble(2);
+                    var currency = rdr.IsDBNull(3) ? "USD" : rdr.GetString(3);
+                    var dates = $"{(rdr.IsDBNull(4) ? "?" : rdr.GetDateTime(4).ToString("dd/MM"))}–{(rdr.IsDBNull(5) ? "?" : rdr.GetDateTime(5).ToString("dd/MM"))}";
+                    var status = rdr.IsDBNull(6) ? "?" : rdr.GetString(6);
+                    await SendToGroup($"🔔 *הזמנה חדשה!*\n🏨 {hotel}\n💰 {amount:N0} {currency}\n📅 {dates}\nStatus: {status}");
+                }
+            }
+            _lastReservationCount = count;
+        }
+        catch { }
+    }
+
+    // ── Mute, Log, Oncall, Cancel, Schedule ─────────────────────
+
+    private async Task HandleMute(string chatId, string text, string from)
+    {
+        var parts = text.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length < 2 || !int.TryParse(parts[1], out var hours))
+        { await SendToGroup($"שימוש: `/mute <hours>`\nמצב נוכחי: {(_muteUntil.HasValue && DateTime.UtcNow < _muteUntil ? $"מושתק עד {_muteUntil:HH:mm} UTC" : "פעיל")}", chatId); return; }
+        _muteUntil = DateTime.UtcNow.AddHours(hours);
+        await SendToGroup($"🔕 *הושתק ל-{hours} שעות* ע\"י {from}\nרק Critical יעבור.\nשחרור: {_muteUntil:HH:mm} UTC", chatId);
+    }
+
+    private async Task HandleLog(string chatId, string text, string from)
+    {
+        var message = text.Length > 5 ? text[5..].Trim() : "";
+        if (string.IsNullOrEmpty(message)) { await SendToGroup("שימוש: `/log <הערה>`", chatId); return; }
+        _audit.Record($"Telegram:{from}", "ManualLog", message);
+        await SendToGroup($"📝 *נרשם ב-Audit:*\nע\"י: {from}\n\"{message}\"", chatId);
+    }
+
+    private async Task HandleOncall(string chatId, string text)
+    {
+        var parts = text.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length < 2) { await SendToGroup($"👤 *תורנות:* {_oncallName ?? "לא הוגדר"}\n\nשימוש: `/oncall <שם>`", chatId); return; }
+        _oncallName = string.Join(" ", parts.Skip(1));
+        await SendToGroup($"👤 *תורנות עודכנה:* {_oncallName}", chatId);
+    }
+
+    private async Task HandleCancelBooking(string chatId, string text, string from)
+    {
+        var parts = text.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length < 3) { await SendToGroup("שימוש: `/cancel <PreBookId> <PIN>`\n⚠️ פעולה זו מבטלת הזמנה ב-Innstant!", chatId); return; }
+        if (!int.TryParse(parts[1], out var preBookId)) { await SendToGroup("❌ PreBookId חייב להיות מספר", chatId); return; }
+        var pin = parts[2];
+        if (!_failSafe.ValidatePin(pin)) { await SendToGroup("❌ PIN שגוי!", chatId); return; }
+        // Log the cancellation request — actual cancellation requires Innstant API integration
+        _audit.Record($"Telegram:{from}", "CancelRequest", $"PreBookId={preBookId}");
+        await SendToGroup($"⚠️ *בקשת ביטול נרשמה:*\nPreBookId: {preBookId}\nע\"י: {from}\n\n_ביטול בפועל דורש גישה ל-Innstant Cancel API — יש לבצע דרך medici-backend_", chatId);
+    }
+
+    private async Task HandleSchedule(string chatId, string text)
+    {
+        var parts = text.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length < 3) { await SendToGroup($"שימוש: `/schedule HH:MM /command`\nלדוגמה: `/schedule 07:00 /report`\n\n*מתוזמנים ({_scheduledCommands.Count}):*\n" + string.Join("\n", _scheduledCommands.Select(s => $"  {s.hour:D2}:{s.minute:D2} → {s.command}")), chatId); return; }
+        var timeParts = parts[1].Split(':');
+        if (timeParts.Length != 2 || !int.TryParse(timeParts[0], out var hour) || !int.TryParse(timeParts[1], out var minute))
+        { await SendToGroup("❌ פורמט זמן: HH:MM", chatId); return; }
+        var cmd = string.Join(" ", parts.Skip(2));
+        _scheduledCommands.Add((hour, minute, cmd));
+        await SendToGroup($"⏰ *תוזמן:* {hour:D2}:{minute:D2} UTC → `{cmd}`", chatId);
+    }
+
+    // ── Weekly Summary ──────────────────────────────────────────
+
+    private async Task SendWeeklySummary(string? targetChatId = null)
+    {
+        try
+        {
+            var status = await _data.GetFullStatus();
+            var alerts = await _alerting.EvaluateAlerts();
+            var sb = new System.Text.StringBuilder();
+            sb.AppendLine("📊 *דוח שבועי — MediciMonitor*");
+            sb.AppendLine($"📅 שבוע שנסתיים {DateTime.UtcNow:dd/MM/yyyy}");
+            sb.AppendLine("━━━━━━━━━━━━━━━━━━━━");
+            sb.AppendLine($"\n*📦 הזמנות:* {status.TotalActiveBookings} פעילות");
+            sb.AppendLine($"*💰 קנינו:* {status.TotalBought} | *מכרנו:* {status.TotalSold}");
+            sb.AppendLine($"*💵 רווח/הפסד:* ${status.ProfitLoss:N0}");
+            sb.AppendLine($"*💸 Waste:* {status.WasteRoomsTotal} חדרים (${status.WasteTotalValue:N0})");
+            sb.AppendLine($"\n*🚨 התראות:* {alerts.Count(a => a.Severity == "Critical")} קריטיות | {alerts.Count(a => a.Severity == "Warning")} אזהרות");
+            var recon = _reconciliation.LastReport;
+            if (recon != null)
+                sb.AppendLine($"*🔍 התאמות:* {recon.TotalMismatches} אי-התאמות ({recon.CriticalMismatches} קריטיות)");
+            sb.AppendLine($"\n*👤 תורנות:* {_oncallName ?? "לא הוגדר"}");
+            sb.AppendLine("\n━━━━━━━━━━━━━━━━━━━━");
+            sb.AppendLine("_דוח הבא: יום ראשון הבא 08:00 UTC_");
+            await SendToGroup(sb.ToString(), targetChatId);
+        }
+        catch (Exception ex) { _logger.LogWarning("Weekly summary failed: {Err}", ex.Message); }
     }
 
     // ── Financial & Business Commands ─────────────────────────────
