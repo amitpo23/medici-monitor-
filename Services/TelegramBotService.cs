@@ -16,6 +16,11 @@ public class TelegramBotService : BackgroundService
     private readonly FailSafeService _failSafe;
     private readonly BookingReconciliationService _reconciliation;
     private readonly AzureMonitoringService _azure;
+    private readonly DatabaseHealthService _dbHealth;
+    private readonly SlaTrackingService _sla;
+    private readonly WebJobsMonitoringService _webJobs;
+    private readonly NotificationService _notifications;
+    private readonly InnstantApiClient _innstant;
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(15) };
 
     private string _botToken = "";
@@ -29,7 +34,12 @@ public class TelegramBotService : BackgroundService
         AlertingService alerting,
         FailSafeService failSafe,
         BookingReconciliationService reconciliation,
-        AzureMonitoringService azure)
+        AzureMonitoringService azure,
+        DatabaseHealthService dbHealth,
+        SlaTrackingService sla,
+        WebJobsMonitoringService webJobs,
+        NotificationService notifications,
+        InnstantApiClient innstant)
     {
         _config = config;
         _logger = logger;
@@ -38,6 +48,11 @@ public class TelegramBotService : BackgroundService
         _failSafe = failSafe;
         _reconciliation = reconciliation;
         _azure = azure;
+        _dbHealth = dbHealth;
+        _sla = sla;
+        _webJobs = webJobs;
+        _notifications = notifications;
+        _innstant = innstant;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -126,18 +141,46 @@ public class TelegramBotService : BackgroundService
 
                     switch (command)
                     {
+                        // ── Reports & Status ──
                         case "/status": await HandleStatus(chatId); break;
                         case "/report": await SendHourlyReport(chatId); break;
                         case "/daily_summary": await SendDailySummary(chatId); break;
                         case "/alerts": await HandleAlerts(chatId); break;
+
+                        // ── Reconciliation ──
                         case "/reconcile": await HandleReconcile(chatId); break;
+
+                        // ── Kill Switch & Breakers ──
                         case "/killswitch": await HandleKillSwitch(chatId, text, from); break;
                         case "/breakers": await HandleBreakers(chatId); break;
                         case "/trip": await HandleTrip(chatId, text, from); break;
                         case "/reset": await HandleReset(chatId, text, from); break;
+
+                        // ── Flagged Items (Approve/Reject) ──
                         case "/flagged": await HandleFlagged(chatId); break;
                         case "/approve": await HandleApproveReject(chatId, text, from, true); break;
                         case "/reject": await HandleApproveReject(chatId, text, from, false); break;
+
+                        // ── Financial & Business ──
+                        case "/pnl": await HandlePnl(chatId, text); break;
+                        case "/waste": await HandleWaste(chatId); break;
+                        case "/bookings": await HandleRecentBookings(chatId, text); break;
+                        case "/errors": await HandleErrors(chatId); break;
+
+                        // ── Infrastructure ──
+                        case "/health": await HandleApiHealth(chatId); break;
+                        case "/sla": await HandleSla(chatId); break;
+                        case "/db": await HandleDbHealth(chatId); break;
+                        case "/webjobs": await HandleWebJobs(chatId); break;
+
+                        // ── Scan & Check ──
+                        case "/scan": await HandleFailSafeScan(chatId); break;
+                        case "/trace": await HandleTrace(chatId, text); break;
+                        case "/verify": await HandleVerifyBooking(chatId, text); break;
+
+                        // ── Notifications ──
+                        case "/test_notify": await HandleTestNotification(chatId); break;
+
                         case "/help": await HandleHelp(chatId); break;
                     }
                 }
@@ -424,22 +467,265 @@ public class TelegramBotService : BackgroundService
     private async Task HandleHelp(string chatId)
     {
         await SendToGroup(
-            "📖 *MediciMonitor Bot — פקודות:*\n\n" +
-            "📋 `/status` — סטטוס מהיר\n" +
-            "📊 `/report` — דוח מלא\n" +
-            "📋 `/daily_summary` — דוח יומי\n" +
-            "🚨 `/alerts` — התראות פעילות\n" +
-            "🔍 `/reconcile` — בדיקת התאמת הזמנות\n" +
-            "📝 `/flagged` — פריטים ממתינים לאישור\n" +
-            "✅ `/approve <ID> <PIN>` — אשר פריט\n" +
-            "❌ `/reject <ID> <PIN>` — דחה פריט\n" +
-            "🛑 `/killswitch` — Kill Switch\n" +
-            "🔴 `/trip BUYING <PIN>` — הפעל breaker\n" +
-            "✅ `/reset BUYING <PIN>` — אפס breaker\n" +
-            "📡 `/breakers` — סטטוס breakers\n\n" +
-            "*שפה טבעית:*\n" +
-            "\"עצור הכל 7743\" | \"מה המצב\" | \"אשר 42 7743\"\n\n" +
-            "_דוח אוטומטי כל 3 שעות | דוח יומי 07:00 UTC_", chatId);
+            "📖 *MediciMonitor Bot — כל הפקודות:*\n\n" +
+            "*📋 דוחות:*\n" +
+            "  `/status` — סטטוס מהיר\n" +
+            "  `/report` — דוח מלא\n" +
+            "  `/daily_summary` — דוח יומי\n" +
+            "  `/alerts` — התראות פעילות\n\n" +
+            "*💰 פיננסי:*\n" +
+            "  `/pnl [today|week|month]` — רווח והפסד\n" +
+            "  `/waste` — חדרים לא נמכרו\n" +
+            "  `/bookings [N]` — הזמנות אחרונות\n" +
+            "  `/errors` — שגיאות\n\n" +
+            "*🔍 בדיקות:*\n" +
+            "  `/reconcile` — בדיקת התאמה\n" +
+            "  `/scan` — סריקת FailSafe\n" +
+            "  `/verify <BookingId>` — אימות ב-Innstant\n" +
+            "  `/trace <OrderId>` — מעקב הזמנה\n\n" +
+            "*🌐 תשתית:*\n" +
+            "  `/health` — בריאות API endpoints\n" +
+            "  `/sla` — דוח SLA / uptime\n" +
+            "  `/db` — בריאות DB\n" +
+            "  `/webjobs` — סטטוס WebJobs\n" +
+            "  `/test_notify` — בדיקת ערוצי התראות\n\n" +
+            "*🛑 Kill Switch:*\n" +
+            "  `/killswitch [all|reset] <PIN>`\n" +
+            "  `/trip BUYING <PIN>` | `/reset BUYING <PIN>`\n" +
+            "  `/breakers` — סטטוס\n\n" +
+            "*📝 אישורים:*\n" +
+            "  `/flagged` — פריטים ממתינים\n" +
+            "  `/approve <ID> <PIN>` | `/reject <ID> <PIN>`\n\n" +
+            "*🗣️ שפה טבעית:*\n" +
+            "  \"עצור הכל 7743\" | \"מה המצב\" | \"אשר 42 7743\"\n\n" +
+            "_דוח כל 3 שעות | דוח יומי 07:00 UTC_", chatId);
+    }
+
+    // ── Financial & Business Commands ─────────────────────────────
+
+    private async Task HandlePnl(string chatId, string text)
+    {
+        var parts = text.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        var period = parts.Length > 1 ? parts[1] : "week";
+        try
+        {
+            var status = await _data.GetFullStatus();
+            var msg = $"💵 *P&L — {period}*\n\n" +
+                      $"📦 קנינו: *{status.TotalBought}* חדרים\n" +
+                      $"🏷️ מכרנו: *{status.TotalSold}* חדרים\n" +
+                      $"💰 רווח/הפסד: *${status.ProfitLoss:N0}*\n" +
+                      $"💸 waste: {status.WasteRoomsTotal} חדרים (${status.WasteTotalValue:N0})";
+            await SendToGroup(msg, chatId);
+        }
+        catch (Exception ex) { await SendToGroup($"❌ שגיאה: {ex.Message}", chatId); }
+    }
+
+    private async Task HandleWaste(string chatId)
+    {
+        try
+        {
+            var status = await _data.GetFullStatus();
+            var sb = new StringBuilder("💸 *חדרים לא נמכרו (Room Waste):*\n\n");
+            sb.AppendLine($"סה\"כ: *{status.WasteRoomsTotal}* חדרים");
+            sb.AppendLine($"שווי: *${status.WasteTotalValue:N0}*");
+            if (status.WasteRooms != null)
+                foreach (var w in status.WasteRooms.Take(10))
+                    sb.AppendLine($"  🏨 {w.HotelName ?? $"Hotel {w.HotelId}"}: ${w.Price:N0}, פג: {w.CancellationTo:dd/MM} ({w.HoursUntilExpiry}h)");
+            await SendToGroup(sb.ToString(), chatId);
+        }
+        catch (Exception ex) { await SendToGroup($"❌ שגיאה: {ex.Message}", chatId); }
+    }
+
+    private async Task HandleRecentBookings(string chatId, string text)
+    {
+        var parts = text.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        var count = parts.Length > 1 && int.TryParse(parts[1], out var n) ? n : 10;
+        try
+        {
+            var status = await _data.GetFullStatus();
+            var sb = new StringBuilder($"📦 *{count} הזמנות אחרונות:*\n\n");
+            sb.AppendLine($"פעילות: *{status.TotalActiveBookings}* | תקועות: *{status.StuckCancellations}*");
+            sb.AppendLine($"Reservations היום: *{status.ReservationsToday}* | השבוע: *{status.ReservationsThisWeek}*");
+            sb.AppendLine($"הכנסה שבועית: *${status.ReservationRevenueThisWeek:N0}*");
+            await SendToGroup(sb.ToString(), chatId);
+        }
+        catch (Exception ex) { await SendToGroup($"❌ שגיאה: {ex.Message}", chatId); }
+    }
+
+    private async Task HandleErrors(string chatId)
+    {
+        try
+        {
+            var status = await _data.GetFullStatus();
+            var sb = new StringBuilder("⚠️ *שגיאות:*\n\n");
+            sb.AppendLine($"שגיאות הזמנה (24h): *{status.BookingErrorsLast24h}*");
+            sb.AppendLine($"שגיאות ביטול (24h): *{status.CancelErrorsLast24h}*");
+            sb.AppendLine($"ביטולים מוצלחים (24h): *{status.CancelSuccessLast24h}*");
+            sb.AppendLine($"שגיאות Push: *{status.FailedPushItems?.Count ?? 0}*");
+            sb.AppendLine($"שגיאות Queue: *{status.QueueErrors}*");
+            if (status.RecentBookingErrors != null)
+            {
+                sb.AppendLine("\n*שגיאות אחרונות:*");
+                foreach (var e in status.RecentBookingErrors.Take(5))
+                    sb.AppendLine($"  ❌ #{e.PreBookId}: {(e.Error?.Length > 60 ? e.Error[..60] + "..." : e.Error)}");
+            }
+            await SendToGroup(sb.ToString(), chatId);
+        }
+        catch (Exception ex) { await SendToGroup($"❌ שגיאה: {ex.Message}", chatId); }
+    }
+
+    // ── Infrastructure Commands ──────────────────────────────────
+
+    private async Task HandleApiHealth(string chatId)
+    {
+        try
+        {
+            var health = await _azure.ComprehensiveApiHealthCheck();
+            var sb = new StringBuilder("🌐 *בריאות API:*\n\n");
+            foreach (var ep in health)
+            {
+                var icon = ep.IsHealthy ? "✅" : "❌";
+                var name = ep.Endpoint.Split('(')[0].Trim();
+                sb.AppendLine($"{icon} *{name}* — {ep.ResponseTimeMs}ms (HTTP {ep.StatusCode})");
+            }
+            var healthy = health.Count(h => h.IsHealthy);
+            sb.AppendLine($"\n📊 *{healthy}/{health.Count}* תקינים");
+            await SendToGroup(sb.ToString(), chatId);
+        }
+        catch (Exception ex) { await SendToGroup($"❌ שגיאה: {ex.Message}", chatId); }
+    }
+
+    private async Task HandleSla(string chatId)
+    {
+        try
+        {
+            var report = _sla.GetReport();
+            var sb = new StringBuilder("📊 *SLA Report:*\n\n");
+            sb.AppendLine($"Overall Uptime: *{report.OverallUptime:F2}%*");
+            sb.AppendLine($"MTTR: *{report.OverallMTTR:F1} min*");
+            sb.AppendLine($"MTTD: *{report.OverallMTTD:F1} min*\n");
+            foreach (var ep in report.Endpoints.Take(8))
+            {
+                var icon = ep.IsUp ? "🟢" : "🔴";
+                sb.AppendLine($"{icon} *{ep.Endpoint}*: {ep.UptimePercent:F1}% | {ep.LastResponseTimeMs}ms");
+            }
+            await SendToGroup(sb.ToString(), chatId);
+        }
+        catch (Exception ex) { await SendToGroup($"❌ שגיאה: {ex.Message}", chatId); }
+    }
+
+    private async Task HandleDbHealth(string chatId)
+    {
+        try
+        {
+            var report = await _dbHealth.GetHealthReport();
+            var sb = new StringBuilder("🗄️ *DB Health:*\n\n");
+            sb.AppendLine($"חיבור: {(report.IsConnected ? "✅ מחובר" : "❌ מנותק")}");
+            if (report.TotalSizeMB > 0) sb.AppendLine($"גודל: *{report.TotalSizeMB:F0} MB*");
+            if (report.ActiveConnections > 0) sb.AppendLine($"חיבורים פעילים: *{report.ActiveConnections}*");
+            if (report.TotalDeadlocks > 0) sb.AppendLine($"🔴 Deadlocks: *{report.TotalDeadlocks}*");
+            if (report.LongRunningQueries?.Any() == true)
+            {
+                sb.AppendLine("\n*שאילתות ארוכות:*");
+                foreach (var q in report.LongRunningQueries.Take(3))
+                    sb.AppendLine($"  ⏱️ {q.DurationSeconds}s — {(q.SqlText?.Length > 50 ? q.SqlText[..50] + "..." : q.SqlText)}");
+            }
+            await SendToGroup(sb.ToString(), chatId);
+        }
+        catch (Exception ex) { await SendToGroup($"❌ שגיאה: {ex.Message}", chatId); }
+    }
+
+    private async Task HandleWebJobs(string chatId)
+    {
+        try
+        {
+            var dashboard = await _webJobs.GetDashboardAsync(false);
+            var sb = new StringBuilder("⚙️ *WebJobs:*\n\n");
+            sb.AppendLine($"Total: *{dashboard.Summary.TotalJobs}* | Running: *{dashboard.Summary.RunningJobs}* | Stopped: *{dashboard.Summary.StoppedJobs}* | Errors: *{dashboard.Summary.ErrorJobs}*");
+            if (dashboard.Apps?.Any() == true)
+                foreach (var app in dashboard.Apps.Take(5))
+                    sb.AppendLine($"\n📱 *{app.AppName}*: {(app.HasError ? "❌ " + app.ErrorMessage : "✅")} ({app.Jobs.Count} jobs)");
+            if (dashboard.Summary.TotalJobs == 0)
+                sb.AppendLine("\nℹ️ אין נתוני WebJobs (דורש Azure Managed Identity)");
+            await SendToGroup(sb.ToString(), chatId);
+        }
+        catch (Exception ex) { await SendToGroup($"❌ שגיאה: {ex.Message}", chatId); }
+    }
+
+    // ── Scan & Verify Commands ───────────────────────────────────
+
+    private async Task HandleFailSafeScan(string chatId)
+    {
+        await SendToGroup("🔍 מריץ סריקת FailSafe...", chatId);
+        try
+        {
+            var result = await _failSafe.ScanAsync();
+            var icon = result.Status == "CRITICAL" ? "🔴" : result.Status == "WARNING" ? "🟡" : "🟢";
+            var sb = new StringBuilder($"{icon} *FailSafe Scan:* {result.Status}\n\n");
+            sb.AppendLine(result.Message);
+            if (result.Violations?.Any() == true)
+            {
+                sb.AppendLine("\n*הפרות:*");
+                foreach (var v in result.Violations.Take(5))
+                    sb.AppendLine($"  {(v.Severity == "Critical" ? "🔴" : "🟡")} {v.RuleName}: {v.Description}");
+            }
+            var openBreakers = result.Breakers?.Where(b => b.IsOpen).ToList();
+            if (openBreakers?.Any() == true)
+            {
+                sb.AppendLine($"\n*🛑 Breakers פתוחים ({openBreakers.Count}):*");
+                foreach (var b in openBreakers)
+                    sb.AppendLine($"  🔴 {b.Name}");
+            }
+            await SendToGroup(sb.ToString(), chatId);
+        }
+        catch (Exception ex) { await SendToGroup($"❌ שגיאה: {ex.Message}", chatId); }
+    }
+
+    private async Task HandleTrace(string chatId, string text)
+    {
+        var parts = text.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length < 2 || !int.TryParse(parts[1], out var orderId))
+        {
+            await SendToGroup("שימוש: `/trace <OrderId>`\nלדוגמה: `/trace 12345`", chatId);
+            return;
+        }
+        try
+        {
+            var trace = await _data.GetSalesOrderTrace(orderId);
+            await SendToGroup($"🔍 *Trace Order #{orderId}:*\n```\n{System.Text.Json.JsonSerializer.Serialize(trace, new System.Text.Json.JsonSerializerOptions { WriteIndented = true, DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull }).Substring(0, Math.Min(3500, System.Text.Json.JsonSerializer.Serialize(trace).Length))}\n```", chatId);
+        }
+        catch (Exception ex) { await SendToGroup($"❌ שגיאה: {ex.Message}", chatId); }
+    }
+
+    private async Task HandleVerifyBooking(string chatId, string text)
+    {
+        var parts = text.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length < 2 || !int.TryParse(parts[1], out var bookingId))
+        {
+            await SendToGroup("שימוש: `/verify <ContentBookingId>`\nלדוגמה: `/verify 3652895`", chatId);
+            return;
+        }
+        await SendToGroup($"🔍 מאמת הזמנה {bookingId} ב-Innstant...", chatId);
+        try
+        {
+            var result = await _innstant.GetBookingDetails(bookingId);
+            if (result == null || !result.Found)
+                await SendToGroup($"❌ הזמנה {bookingId} *לא נמצאה* ב-Innstant!\n{result?.Error ?? ""}", chatId);
+            else
+                await SendToGroup($"✅ *הזמנה {bookingId} נמצאה ב-Innstant:*\n\nסטטוס: {result.Status}\nמלון: {result.HotelName}\nDates: {result.CheckIn} → {result.CheckOut}\nמחיר: {result.TotalPrice} {result.Currency}\nאורח: {result.GuestName}\nConfirmation: {result.ConfirmationNumber}", chatId);
+        }
+        catch (Exception ex) { await SendToGroup($"❌ שגיאה: {ex.Message}", chatId); }
+    }
+
+    private async Task HandleTestNotification(string chatId)
+    {
+        try
+        {
+            var result = await _notifications.SendTestAsync();
+            var channels = string.Join("\n", result.Channels.Select(c => $"  {(c.Success ? "✅" : "❌")} {c.Channel}: {c.Detail}"));
+            await SendToGroup($"🔔 *בדיקת התראות:*\n\n{channels}", chatId);
+        }
+        catch (Exception ex) { await SendToGroup($"❌ שגיאה: {ex.Message}", chatId); }
     }
 
     // ── Daily Summary ─────────────────────────────────────────────
