@@ -247,6 +247,7 @@ td.log-msg{white-space:pre-wrap;word-break:break-word;max-width:600px;font-famil
   <div class="nav-tab" data-nav="financial">&#x1F4B5; P&L פיננסי</div>
   <div class="nav-tab" data-nav="suppliers">&#x1F4CA; ביצועי ספקים</div>
   <div class="nav-tab" data-nav="occupancy">&#x1F3E8; תפוסה</div>
+  <div class="nav-tab" data-nav="deepverify">&#x1F6E1;&#xFE0F; אימות מעמיק <span class="count red" id="navVerifyCount" style="display:none">0</span></div>
   <div class="nav-tab" data-nav="reconciliation">&#x1F50D; התאמת הזמנות <span class="count red" id="navReconCount" style="display:none">0</span></div>
   <div class="nav-tab" data-nav="ai">&#x1F9E0; Claude AI</div>
   <div class="nav-tab" data-nav="logs">&#x1F4DC; Logs <span class="count blue" id="navLogCount">0</span></div>
@@ -1264,6 +1265,42 @@ td.log-msg{white-space:pre-wrap;word-break:break-word;max-width:600px;font-famil
 </div>
 
 <!-- ═══════════════════════════════════════════════════════════ -->
+<!-- Deep Verification Panel -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<div class="nav-panel" id="panel-deepverify">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:8px">
+    <h2 style="font-size:18px;font-weight:700">&#x1F6E1;&#xFE0F; אימות מעמיק — Medici vs Innstant vs הנובי</h2>
+    <div style="display:flex;gap:8px;align-items:center">
+      <select id="verifyHours" style="padding:6px 10px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:12px">
+        <option value="24">24 שעות</option>
+        <option value="48" selected>48 שעות</option>
+        <option value="168">שבוע</option>
+      </select>
+      <button onclick="runDeepVerify()" style="background:var(--accent);color:#fff;border:none;padding:8px 16px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600">&#x1F50D; הרץ אימות</button>
+      <a href="/api/export/alerts.xlsx" style="background:var(--green);color:#000;padding:8px 14px;border-radius:6px;font-size:12px;text-decoration:none">&#x1F4E5; Excel</a>
+    </div>
+  </div>
+
+  <div id="verifyStatus" style="margin-bottom:16px">
+    <div style="padding:20px;text-align:center;color:var(--text2)">טוען תוצאות אימות אחרונות...</div>
+  </div>
+
+  <div id="verifyCards" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:12px;margin-bottom:16px"></div>
+
+  <!-- Anomaly type breakdown -->
+  <div class="section" id="verifyBreakdownSection" style="display:none;margin-bottom:16px">
+    <div class="section-header"><h2>&#x1F4CA; פילוח אנומליות לפי סוג</h2></div>
+    <div id="verifyBreakdown"></div>
+  </div>
+
+  <!-- Full anomaly table -->
+  <div class="section" id="verifyTableSection" style="display:none">
+    <div class="section-header"><h2>&#x26A0;&#xFE0F; כל האנומליות — פירוט מלא</h2></div>
+    <div id="verifyTable" style="overflow-x:auto"></div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
 <!-- Reconciliation Panel -->
 <!-- ═══════════════════════════════════════════════════════════ -->
 <div class="nav-panel" id="panel-reconciliation">
@@ -1422,6 +1459,7 @@ document.querySelectorAll('.nav-tab').forEach(tab => {
     tab.classList.add('active');
     document.getElementById('panel-' + tab.dataset.nav).classList.add('active');
     // Auto-load data for specific panels
+    if (tab.dataset.nav === 'deepverify') loadVerifyStatus();
     if (tab.dataset.nav === 'reconciliation') { loadReconStatus(); loadReconHistory(); }
     if (tab.dataset.nav === 'financial') loadPnl();
     if (tab.dataset.nav === 'suppliers') loadSupplierScorecard();
@@ -3988,6 +4026,118 @@ async function loadHeatmap() {
     html += '</table>';
     document.getElementById('heatmapGrid').innerHTML = html;
   } catch(e) {}
+}
+
+// ══════════════════════════════════════════════════════════════
+//  Deep Verification
+// ══════════════════════════════════════════════════════════════
+async function runDeepVerify() {
+  const hours = document.getElementById('verifyHours').value;
+  document.getElementById('verifyStatus').innerHTML = '<div style="padding:20px;text-align:center;color:var(--accent)">&#x1F50D; מריץ אימות מעמיק... (עד דקה)</div>';
+  try {
+    const r = await fetch(`/api/verify/deep?hours=${hours}`);
+    const d = await r.json();
+    renderVerifyReport(d);
+  } catch(e) { document.getElementById('verifyStatus').innerHTML = `<div style="color:var(--red)">שגיאה: ${e.message}</div>`; }
+}
+
+async function loadVerifyStatus() {
+  try {
+    const r = await fetch('/api/verify/status');
+    const d = await r.json();
+    if (d.status === 'NO_RUN_YET') {
+      document.getElementById('verifyStatus').innerHTML = '<div style="padding:20px;text-align:center;color:var(--text2)">לא בוצע אימות עדיין. לחץ "הרץ אימות" להתחלה.</div>';
+    } else renderVerifyReport(d);
+  } catch(e) {}
+}
+
+function renderVerifyReport(d) {
+  const critColor = d.criticalAnomalies > 0 ? 'var(--red)' : 'var(--green)';
+  const icon = d.criticalAnomalies > 0 ? '&#x1F534;' : d.totalAnomalies > 0 ? '&#x1F7E1;' : '&#x1F7E2;';
+  const text = d.criticalAnomalies > 0 ? 'נמצאו אנומליות קריטיות!' : d.totalAnomalies > 0 ? 'נמצאו אנומליות' : 'הכל תקין — כל המערכות מסונכרנות';
+
+  // Badge
+  const badge = document.getElementById('navVerifyCount');
+  if (d.criticalAnomalies > 0) { badge.textContent = d.criticalAnomalies; badge.style.display = ''; badge.className = 'count red'; }
+  else if (d.totalAnomalies > 0) { badge.textContent = d.totalAnomalies; badge.style.display = ''; badge.className = 'count yellow'; }
+  else { badge.style.display = 'none'; }
+
+  // Status
+  document.getElementById('verifyStatus').innerHTML = `
+    <div style="display:flex;align-items:center;gap:12px;padding:14px;background:var(--surface);border:1px solid ${critColor};border-radius:8px">
+      <span style="font-size:24px">${icon}</span>
+      <div>
+        <div style="font-weight:600;font-size:14px;color:${critColor}">${text}</div>
+        <div style="font-size:12px;color:var(--text2)">בדיקה: ${new Date(d.endTime).toLocaleString('he-IL')} | ${d.durationMs}ms | טווח: ${d.lookbackHours}h</div>
+      </div>
+    </div>`;
+
+  // Cards
+  document.getElementById('verifyCards').innerHTML = `
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px">
+      <div style="font-size:11px;color:var(--text2)">הזמנות</div><div style="font-size:22px;font-weight:700;color:var(--accent)">${d.totalBookings}</div>
+    </div>
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px">
+      <div style="font-size:11px;color:var(--text2)">Reservations</div><div style="font-size:22px;font-weight:700;color:var(--cyan)">${d.totalReservations}</div>
+    </div>
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px">
+      <div style="font-size:11px;color:var(--text2)">Innstant אומתו</div><div style="font-size:22px;font-weight:700;color:var(--green)">${d.innstantVerifiedOk}/${d.innstantBookingsToVerify}</div>
+    </div>
+    <div style="background:var(--surface);border:1px solid ${critColor};border-radius:8px;padding:14px">
+      <div style="font-size:11px;color:var(--text2)">אנומליות</div><div style="font-size:22px;font-weight:700;color:${critColor}">${d.totalAnomalies}</div>
+      <div style="font-size:11px;color:var(--text2)">${d.criticalAnomalies} קריטיות</div>
+    </div>
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px">
+      <div style="font-size:11px;color:var(--text2)">ביטולים</div><div style="font-size:22px;font-weight:700;color:var(--orange)">${d.totalCancellations}</div>
+    </div>
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px">
+      <div style="font-size:11px;color:var(--text2)">שגיאות ביטול</div><div style="font-size:22px;font-weight:700;color:var(--red)">${d.totalCancelErrors}</div>
+    </div>`;
+
+  if (!d.anomalies || !d.anomalies.length) {
+    document.getElementById('verifyBreakdownSection').style.display = 'none';
+    document.getElementById('verifyTableSection').style.display = 'none';
+    return;
+  }
+
+  // Breakdown by type
+  document.getElementById('verifyBreakdownSection').style.display = '';
+  const typeLabels = { 0:'חסר ב-Innstant', 1:'חסר במדיצי', 2:'פער מחיר', 3:'סטטוס סותר', 4:'תאריך שונה', 5:'חסר Reservation', 6:'רשומה יתומה', 7:'ביטול רפאי', 8:'הזמנה כפולה', 9:'מכירה בהפסד', 10:'פג ללא מכירה' };
+  const typeColors = { 0:'var(--red)', 1:'var(--red)', 2:'var(--yellow)', 3:'var(--red)', 4:'var(--yellow)', 5:'var(--yellow)', 6:'var(--yellow)', 7:'var(--red)', 8:'var(--orange)', 9:'var(--red)', 10:'var(--orange)' };
+  const grouped = {};
+  d.anomalies.forEach(a => { const t = a.type; if (!grouped[t]) grouped[t] = []; grouped[t].push(a); });
+  let breakdownHtml = '<div style="display:flex;flex-wrap:wrap;gap:10px">';
+  Object.entries(grouped).forEach(([type, items]) => {
+    const critCount = items.filter(i => i.severity === 'Critical').length;
+    breakdownHtml += `<div style="background:var(--surface);border:1px solid ${typeColors[type]||'var(--border)'};border-radius:8px;padding:10px 14px;min-width:140px">
+      <div style="font-size:12px;color:var(--text2)">${typeLabels[type]||type}</div>
+      <div style="font-size:20px;font-weight:700;color:${typeColors[type]||'var(--text)'}">${items.length}</div>
+      ${critCount > 0 ? `<div style="font-size:11px;color:var(--red)">${critCount} קריטיות</div>` : ''}
+    </div>`;
+  });
+  breakdownHtml += '</div>';
+  document.getElementById('verifyBreakdown').innerHTML = breakdownHtml;
+
+  // Full table
+  document.getElementById('verifyTableSection').style.display = '';
+  let html = '<table style="width:100%;font-size:12px;border-collapse:collapse">';
+  html += '<tr style="border-bottom:2px solid var(--border);color:var(--text2);font-weight:600"><th style="padding:8px;text-align:right">חומרה</th><th style="padding:8px;text-align:right">סוג</th><th style="padding:8px;text-align:right">מערכת</th><th style="padding:8px;text-align:right">הזמנה</th><th style="padding:8px;text-align:right">מלון</th><th style="padding:8px;text-align:right">תיאור</th><th style="padding:8px;text-align:right">Medici</th><th style="padding:8px;text-align:right">חיצוני</th></tr>';
+  d.anomalies.forEach(a => {
+    const sevColor = a.severity === 'Critical' ? 'var(--red)' : 'var(--yellow)';
+    const sevIcon = a.severity === 'Critical' ? '&#x1F534;' : '&#x1F7E1;';
+    html += `<tr style="border-bottom:1px solid var(--border)">
+      <td style="padding:8px;color:${sevColor}">${sevIcon} ${a.severity}</td>
+      <td style="padding:8px">${typeLabels[a.type]||a.type}</td>
+      <td style="padding:8px;font-weight:600">${a.system}</td>
+      <td style="padding:8px;font-family:monospace">${a.bookingId||a.preBookId||'-'}</td>
+      <td style="padding:8px">${a.hotelId||'-'}</td>
+      <td style="padding:8px;max-width:300px">${a.description}</td>
+      <td style="padding:8px;font-size:11px;color:var(--text2)">${a.mediciValue||''}</td>
+      <td style="padding:8px;font-size:11px;color:var(--text2)">${a.externalValue||''}</td>
+    </tr>`;
+  });
+  html += '</table>';
+  document.getElementById('verifyTable').innerHTML = html;
 }
 
 // ══════════════════════════════════════════════════════════════

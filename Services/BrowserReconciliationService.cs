@@ -129,7 +129,7 @@ public class BrowserReconciliationService
 
     private async Task<PortalCheckResult> CheckHotelTools()
     {
-        var check = new PortalCheckResult { Portal = "Hotel.Tools (Zenith)", Url = _hotelToolsUrl };
+        var check = new PortalCheckResult { Portal = "Hotel.Tools (הנובי)", Url = _hotelToolsUrl };
         try
         {
             // Navigate to Hotel.Tools
@@ -143,11 +143,13 @@ public class BrowserReconciliationService
             await RunAgentBrowser("click \"Login\"");
             await RunAgentBrowser("wait networkidle 5000");
 
-            // Navigate to reservations tab
-            await RunAgentBrowser("click \"Reservations\"");
+            // Navigate to reservations/bookings tab
+            var clickResult = await RunAgentBrowser("click \"Reservations\"");
+            if (string.IsNullOrEmpty(clickResult))
+                await RunAgentBrowser("click \"Bookings\""); // Try alternative tab name
             await RunAgentBrowser("wait networkidle 3000");
 
-            // Get snapshot
+            // Get full snapshot — this contains the reservation list
             var reservationsSnapshot = await RunAgentBrowser("snapshot");
             check.Snapshot = reservationsSnapshot;
             check.Success = true;
@@ -157,6 +159,9 @@ public class BrowserReconciliationService
             check.ScreenshotPath = screenshotPath;
 
             check.BookingsFound = ParseBookingCount(reservationsSnapshot);
+
+            // Extract reservation details from snapshot for cross-referencing
+            check.ExtractedReservations = ParseReservationsFromSnapshot(reservationsSnapshot);
         }
         catch (Exception ex)
         {
@@ -164,6 +169,52 @@ public class BrowserReconciliationService
             check.Success = false;
         }
         return check;
+    }
+
+    /// <summary>
+    /// Parse reservation details from accessibility tree snapshot.
+    /// Looks for patterns like hotel names, dates, amounts, confirmation numbers.
+    /// </summary>
+    private List<ExtractedReservation> ParseReservationsFromSnapshot(string snapshot)
+    {
+        var reservations = new List<ExtractedReservation>();
+        if (string.IsNullOrEmpty(snapshot)) return reservations;
+
+        try
+        {
+            var lines = snapshot.Split('\n');
+            ExtractedReservation? current = null;
+
+            foreach (var line in lines)
+            {
+                var trimmed = line.Trim();
+
+                // Look for date patterns (dd/MM/yyyy or yyyy-MM-dd)
+                var dateMatch = System.Text.RegularExpressions.Regex.Match(trimmed, @"(\d{2}/\d{2}/\d{4}|\d{4}-\d{2}-\d{2})");
+                // Look for price patterns ($XXX or XXX.XX)
+                var priceMatch = System.Text.RegularExpressions.Regex.Match(trimmed, @"\$?([\d,]+\.?\d{0,2})");
+                // Look for confirmation/reference numbers
+                var refMatch = System.Text.RegularExpressions.Regex.Match(trimmed, @"(?:Ref|Conf|#|ID)[\s:]*(\w+)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+                if (trimmed.Contains("reservation", StringComparison.OrdinalIgnoreCase) ||
+                    trimmed.Contains("booking", StringComparison.OrdinalIgnoreCase) ||
+                    trimmed.Contains("hotel", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (current != null) reservations.Add(current);
+                    current = new ExtractedReservation { RawText = trimmed };
+                }
+
+                if (current != null)
+                {
+                    if (dateMatch.Success && current.Date == null) current.Date = dateMatch.Groups[1].Value;
+                    if (refMatch.Success && current.Reference == null) current.Reference = refMatch.Groups[1].Value;
+                }
+            }
+            if (current != null) reservations.Add(current);
+        }
+        catch { }
+
+        return reservations;
     }
 
     // ── agent-browser CLI wrapper ────────────────────────────────
@@ -259,4 +310,15 @@ public class PortalCheckResult
     public string? Snapshot { get; set; }
     public string? ScreenshotPath { get; set; }
     public string? Error { get; set; }
+    public List<ExtractedReservation>? ExtractedReservations { get; set; }
+}
+
+public class ExtractedReservation
+{
+    public string? HotelName { get; set; }
+    public string? Date { get; set; }
+    public string? Reference { get; set; }
+    public string? Amount { get; set; }
+    public string? Status { get; set; }
+    public string RawText { get; set; } = "";
 }
