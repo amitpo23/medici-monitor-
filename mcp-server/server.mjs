@@ -248,6 +248,37 @@ server.tool(
   }
 );
 
+// ── Deep Verification ──
+
+server.tool(
+  "medici_deep_verify",
+  "Run deep cross-system verification: checks every booking in Medici against Innstant API and Zenith. Detects anomalies: missing bookings, price mismatches, status conflicts, ghost cancellations, duplicates, expiring unsold rooms.",
+  { hours: z.number().optional().describe("Lookback hours (default 48)") },
+  async ({ hours }) => {
+    const h = hours || 48;
+    const data = await apiFetch(`/api/verify/deep?hours=${h}`);
+    return { content: [{ type: "text", text: JSON.stringify({
+      totalBookings: data.totalBookings,
+      totalReservations: data.totalReservations,
+      innstantVerified: data.innstantVerifiedOk,
+      totalAnomalies: data.totalAnomalies,
+      criticalAnomalies: data.criticalAnomalies,
+      anomalies: data.anomalies?.slice(0, 15),
+      durationMs: data.durationMs
+    }, null, 2) }] };
+  }
+);
+
+server.tool(
+  "medici_anomalies",
+  "Get list of detected anomalies from the last deep verification run",
+  {},
+  async () => {
+    const data = await apiFetch("/api/verify/anomalies");
+    return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+  }
+);
+
 // ── Start Server ──
 
 const transport = new StdioServerTransport();

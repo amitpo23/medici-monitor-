@@ -15,6 +15,7 @@ public class TelegramBotService : BackgroundService
     private readonly AlertingService _alerting;
     private readonly FailSafeService _failSafe;
     private readonly BookingReconciliationService _reconciliation;
+    private readonly DeepVerificationService _deepVerify;
     private readonly AzureMonitoringService _azure;
     private readonly DatabaseHealthService _dbHealth;
     private readonly SlaTrackingService _sla;
@@ -56,6 +57,7 @@ public class TelegramBotService : BackgroundService
         AlertingService alerting,
         FailSafeService failSafe,
         BookingReconciliationService reconciliation,
+        DeepVerificationService deepVerify,
         AzureMonitoringService azure,
         DatabaseHealthService dbHealth,
         SlaTrackingService sla,
@@ -71,6 +73,7 @@ public class TelegramBotService : BackgroundService
         _alerting = alerting;
         _failSafe = failSafe;
         _reconciliation = reconciliation;
+        _deepVerify = deepVerify;
         _azure = azure;
         _dbHealth = dbHealth;
         _sla = sla;
@@ -245,6 +248,8 @@ public class TelegramBotService : BackgroundService
                         case "/oncall": await HandleOncall(chatId, text); break;
                         case "/weekly_summary": await SendWeeklySummary(chatId); break;
                         case "/cancel": await HandleCancelBooking(chatId, text, from); break;
+                        case "/deep_check": await HandleDeepCheck(chatId, text); break;
+                        case "/anomalies": await HandleAnomalies(chatId); break;
                         case "/schedule": await HandleSchedule(chatId, text); break;
 
                         case "/help": await HandleHelp(chatId); break;
@@ -560,6 +565,73 @@ public class TelegramBotService : BackgroundService
             "*🗣️ שפה טבעית:*\n" +
             "\"עצור הכל 7743\" | \"מה המצב\" | \"אשר 42 7743\"\n\n" +
             "_דוח: 3h | יומי: 07:00 | שבועי: ראשון 08:00_", chatId);
+    }
+
+    // ── Deep Verification & Anomalies ─────────────────────────────
+
+    private async Task HandleDeepCheck(string chatId, string text)
+    {
+        var parts = text.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        var hours = parts.Length > 1 && int.TryParse(parts[1], out var h) ? h : 48;
+        await SendToGroup($"🔍 מריץ אימות מעמיק ({hours}h)... זה יכול לקחת דקה", chatId);
+        try
+        {
+            var report = await _deepVerify.RunDeepVerification(hours);
+            var icon = report.CriticalAnomalies > 0 ? "🔴" : report.TotalAnomalies > 0 ? "🟡" : "🟢";
+            var sb = new System.Text.StringBuilder($"{icon} *אימות מעמיק הושלם*\n\n");
+            sb.AppendLine($"📦 הזמנות: {report.TotalBookings} | Reservations: {report.TotalReservations}");
+            sb.AppendLine($"✅ Innstant אומתו: {report.InnstantVerifiedOk}/{report.InnstantBookingsToVerify}");
+            sb.AppendLine($"⚠️ אנומליות: *{report.TotalAnomalies}* ({report.CriticalAnomalies} קריטיות)");
+            sb.AppendLine($"⏱️ משך: {report.DurationMs}ms\n");
+
+            if (report.Anomalies.Any())
+            {
+                sb.AppendLine("*פירוט אנומליות:*");
+                foreach (var a in report.Anomalies.OrderByDescending(a => a.Severity == "Critical").Take(10))
+                {
+                    var aIcon = a.Severity == "Critical" ? "🔴" : "🟡";
+                    sb.AppendLine($"{aIcon} [{a.System}] {a.Description}");
+                }
+                if (report.Anomalies.Count > 10)
+                    sb.AppendLine($"_...ועוד {report.Anomalies.Count - 10}_");
+            }
+            await SendToGroup(sb.ToString(), chatId);
+        }
+        catch (Exception ex) { await SendToGroup($"❌ שגיאה: {ex.Message}", chatId); }
+    }
+
+    private async Task HandleAnomalies(string chatId)
+    {
+        var report = _deepVerify.LastReport;
+        if (report == null) { await SendToGroup("ℹ️ לא בוצע אימות עדיין. שלח `/deep_check`", chatId); return; }
+
+        if (!report.Anomalies.Any()) { await SendToGroup("✅ אין אנומליות — הכל תקין!", chatId); return; }
+
+        var grouped = report.Anomalies.GroupBy(a => a.Type);
+        var sb = new System.Text.StringBuilder($"⚠️ *{report.TotalAnomalies} אנומליות* ({report.CriticalAnomalies} קריטיות)\n\n");
+        foreach (var g in grouped)
+        {
+            var typeLabel = g.Key switch
+            {
+                AnomalyType.MissingInExternal => "חסר ב-Innstant",
+                AnomalyType.PriceMismatch => "פער מחיר",
+                AnomalyType.StatusConflict => "סטטוס סותר",
+                AnomalyType.DateMismatch => "תאריך שונה",
+                AnomalyType.MissingSale => "חסר Reservation",
+                AnomalyType.OrphanedRecord => "Reservation יתומה",
+                AnomalyType.GhostCancellation => "ביטול רפאי",
+                AnomalyType.DuplicateBooking => "הזמנה כפולה",
+                AnomalyType.SellingAtLoss => "מכירה בהפסד",
+                AnomalyType.ExpiringUnsold => "פג ללא מכירה",
+                _ => g.Key.ToString()
+            };
+            sb.AppendLine($"*{typeLabel}* ({g.Count()}):");
+            foreach (var a in g.Take(3))
+                sb.AppendLine($"  {(a.Severity == "Critical" ? "🔴" : "🟡")} {a.Description}");
+            if (g.Count() > 3) sb.AppendLine($"  _...ועוד {g.Count() - 3}_");
+            sb.AppendLine();
+        }
+        await SendToGroup(sb.ToString(), chatId);
     }
 
     // ── Hotel Card & Search ────────────────────────────────────────

@@ -28,6 +28,7 @@ builder.Services.AddSingleton<StateStorageService>();
 builder.Services.AddSingleton<InnstantApiClient>();
 builder.Services.AddSingleton<BrowserReconciliationService>();
 builder.Services.AddSingleton<BookingReconciliationService>();
+builder.Services.AddSingleton<DeepVerificationService>();
 builder.Services.AddHostedService<FailSafeBackgroundService>();
 builder.Services.AddHostedService<AlertNotificationService>();
 builder.Services.AddHostedService<ReconciliationBackgroundService>();
@@ -755,6 +756,34 @@ app.MapGet("/api/export/{type}.xlsx", async (HttpContext ctx, string type, DataS
     wb.SaveAs(ms);
     ms.Position = 0;
     return Results.File(ms.ToArray(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", $"{type}_{DateTime.UtcNow:yyyyMMdd}.xlsx");
+});
+
+// ═══════════════════════════════════════════════════════════════
+//  Deep Verification (Cross-System Anomaly Detection)
+// ═══════════════════════════════════════════════════════════════
+app.MapGet("/api/verify/deep", async (DeepVerificationService svc, AuditService audit, HttpContext ctx) =>
+{
+    audit.RecordFromHttp(ctx, "DeepVerification");
+    int hours = int.TryParse(ctx.Request.Query["hours"].FirstOrDefault(), out var h) ? h : 48;
+    return Results.Ok(await svc.RunDeepVerification(hours));
+});
+
+app.MapGet("/api/verify/status", (DeepVerificationService svc) =>
+{
+    var last = svc.LastReport;
+    return last != null ? Results.Ok(last) : Results.Ok(new { status = "NO_RUN_YET" });
+});
+
+app.MapGet("/api/verify/anomalies", (DeepVerificationService svc) =>
+{
+    var last = svc.LastReport;
+    return Results.Ok(last?.Anomalies ?? new List<VerificationAnomaly>());
+});
+
+app.MapGet("/api/verify/history", (DeepVerificationService svc, HttpContext ctx) =>
+{
+    int last = int.TryParse(ctx.Request.Query["last"].FirstOrDefault(), out var n) ? n : 20;
+    return Results.Ok(svc.GetHistory(last));
 });
 
 // ═══════════════════════════════════════════════════════════════
