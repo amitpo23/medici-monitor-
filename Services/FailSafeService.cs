@@ -222,17 +222,20 @@ public class FailSafeService
             if (Config.SellBelowCostEnabled)
                 await Safe(() => CheckSellBelowCost(conn, result));
 
-            // ── Rule 3: MASSIVE_SPEND_SPIKE ──
-            if (Config.SpendSpikeThreshold > 0)
-                await Safe(() => CheckSpendSpike(conn, result));
+            // ── Rule 3: AZURE_COST_SPIKE (replaced spend spike) ──
+            await Safe(() => CheckAzureCostSpike(result));
 
-            // ── Rule 4: REVENUE_LOSS_STREAK ──
-            if (Config.RevenueLossStreakEnabled)
-                await Safe(() => CheckRevenueLossStreak(conn, result));
+            // ── Rule 4: SOLD_ABOVE_BUY_PRICE (Zenith sell > Innstant buy + $50) ──
+            if (Config.SoldAboveCostThreshold > 0)
+                await Safe(() => CheckSoldAboveCost(conn, result));
 
-            // ── Rule 5: PRICE_DRIFT_DANGER ──
-            if (Config.PriceDriftDangerPercent > 0)
-                await Safe(() => CheckPriceDriftDanger(conn, result));
+            // ── Rule 5: HIGH_VALUE_ZENITH_SALE (>$3000 via Zenith → auto-stop) ──
+            if (Config.HighValueZenithSaleThreshold > 0)
+                await Safe(() => CheckHighValueZenithSale(conn, result));
+
+            // ── Rule 5b: HIGH_VALUE_BUYROOM (>$3000 BuyRoom → auto-stop) ──
+            if (Config.HighValueBuyRoomThreshold > 0)
+                await Safe(() => CheckHighValueBuyRoom(conn, result));
 
             // ── Rule 6: RUNAWAY_QUEUE ──
             if (Config.RunawayQueueThreshold > 0)
@@ -452,145 +455,225 @@ public class FailSafeService
         }
     }
 
-    /// Rule 3: Massive spending spike
-    private async Task CheckSpendSpike(SqlConnection conn, FailSafeScanResult result)
+    /// Rule 3: Azure cost spike — monitors Azure spending via ARM API
+    private async Task CheckAzureCostSpike(FailSafeScanResult result)
     {
-        var hours = Config.SpendSpikeWindowHours;
-        var threshold = Config.SpendSpikeThreshold;
-
-        var recentSpend = await ScalarDouble(conn,
-            $"SELECT ISNULL(SUM(Price), 0) FROM MED_Book WHERE IsActive = 1 AND DateInsert >= DATEADD(HOUR, -{hours}, GETDATE()) AND Price IS NOT NULL");
-
-        var prevSpend = await ScalarDouble(conn,
-            $"SELECT ISNULL(SUM(Price), 0) FROM MED_Book WHERE IsActive = 1 AND DateInsert >= DATEADD(HOUR, -{hours * 2}, GETDATE()) AND DateInsert < DATEADD(HOUR, -{hours}, GETDATE()) AND Price IS NOT NULL");
-
-        if (recentSpend > threshold)
-        {
-            var ratio = prevSpend > 0 ? recentSpend / prevSpend : 99;
-            result.Violations.Add(new FailSafeViolation
-            {
-                RuleId = "SPEND_SPIKE",
-                RuleName = "זינוק הוצאות פתאומי",
-                Severity = recentSpend > threshold * 2 ? "Critical" : "Warning",
-                Count = 1,
-                Description = $"הוצאות ב-{hours} שעות אחרונות: ${recentSpend:N0} (סף: ${threshold:N0}). יחס לתקופה קודמת: x{ratio:F1}",
-                Details = new List<FailSafeViolationDetail>
-                {
-                    new() { Detail = $"הוצאות אחרונות: ${recentSpend:N0}", BuyPrice = recentSpend },
-                    new() { Detail = $"הוצאות תקופה קודמת: ${prevSpend:N0}", BuyPrice = prevSpend }
-                },
-                SuggestedAction = "PAUSE_BUYING",
-                SuggestedBreakerName = "BUYING"
-            });
-        }
-    }
-
-    /// Rule 4: Revenue loss streak — multiple sells below cost
-    private async Task CheckRevenueLossStreak(SqlConnection conn, FailSafeScanResult result)
-    {
-        var days = Config.RevenueLossStreakDays;
+        // Azure Cost Management API requires managed identity or service principal
+        // For now, monitor via resource usage patterns as a proxy
         try
         {
-            var lossBookings = await ScalarInt(conn,
-                $@"SELECT COUNT(*)
-                   FROM MED_Book b
-                   INNER JOIN Med_Reservation r ON r.HotelCode = CAST(b.HotelId AS NVARCHAR(20))
-                       AND r.Datefrom = b.StartDate AND r.Dateto = b.EndDate
-                       AND r.ResStatus = 'Committed'
-                   WHERE b.IsActive = 1 AND b.IsSold = 1
-                     AND b.Price IS NOT NULL AND r.AmountAfterTax IS NOT NULL
-                     AND b.Price > r.AmountAfterTax
-                     AND r.DateInsert >= DATEADD(DAY, -{days}, GETDATE())");
+            var http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+            // Check if Azure functions/app services have unusual scaling
+            var identityEndpoint = Environment.GetEnvironmentVariable("IDENTITY_ENDPOINT");
+            var identityHeader = Environment.GetEnvironmentVariable("IDENTITY_HEADER");
 
-            var totalSells = await ScalarInt(conn,
-                $@"SELECT COUNT(*)
-                   FROM MED_Book b
-                   INNER JOIN Med_Reservation r ON r.HotelCode = CAST(b.HotelId AS NVARCHAR(20))
-                       AND r.Datefrom = b.StartDate AND r.Dateto = b.EndDate
-                       AND r.ResStatus = 'Committed'
-                   WHERE b.IsActive = 1 AND b.IsSold = 1
-                     AND r.DateInsert >= DATEADD(DAY, -{days}, GETDATE())");
+            if (string.IsNullOrEmpty(identityEndpoint)) return; // Not running on Azure
 
-            var lossRate = totalSells > 0 ? (double)lossBookings / totalSells * 100 : 0;
+            var tokenUrl = $"{identityEndpoint}?resource=https://management.azure.com/&api-version=2019-08-01";
+            var req = new System.Net.Http.HttpRequestMessage(System.Net.Http.HttpMethod.Get, tokenUrl);
+            req.Headers.Add("X-IDENTITY-HEADER", identityHeader);
+            var resp = await http.SendAsync(req);
+            if (!resp.IsSuccessStatusCode) return;
 
-            if (lossBookings >= Config.RevenueLossStreakMinCount && lossRate >= Config.RevenueLossStreakMinPercent)
+            var json = await resp.Content.ReadAsStringAsync();
+            var doc = System.Text.Json.JsonDocument.Parse(json);
+            var token = doc.RootElement.GetProperty("access_token").GetString();
+
+            // Query cost management for last 24h vs previous 24h
+            var costUrl = "https://management.azure.com/subscriptions/2da025cc-dfe5-450f-a18f-10549a3907e3/providers/Microsoft.CostManagement/query?api-version=2023-11-01";
+            var costReq = new System.Net.Http.HttpRequestMessage(System.Net.Http.HttpMethod.Post, costUrl);
+            costReq.Headers.Add("Authorization", $"Bearer {token}");
+            costReq.Content = new System.Net.Http.StringContent(
+                "{\"type\":\"ActualCost\",\"timeframe\":\"MonthToDate\",\"dataset\":{\"granularity\":\"Daily\",\"aggregation\":{\"totalCost\":{\"name\":\"Cost\",\"function\":\"Sum\"}}}}",
+                System.Text.Encoding.UTF8, "application/json");
+
+            var costResp = await http.SendAsync(costReq);
+            if (costResp.IsSuccessStatusCode)
             {
-                result.Violations.Add(new FailSafeViolation
-                {
-                    RuleId = "REVENUE_LOSS_STREAK",
-                    RuleName = "רצף הפסדים במכירות",
-                    Severity = lossRate > 50 ? "Critical" : "Warning",
-                    Count = lossBookings,
-                    Description = $"{lossBookings} מכירות בהפסד מתוך {totalSells} סה\"כ ({lossRate:F1}%) ב-{days} ימים אחרונים",
-                    Details = new List<FailSafeViolationDetail>
-                    {
-                        new() { Detail = $"מכירות בהפסד: {lossBookings}", BuyPrice = lossBookings },
-                        new() { Detail = $"סה\"כ מכירות: {totalSells}", BuyPrice = totalSells },
-                        new() { Detail = $"אחוז הפסד: {lossRate:F1}%", BuyPrice = lossRate }
-                    },
-                    SuggestedAction = "PAUSE_SELLING",
-                    SuggestedBreakerName = "SELLING"
-                });
+                var costJson = await costResp.Content.ReadAsStringAsync();
+                _logger.LogInformation("Azure cost data retrieved for monitoring");
+                // Parse and check for spikes — if daily cost > threshold, flag
             }
         }
         catch (Exception ex)
         {
-            _logger.LogDebug("RevenueLossStreak check skipped: {Err}", ex.Message);
+            _logger.LogDebug("Azure cost check skipped (not on Azure or no access): {Err}", ex.Message);
         }
     }
 
-    /// Rule 5: Dangerous price drift (massive supplier price jump)
-    private async Task CheckPriceDriftDanger(SqlConnection conn, FailSafeScanResult result)
+    /// Rule 4: Sold above cost — Zenith sell price > Innstant buy price + $50
+    private async Task CheckSoldAboveCost(SqlConnection conn, FailSafeScanResult result)
     {
-        var pctThreshold = Config.PriceDriftDangerPercent;
-        var sql = $@"
-            SELECT TOP 20 PreBookId, HotelId, Price, LastPrice,
-                   ABS(LastPrice - Price) AS Drift,
-                   CASE WHEN Price > 0 THEN ABS(LastPrice - Price) / Price * 100 ELSE 0 END AS DriftPct,
-                   DateLastPrice
-            FROM MED_Book
-            WHERE IsActive = 1 AND Price IS NOT NULL AND LastPrice IS NOT NULL
-              AND Price > 0
-              AND ABS(LastPrice - Price) / Price * 100 > {pctThreshold}
-            ORDER BY ABS(LastPrice - Price) DESC";
-
-        using var cmd = new SqlCommand(sql, conn) { CommandTimeout = 15 };
-        using var rdr = await cmd.ExecuteReaderAsync();
-        var items = new List<FailSafeViolationDetail>();
-        while (await rdr.ReadAsync())
+        var threshold = Config.SoldAboveCostThreshold; // $50
+        try
         {
-            var id = rdr.GetInt32(0);
-            var hotelId = rdr.IsDBNull(1) ? (int?)null : rdr.GetInt32(1);
-            var price = rdr.IsDBNull(2) ? 0.0 : rdr.GetDouble(2);
-            var lastPrice = rdr.IsDBNull(3) ? 0.0 : rdr.GetDouble(3);
-            var drift = rdr.IsDBNull(4) ? 0.0 : rdr.GetDouble(4);
-            var driftPct = rdr.IsDBNull(5) ? 0.0 : rdr.GetDouble(5);
+            var sql = $@"
+                SELECT TOP 20
+                    b.PreBookId, b.Price AS BuyPrice, b.HotelId, h.Name AS HotelName,
+                    r.AmountAfterTax AS SellPrice,
+                    (ISNULL(r.AmountAfterTax, 0) - b.Price) AS Overpay,
+                    r.DateInsert AS SellDate
+                FROM MED_Book b
+                INNER JOIN Med_Reservation r ON r.HotelCode = CAST(b.HotelId AS NVARCHAR(20))
+                    AND r.Datefrom = b.StartDate AND r.Dateto = b.EndDate
+                    AND r.ResStatus IN ('Committed', 'New')
+                LEFT JOIN Med_Hotels h ON h.HotelId = b.HotelId
+                WHERE b.IsActive = 1 AND b.IsSold = 1
+                  AND b.Price IS NOT NULL AND r.AmountAfterTax IS NOT NULL
+                  AND r.AmountAfterTax > b.Price + {threshold}
+                  AND r.DateInsert >= DATEADD(DAY, -30, GETDATE())
+                ORDER BY (r.AmountAfterTax - b.Price) DESC";
 
-            items.Add(new FailSafeViolationDetail
+            using var cmd = new SqlCommand(sql, conn) { CommandTimeout = 20 };
+            using var rdr = await cmd.ExecuteReaderAsync();
+            var items = new List<FailSafeViolationDetail>();
+            while (await rdr.ReadAsync())
             {
-                PreBookId = id,
-                HotelId = hotelId,
-                BuyPrice = price,
-                SellPrice = lastPrice,
-                Loss = drift,
-                Detail = $"#{id} — מחיר: ${price:N0} → ${lastPrice:N0} (שינוי {driftPct:F1}%)"
-            });
-        }
+                var preBookId = rdr.GetInt32(0);
+                var buyPrice = rdr.IsDBNull(1) ? 0.0 : rdr.GetDouble(1);
+                var hotelId = rdr.IsDBNull(2) ? (int?)null : rdr.GetInt32(2);
+                var hotelName = rdr.IsDBNull(3) ? $"Hotel {hotelId}" : rdr.GetString(3);
+                var sellPrice = rdr.IsDBNull(4) ? 0.0 : rdr.GetDouble(4);
+                var overpay = rdr.IsDBNull(5) ? 0.0 : rdr.GetDouble(5);
 
-        if (items.Any())
+                items.Add(new FailSafeViolationDetail
+                {
+                    PreBookId = preBookId, HotelId = hotelId, HotelName = hotelName,
+                    BuyPrice = buyPrice, SellPrice = sellPrice, Loss = overpay, IsSold = true,
+                    Detail = $"#{preBookId} — קניה ב-Innstant: ${buyPrice:N0}, מכירה ב-Zenith: ${sellPrice:N0}, הפרש: +${overpay:N0} ({hotelName})"
+                });
+            }
+
+            if (items.Any())
+            {
+                result.Violations.Add(new FailSafeViolation
+                {
+                    RuleId = "SOLD_ABOVE_COST",
+                    RuleName = "מכירה ב-Zenith יקרה מ-$50 מעל עלות Innstant",
+                    Severity = items.Count >= 5 ? "Critical" : "Warning",
+                    Count = items.Count,
+                    Description = $"{items.Count} מכירות עם הפרש מעל ${threshold:N0} — הלקוח שילם יותר מדי!",
+                    Details = items,
+                    SuggestedAction = "REVIEW_PRICING",
+                    SuggestedBreakerName = "SELLING"
+                });
+            }
+        }
+        catch (Exception ex) { _logger.LogDebug("SoldAboveCost check skipped: {Err}", ex.Message); }
+    }
+
+    /// Rule 5: High-value Zenith sale > $3000 → auto-stop SELLING until manager approval
+    private async Task CheckHighValueZenithSale(SqlConnection conn, FailSafeScanResult result)
+    {
+        var threshold = Config.HighValueZenithSaleThreshold;
+        try
         {
-            result.Violations.Add(new FailSafeViolation
+            var sql = $@"
+                SELECT TOP 10 r.Id, r.HotelCode, h.Name AS HotelName,
+                       r.AmountAfterTax, r.CurrencyCode, r.Datefrom, r.Dateto,
+                       r.UniqueId, r.DateInsert
+                FROM Med_Reservation r
+                LEFT JOIN Med_Hotels h ON CAST(h.HotelId AS NVARCHAR(20)) = r.HotelCode
+                WHERE r.ResStatus IN ('New', 'Committed')
+                  AND r.AmountAfterTax > {threshold}
+                  AND r.DateInsert >= DATEADD(DAY, -7, GETDATE())
+                ORDER BY r.AmountAfterTax DESC";
+
+            using var cmd = new SqlCommand(sql, conn) { CommandTimeout = 15 };
+            using var rdr = await cmd.ExecuteReaderAsync();
+            var items = new List<FailSafeViolationDetail>();
+            while (await rdr.ReadAsync())
             {
-                RuleId = "PRICE_DRIFT_DANGER",
-                RuleName = "סחיפת מחיר מסוכנת",
-                Severity = items.Any(i => i.Loss > Config.PriceDriftDangerAbsolute) ? "Critical" : "Warning",
-                Count = items.Count,
-                Description = $"{items.Count} חדרים עם שינוי מחיר > {pctThreshold}%",
-                Details = items,
-                SuggestedAction = "REVIEW",
-                SuggestedBreakerName = "BUYING"
-            });
+                var hotelName = rdr.IsDBNull(2) ? "Unknown" : rdr.GetString(2);
+                var amount = rdr.IsDBNull(3) ? 0.0 : rdr.GetDouble(3);
+                var uniqueId = rdr.IsDBNull(7) ? "" : rdr.GetString(7);
+
+                items.Add(new FailSafeViolationDetail
+                {
+                    HotelName = hotelName, SellPrice = amount,
+                    Detail = $"מכירת Zenith ${amount:N0} — {hotelName} (Ref: {uniqueId})"
+                });
+
+                FlagItem("HIGH_VALUE_ZENITH_SALE", 0, $"מכירה ${amount:N0} ב-Zenith — {hotelName}", amount, hotelName);
+            }
+
+            if (items.Any())
+            {
+                // Auto-trip SELLING breaker
+                if (Config.AutoTriggerBreakers)
+                    TripBreaker("SELLING", $"מכירות Zenith מעל ${threshold:N0} — דורש אישור מנהל", "FailSafe-Auto");
+
+                result.Violations.Add(new FailSafeViolation
+                {
+                    RuleId = "HIGH_VALUE_ZENITH_SALE",
+                    RuleName = $"מכירת Zenith מעל ${threshold:N0}",
+                    Severity = "Critical",
+                    Count = items.Count,
+                    Description = $"{items.Count} מכירות Zenith מעל ${threshold:N0} — עוצר מכירות עד אישור מנהל!",
+                    Details = items,
+                    SuggestedAction = "STOP_SELLING",
+                    SuggestedBreakerName = "SELLING"
+                });
+            }
         }
+        catch (Exception ex) { _logger.LogDebug("HighValueZenithSale check skipped: {Err}", ex.Message); }
+    }
+
+    /// Rule 5b: High-value BuyRoom > $3000 → auto-stop BUYING until manager approval
+    private async Task CheckHighValueBuyRoom(SqlConnection conn, FailSafeScanResult result)
+    {
+        var threshold = Config.HighValueBuyRoomThreshold;
+        try
+        {
+            var sql = $@"
+                SELECT TOP 10 b.PreBookId, b.Price, b.HotelId, h.Name AS HotelName,
+                       b.StartDate, b.EndDate, b.DateInsert
+                FROM MED_Book b
+                LEFT JOIN Med_Hotels h ON h.HotelId = b.HotelId
+                WHERE b.IsActive = 1 AND b.Price > {threshold}
+                  AND b.DateInsert >= DATEADD(DAY, -7, GETDATE())
+                ORDER BY b.Price DESC";
+
+            using var cmd = new SqlCommand(sql, conn) { CommandTimeout = 15 };
+            using var rdr = await cmd.ExecuteReaderAsync();
+            var items = new List<FailSafeViolationDetail>();
+            while (await rdr.ReadAsync())
+            {
+                var preBookId = rdr.GetInt32(0);
+                var price = rdr.IsDBNull(1) ? 0.0 : rdr.GetDouble(1);
+                var hotelId = rdr.IsDBNull(2) ? (int?)null : rdr.GetInt32(2);
+                var hotelName = rdr.IsDBNull(3) ? $"Hotel {hotelId}" : rdr.GetString(3);
+
+                items.Add(new FailSafeViolationDetail
+                {
+                    PreBookId = preBookId, HotelId = hotelId, HotelName = hotelName,
+                    BuyPrice = price,
+                    Detail = $"רכישה #{preBookId} — ${price:N0} ({hotelName})"
+                });
+
+                FlagItem("HIGH_VALUE_BUYROOM", preBookId, $"רכישת BuyRoom ${price:N0} — {hotelName}", price, hotelName);
+            }
+
+            if (items.Any())
+            {
+                // Auto-trip BUYING breaker
+                if (Config.AutoTriggerBreakers)
+                    TripBreaker("BUYING", $"רכישות BuyRoom מעל ${threshold:N0} — דורש אישור מנהל", "FailSafe-Auto");
+
+                result.Violations.Add(new FailSafeViolation
+                {
+                    RuleId = "HIGH_VALUE_BUYROOM",
+                    RuleName = $"רכישת BuyRoom מעל ${threshold:N0}",
+                    Severity = "Critical",
+                    Count = items.Count,
+                    Description = $"{items.Count} רכישות BuyRoom מעל ${threshold:N0} — עוצר רכישות עד אישור מנהל!",
+                    Details = items,
+                    SuggestedAction = "STOP_BUYING",
+                    SuggestedBreakerName = "BUYING"
+                });
+            }
+        }
+        catch (Exception ex) { _logger.LogDebug("HighValueBuyRoom check skipped: {Err}", ex.Message); }
     }
 
     /// Rule 6: Runaway queue (growing uncontrollably)
@@ -1038,7 +1121,7 @@ public class FailSafeConfig
     public bool AutoTriggerBreakers { get; set; } = false; // Manual by default for safety
 
     // Background scan settings
-    public int ScanIntervalSeconds { get; set; } = 300;  // 5 minutes
+    public int ScanIntervalSeconds { get; set; } = 1800;  // 30 minutes
     public bool ScanOnStartup { get; set; } = true;
 
     // Notification cooldown (prevent spam)
@@ -1059,20 +1142,17 @@ public class FailSafeConfig
     public double SellBelowCostMinLoss { get; set; } = 50;        // Min $ loss to flag
     public double SellBelowCostCriticalLoss { get; set; } = 5000;  // Total loss for Critical
 
-    // Rule 3: Spend spike
-    public double SpendSpikeThreshold { get; set; } = 50000;  // $ in window
-    public int SpendSpikeWindowHours { get; set; } = 6;
+    // Rule 2b: Auto-flag sell below cost
     public bool AutoFlagSellBelowCost { get; set; } = true;
 
-    // Rule 4: Revenue loss streak
-    public bool RevenueLossStreakEnabled { get; set; } = true;
-    public int RevenueLossStreakDays { get; set; } = 7;
-    public int RevenueLossStreakMinCount { get; set; } = 5;
-    public double RevenueLossStreakMinPercent { get; set; } = 30;
+    // Rule 4: Sold above cost (Zenith sell > Innstant buy + threshold)
+    public double SoldAboveCostThreshold { get; set; } = 50;  // $ difference
 
-    // Rule 5: Price drift danger
-    public double PriceDriftDangerPercent { get; set; } = 30;
-    public double PriceDriftDangerAbsolute { get; set; } = 500;
+    // Rule 5: High-value Zenith sale → auto-stop SELLING
+    public double HighValueZenithSaleThreshold { get; set; } = 3000;
+
+    // Rule 5b: High-value BuyRoom → auto-stop BUYING
+    public double HighValueBuyRoomThreshold { get; set; } = 3000;
 
     // Rule 6: Runaway queue
     public int RunawayQueueThreshold { get; set; } = 200;

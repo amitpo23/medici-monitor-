@@ -110,41 +110,29 @@ public class TelegramBotService : BackgroundService
                     ? $"{fromEl.GetProperty("first_name").GetString()}"
                     : "Unknown";
 
-                // Only respond to commands
-                if (!text.StartsWith("/")) continue;
-
-                var command = text.Split('@')[0].Split(' ')[0].ToLower();
-                _logger.LogInformation("Telegram command: {Cmd} from {From}", command, from);
-
-                switch (command)
+                // Handle commands (/) and natural language kill switch
+                if (text.StartsWith("/"))
                 {
-                    case "/status":
-                        await HandleStatus(chatId);
-                        break;
-                    case "/report":
-                        await SendHourlyReport(chatId);
-                        break;
-                    case "/alerts":
-                        await HandleAlerts(chatId);
-                        break;
-                    case "/reconcile":
-                        await HandleReconcile(chatId);
-                        break;
-                    case "/killswitch":
-                        await HandleKillSwitch(chatId, text, from);
-                        break;
-                    case "/breakers":
-                        await HandleBreakers(chatId);
-                        break;
-                    case "/trip":
-                        await HandleTrip(chatId, text, from);
-                        break;
-                    case "/reset":
-                        await HandleReset(chatId, text, from);
-                        break;
-                    case "/help":
-                        await HandleHelp(chatId);
-                        break;
+                    var command = text.Split('@')[0].Split(' ')[0].ToLower();
+                    _logger.LogInformation("Telegram command: {Cmd} from {From}", command, from);
+
+                    switch (command)
+                    {
+                        case "/status": await HandleStatus(chatId); break;
+                        case "/report": await SendHourlyReport(chatId); break;
+                        case "/alerts": await HandleAlerts(chatId); break;
+                        case "/reconcile": await HandleReconcile(chatId); break;
+                        case "/killswitch": await HandleKillSwitch(chatId, text, from); break;
+                        case "/breakers": await HandleBreakers(chatId); break;
+                        case "/trip": await HandleTrip(chatId, text, from); break;
+                        case "/reset": await HandleReset(chatId, text, from); break;
+                        case "/help": await HandleHelp(chatId); break;
+                    }
+                }
+                else
+                {
+                    // Natural language kill switch detection
+                    await HandleNaturalLanguage(chatId, text, from);
                 }
             }
         }
@@ -434,6 +422,86 @@ public class TelegramBotService : BackgroundService
             "✅ `/reset BUYING <PIN>` — אפס breaker\n" +
             "📡 `/breakers` — סטטוס breakers\n\n" +
             "_דוח אוטומטי כל שעה_", chatId);
+    }
+
+    // ── Natural Language Kill Switch ─────────────────────────────
+
+    private async Task HandleNaturalLanguage(string chatId, string text, string from)
+    {
+        var lower = text.ToLower().Trim();
+
+        // Kill switch patterns (Hebrew + English)
+        var killPatterns = new[] { "עצור הכל", "תעצור הכל", "עצור את הכל", "kill switch", "killswitch", "עצירת חירום", "חירום", "emergency stop", "stop all", "תפסיק הכל", "הפסק הכל", "freeze", "הקפא" };
+        var buyStopPatterns = new[] { "עצור קניות", "תעצור קניות", "עצור רכישות", "stop buying", "הפסק לקנות", "אל תקנה", "תפסיק לקנות" };
+        var sellStopPatterns = new[] { "עצור מכירות", "תעצור מכירות", "stop selling", "הפסק למכור", "תפסיק למכור", "אל תמכור" };
+        var cancelStopPatterns = new[] { "עצור ביטולים", "תעצור ביטולים", "stop cancels", "הפסק לבטל" };
+        var resetPatterns = new[] { "שחרר הכל", "תשחרר הכל", "אפס הכל", "reset all", "חזור לפעילות", "תפעיל הכל", "הפעל הכל" };
+        var statusPatterns = new[] { "מה המצב", "מה הסטטוס", "סטטוס", "status", "how are things", "מה קורה", "עדכון" };
+
+        // Status (no PIN needed)
+        if (statusPatterns.Any(p => lower.Contains(p)))
+        {
+            await HandleStatus(chatId);
+            return;
+        }
+
+        // Extract PIN from message (4 digits)
+        var pinMatch = System.Text.RegularExpressions.Regex.Match(text, @"\b(\d{4})\b");
+        var pin = pinMatch.Success ? pinMatch.Groups[1].Value : "";
+
+        // Kill all
+        if (killPatterns.Any(p => lower.Contains(p)))
+        {
+            if (string.IsNullOrEmpty(pin))
+            {
+                await SendToGroup($"⚠️ כדי להפעיל Kill Switch שלח גם את ה-PIN (4 ספרות).\nלדוגמה: \"עצור הכל 7743\"", chatId);
+                return;
+            }
+            if (!_failSafe.ValidatePin(pin)) { await SendToGroup("❌ PIN שגוי!", chatId); return; }
+            _failSafe.TripAll($"Kill Switch via natural language by {from}: \"{text}\"", from);
+            await SendToGroup($"🚨 *KILL SWITCH הופעל!*\nכל ה-circuit breakers נפתחו.\nהופעל ע\"י: {from}\nהודעה: \"{text}\"", chatId);
+            return;
+        }
+
+        // Stop buying
+        if (buyStopPatterns.Any(p => lower.Contains(p)))
+        {
+            if (string.IsNullOrEmpty(pin)) { await SendToGroup("⚠️ שלח גם PIN. לדוגמה: \"עצור קניות 7743\"", chatId); return; }
+            if (!_failSafe.ValidatePin(pin)) { await SendToGroup("❌ PIN שגוי!", chatId); return; }
+            _failSafe.TripBreaker("BUYING", $"Stopped via Telegram by {from}: \"{text}\"", from);
+            await SendToGroup($"🔴 *רכישות נעצרו!*\nBreaker BUYING הופעל ע\"י: {from}", chatId);
+            return;
+        }
+
+        // Stop selling
+        if (sellStopPatterns.Any(p => lower.Contains(p)))
+        {
+            if (string.IsNullOrEmpty(pin)) { await SendToGroup("⚠️ שלח גם PIN. לדוגמה: \"עצור מכירות 7743\"", chatId); return; }
+            if (!_failSafe.ValidatePin(pin)) { await SendToGroup("❌ PIN שגוי!", chatId); return; }
+            _failSafe.TripBreaker("SELLING", $"Stopped via Telegram by {from}: \"{text}\"", from);
+            await SendToGroup($"🔴 *מכירות נעצרו!*\nBreaker SELLING הופעל ע\"י: {from}", chatId);
+            return;
+        }
+
+        // Stop cancels
+        if (cancelStopPatterns.Any(p => lower.Contains(p)))
+        {
+            if (string.IsNullOrEmpty(pin)) { await SendToGroup("⚠️ שלח גם PIN. לדוגמה: \"עצור ביטולים 7743\"", chatId); return; }
+            if (!_failSafe.ValidatePin(pin)) { await SendToGroup("❌ PIN שגוי!", chatId); return; }
+            _failSafe.TripBreaker("CANCELS", $"Stopped via Telegram by {from}: \"{text}\"", from);
+            await SendToGroup($"🔴 *ביטולים נעצרו!*\nBreaker CANCELS הופעל ע\"י: {from}", chatId);
+            return;
+        }
+
+        // Reset all
+        if (resetPatterns.Any(p => lower.Contains(p)))
+        {
+            if (string.IsNullOrEmpty(pin)) { await SendToGroup("⚠️ שלח גם PIN. לדוגמה: \"שחרר הכל 7743\"", chatId); return; }
+            if (!_failSafe.ValidatePin(pin)) { await SendToGroup("❌ PIN שגוי!", chatId); return; }
+            _failSafe.ResetAll(from);
+            await SendToGroup($"✅ *כל ה-breakers שוחררו!*\nהופעל ע\"י: {from}", chatId);
+            return;
+        }
     }
 
     // ── Send Message ─────────────────────────────────────────────
