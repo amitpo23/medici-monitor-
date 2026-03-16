@@ -250,6 +250,7 @@ public class TelegramBotService : BackgroundService
                         case "/cancel": await HandleCancelBooking(chatId, text, from); break;
                         case "/deep_check": await HandleDeepCheck(chatId, text); break;
                         case "/anomalies": await HandleAnomalies(chatId); break;
+                        case "/ghosts": await HandleGhosts(chatId); break;
                         case "/schedule": await HandleSchedule(chatId, text); break;
 
                         case "/help": await HandleHelp(chatId); break;
@@ -632,6 +633,57 @@ public class TelegramBotService : BackgroundService
             sb.AppendLine();
         }
         await SendToGroup(sb.ToString(), chatId);
+    }
+
+    private async Task HandleGhosts(string chatId)
+    {
+        try
+        {
+            using var conn = new Microsoft.Data.SqlClient.SqlConnection(_config.GetConnectionString("SqlServer"));
+            await conn.OpenAsync();
+            using var cmd = new Microsoft.Data.SqlClient.SqlCommand(@"
+                SELECT TOP 20 b.PreBookId, b.contentBookingID, b.HotelId, h.Name, b.Price,
+                       b.StartDate, b.EndDate, b.CancellationTo, b.DateInsert, b.IsSold
+                FROM MED_Book b
+                LEFT JOIN Med_Hotels h ON h.HotelId = b.HotelId
+                WHERE b.IsActive = 0 AND b.IsSold = 1
+                  AND b.CancellationTo >= DATEADD(DAY, -90, GETDATE())
+                  AND NOT EXISTS (SELECT 1 FROM MED_CancelBook c WHERE c.PreBookId = b.PreBookId)
+                  AND NOT EXISTS (SELECT 1 FROM MED_CancelBookError e WHERE e.PreBookId = b.PreBookId)
+                ORDER BY b.DateInsert DESC", conn) { CommandTimeout = 15 };
+            using var rdr = await cmd.ExecuteReaderAsync();
+
+            var sb = new System.Text.StringBuilder("👻 *ביטולים רפאיים (Ghost Cancellations):*\n\n");
+            int count = 0;
+            while (await rdr.ReadAsync())
+            {
+                count++;
+                var preBookId = rdr.GetInt32(0);
+                var contentId = rdr.IsDBNull(1) ? 0 : rdr.GetInt32(1);
+                var hotelId = rdr.IsDBNull(2) ? 0 : rdr.GetInt32(2);
+                var hotelName = rdr.IsDBNull(3) ? $"Hotel {hotelId}" : rdr.GetString(3);
+                var price = rdr.IsDBNull(4) ? 0 : rdr.GetDouble(4);
+                var startDate = rdr.IsDBNull(5) ? (DateTime?)null : rdr.GetDateTime(5);
+                var cancelTo = rdr.IsDBNull(7) ? (DateTime?)null : rdr.GetDateTime(7);
+                var dateInsert = rdr.IsDBNull(8) ? (DateTime?)null : rdr.GetDateTime(8);
+                var isPast = startDate.HasValue && startDate.Value < DateTime.UtcNow;
+
+                sb.AppendLine($"🔴 *#{preBookId}* (Innstant: {contentId})");
+                sb.AppendLine($"  🏨 {hotelName}");
+                sb.AppendLine($"  💰 ${price:N0}");
+                sb.AppendLine($"  📅 {startDate:dd/MM/yy}–{rdr.GetDateTime(6):dd/MM/yy} {(isPast ? "_(עבר)_" : "⚠️ *עתידי!*")}");
+                sb.AppendLine($"  ⏰ נוצר: {dateInsert:dd/MM/yy} | דדליין ביטול: {cancelTo:dd/MM/yy}");
+                sb.AppendLine();
+            }
+
+            if (count == 0)
+                sb.AppendLine("✅ אין ביטולים רפאיים — הכל תקין!");
+            else
+                sb.AppendLine($"_סה\"כ: {count} | כובו ב-DB ללא cancel API — ספק עלול לחייב!_");
+
+            await SendToGroup(sb.ToString(), chatId);
+        }
+        catch (Exception ex) { await SendToGroup($"❌ שגיאה: {ex.Message}", chatId); }
     }
 
     // ── Hotel Card & Search ────────────────────────────────────────

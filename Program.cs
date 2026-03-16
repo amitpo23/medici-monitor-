@@ -780,6 +780,43 @@ app.MapGet("/api/verify/anomalies", (DeepVerificationService svc) =>
     return Results.Ok(last?.Anomalies ?? new List<VerificationAnomaly>());
 });
 
+app.MapGet("/api/verify/ghosts", async (HttpContext ctx) =>
+{
+    try
+    {
+        using var conn = new Microsoft.Data.SqlClient.SqlConnection(builder.Configuration.GetConnectionString("SqlServer"));
+        await conn.OpenAsync();
+        using var cmd = new Microsoft.Data.SqlClient.SqlCommand(@"
+            SELECT b.PreBookId, b.contentBookingID, b.HotelId, h.Name AS HotelName, b.Price,
+                   b.StartDate, b.EndDate, b.CancellationTo, b.DateInsert, b.IsSold,
+                   CASE WHEN b.StartDate < GETDATE() THEN 1 ELSE 0 END AS IsPast
+            FROM MED_Book b
+            LEFT JOIN Med_Hotels h ON h.HotelId = b.HotelId
+            WHERE b.IsActive = 0 AND b.IsSold = 1
+              AND b.CancellationTo >= DATEADD(DAY, -90, GETDATE())
+              AND NOT EXISTS (SELECT 1 FROM MED_CancelBook c WHERE c.PreBookId = b.PreBookId)
+              AND NOT EXISTS (SELECT 1 FROM MED_CancelBookError e WHERE e.PreBookId = b.PreBookId)
+            ORDER BY b.DateInsert DESC", conn) { CommandTimeout = 15 };
+        using var rdr = await cmd.ExecuteReaderAsync();
+        var list = new List<object>();
+        while (await rdr.ReadAsync())
+            list.Add(new {
+                preBookId = rdr.GetInt32(0),
+                contentBookingId = rdr.IsDBNull(1) ? 0 : rdr.GetInt32(1),
+                hotelId = rdr.IsDBNull(2) ? 0 : rdr.GetInt32(2),
+                hotelName = rdr.IsDBNull(3) ? "" : rdr.GetString(3),
+                price = rdr.IsDBNull(4) ? 0 : rdr.GetDouble(4),
+                startDate = rdr.IsDBNull(5) ? (DateTime?)null : rdr.GetDateTime(5),
+                endDate = rdr.IsDBNull(6) ? (DateTime?)null : rdr.GetDateTime(6),
+                cancellationTo = rdr.IsDBNull(7) ? (DateTime?)null : rdr.GetDateTime(7),
+                dateInsert = rdr.IsDBNull(8) ? (DateTime?)null : rdr.GetDateTime(8),
+                isPast = !rdr.IsDBNull(10) && rdr.GetInt32(10) == 1
+            });
+        return Results.Ok(new { count = list.Count, ghosts = list });
+    }
+    catch (Exception ex) { return Results.Ok(new { error = ex.Message }); }
+});
+
 app.MapGet("/api/verify/history", (DeepVerificationService svc, HttpContext ctx) =>
 {
     int last = int.TryParse(ctx.Request.Query["last"].FirstOrDefault(), out var n) ? n : 20;
