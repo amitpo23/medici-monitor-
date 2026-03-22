@@ -29,9 +29,11 @@ builder.Services.AddSingleton<InnstantApiClient>();
 builder.Services.AddSingleton<BrowserReconciliationService>();
 builder.Services.AddSingleton<BookingReconciliationService>();
 builder.Services.AddSingleton<DeepVerificationService>();
+builder.Services.AddSingleton<SystemMonitorService>();
 builder.Services.AddHostedService<FailSafeBackgroundService>();
 builder.Services.AddHostedService<AlertNotificationService>();
 builder.Services.AddHostedService<ReconciliationBackgroundService>();
+builder.Services.AddHostedService<SystemMonitorBackgroundService>();
 builder.Services.AddHostedService<TelegramBotService>();
 builder.Services.AddSignalR();
 builder.Services.AddSingleton<MonitorHubNotifier>();
@@ -621,6 +623,22 @@ app.MapPost("/api/ai/chat", async (ClaudeAiService svc, HttpContext ctx) =>
     catch { return Results.BadRequest(new { error = "Expected JSON: {\"message\":\"...\"}" }); }
 });
 
+app.MapGet("/api/ai/analyse-monitor", async (ClaudeAiService svc) =>
+    Results.Ok(await svc.AnalyseMonitor()));
+
+app.MapPost("/api/ai/chat-monitor", async (ClaudeAiService svc, HttpContext ctx) =>
+{
+    using var reader = new StreamReader(ctx.Request.Body);
+    var body = await reader.ReadToEndAsync();
+    try
+    {
+        var doc = System.Text.Json.JsonDocument.Parse(body);
+        var msg = doc.RootElement.GetProperty("message").GetString() ?? "";
+        return Results.Ok(await svc.ChatWithMonitor(msg));
+    }
+    catch { return Results.BadRequest(new { error = "Expected JSON: {\"message\":\"...\"}" }); }
+});
+
 // ═══════════════════════════════════════════════════════════════
 //  Financial P&L, Supplier Scorecard, Occupancy, Excel Export
 // ═══════════════════════════════════════════════════════════════
@@ -850,6 +868,45 @@ app.MapGet("/api/reconciliation/innstant/{bookingId:int}", async (InnstantApiCli
 {
     var result = await svc.GetBookingDetails(bookingId);
     return result != null ? Results.Ok(result) : Results.NotFound(new { error = "Booking not found" });
+});
+
+// ═══════════════════════════════════════════════════════════════
+//  System Monitor (full system health — port of skills/monitor)
+// ═══════════════════════════════════════════════════════════════
+app.MapGet("/api/monitor/full", async (SystemMonitorService svc, AuditService audit, HttpContext ctx) =>
+{
+    audit.RecordFromHttp(ctx, "SystemMonitorFull");
+    return Results.Ok(await svc.RunFullScan());
+});
+
+app.MapGet("/api/monitor/check/{name}", async (SystemMonitorService svc, string name) =>
+{
+    try { return Results.Ok(await svc.RunSingleCheck(name)); }
+    catch (ArgumentException ex) { return Results.BadRequest(new { error = ex.Message }); }
+});
+
+app.MapGet("/api/monitor/status", (SystemMonitorService svc) =>
+{
+    var last = svc.LastReport;
+    return last != null ? Results.Ok(last) : Results.Ok(new { status = "NO_SCAN_YET", message = "Run /api/monitor/full first" });
+});
+
+app.MapGet("/api/monitor/trend", (SystemMonitorService svc, HttpContext ctx) =>
+{
+    int hours = int.TryParse(ctx.Request.Query["hours"].FirstOrDefault(), out var h) ? h : 24;
+    return Results.Ok(svc.GetTrendAnalysis(hours));
+});
+
+app.MapGet("/api/monitor/history", (SystemMonitorService svc, HttpContext ctx) =>
+{
+    int last = int.TryParse(ctx.Request.Query["last"].FirstOrDefault(), out var n) ? n : 50;
+    return Results.Ok(svc.GetHistory(last));
+});
+
+app.MapGet("/api/monitor/alerts-only", async (SystemMonitorService svc) =>
+{
+    var report = await svc.RunFullScan();
+    return Results.Ok(new { count = report.Alerts.Count, alerts = report.Alerts });
 });
 
 // ── Dashboard ──

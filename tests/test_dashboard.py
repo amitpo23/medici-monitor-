@@ -55,6 +55,7 @@ def test_api_endpoints(page):
         ("/api/failsafe/breakers", lambda d: isinstance(d, list)),
         ("/api/logs/stats", lambda d: True),
         ("/api/ai/status", lambda d: "available" in d or "Available" in d),
+        ("/api/monitor/status", lambda d: isinstance(d, dict)),
     ]
 
     for path, validator in endpoints:
@@ -111,7 +112,7 @@ def test_nav_tabs(page):
         "overview", "salesorder", "reservations", "waste", "conversion",
         "pricedrift", "errors", "azure", "bi", "emergency", "history",
         "alerting", "sla", "dbhealth", "incidents", "audit", "notifications",
-        "failsafe", "reconciliation", "webjobs", "ai", "logs"
+        "failsafe", "reconciliation", "webjobs", "sysmonitor", "ai", "logs"
     ]
 
     tabs = page.locator(".nav-tab")
@@ -237,6 +238,23 @@ def test_notifications_tab(page):
     log_pass("Notifications tab screenshot saved")
 
 
+def test_system_monitor_tab(page):
+    """Test system monitor tab renders and exposes core actions"""
+    print("\n🔹 System Monitor Tab")
+
+    page.locator('.nav-tab[data-nav="sysmonitor"]').click()
+    time.sleep(1)
+
+    run_btn = page.locator('button:has-text("הרץ סריקה מלאה")')
+    if run_btn.count() > 0:
+        log_pass("System monitor scan button found")
+    else:
+        log_fail("System monitor scan button missing")
+
+    page.screenshot(path="tests/screenshots/system_monitor.png", full_page=False)
+    log_pass("System monitor tab screenshot saved")
+
+
 def test_console_errors(page):
     """Check for JavaScript console errors"""
     print("\n🔹 Console Errors")
@@ -282,6 +300,7 @@ def main():
             test_reconciliation_tab(page)
             test_killswitch_tab(page)
             test_notifications_tab(page)
+            test_system_monitor_tab(page)
             test_console_errors(page)
         finally:
             browser.close()

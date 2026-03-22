@@ -279,6 +279,74 @@ server.tool(
   }
 );
 
+// ── System Monitor (full health scan) ──
+
+server.tool(
+  "medici_monitor_full",
+  "Run full system monitor scan: WebJob health, table row counts, mapping quality, skills health, orders status, Zenith SOAP probe, cancellation health, cancel error analysis. Includes trend analysis and alert escalation.",
+  {},
+  async () => {
+    const data = await apiFetch("/api/monitor/full");
+    const summary = {
+      timestamp: data.timestamp,
+      alertCount: data.alerts?.length || 0,
+      alerts: data.alerts?.map((a) => ({
+        severity: a.severity,
+        component: a.component,
+        message: a.message,
+      })),
+      trend: data.trend
+        ? {
+            overallTrend: data.trend.overallTrend,
+            healthPct: data.trend.healthPct,
+            totalRuns: data.trend.totalRuns,
+          }
+        : null,
+      checks: Object.keys(data.results || {}),
+    };
+    return {
+      content: [{ type: "text", text: JSON.stringify(summary, null, 2) }],
+    };
+  }
+);
+
+server.tool(
+  "medici_monitor_check",
+  "Run a specific system monitor check. Available checks: webjob, tables, mapping, skills, orders, zenith, cancellation, cancel_errors",
+  {
+    check: z
+      .string()
+      .describe(
+        "Check name: webjob, tables, mapping, skills, orders, zenith, cancellation, cancel_errors, buyrooms, reservations, price_override_pipeline, data_freshness, booking_sales"
+      ),
+  },
+  async ({ check }) => {
+    const data = await apiFetch(`/api/monitor/check/${check}`);
+    return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+  }
+);
+
+server.tool(
+  "medici_monitor_trend",
+  "Get system health trend analysis: overall trend (STABLE/DEGRADING/IMPROVING), health percentage, component breakdown with consecutive CRITICAL counts",
+  { hours: z.number().optional().describe("Lookback hours (default 24)") },
+  async ({ hours }) => {
+    const h = hours || 24;
+    const data = await apiFetch(`/api/monitor/trend?hours=${h}`);
+    return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+  }
+);
+
+server.tool(
+  "medici_monitor_sales",
+  "Get booking sales health: buy/sell conversion, P&L, expiring rooms, opportunities. Covers all 10 skills.",
+  {},
+  async () => {
+    const data = await apiFetch("/api/monitor/check/booking_sales");
+    return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+  }
+);
+
 // ── Start Server ──
 
 const transport = new StdioServerTransport();

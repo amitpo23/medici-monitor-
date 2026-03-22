@@ -17,3 +17,5 @@ azurelogs/
 .vs/
 Logs/
 debug-playwright.js
+
+# Daily dev logs (tracked intentionally)

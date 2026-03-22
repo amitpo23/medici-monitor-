@@ -29,6 +29,9 @@ check_endpoint GET /healthz 200
 check_endpoint GET /api/alerts 200
 check_endpoint GET /api/alerts/thresholds 200
 check_endpoint GET /api/notifications/config 200
+check_endpoint GET /api/monitor/status 200
+check_endpoint GET "/api/monitor/history?last=1" 200
+check_endpoint GET "/api/monitor/trend?hours=24" 200
 
 echo "----------------------------------------"
 echo "Tip: If thresholds/config endpoints are 404, production is likely on an older build."

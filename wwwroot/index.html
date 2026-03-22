@@ -249,6 +249,7 @@ td.log-msg{white-space:pre-wrap;word-break:break-word;max-width:600px;font-famil
   <div class="nav-tab" data-nav="occupancy">&#x1F3E8; תפוסה</div>
   <div class="nav-tab" data-nav="deepverify">&#x1F6E1;&#xFE0F; אימות מעמיק <span class="count red" id="navVerifyCount" style="display:none">0</span></div>
   <div class="nav-tab" data-nav="reconciliation">&#x1F50D; התאמת הזמנות <span class="count red" id="navReconCount" style="display:none">0</span></div>
+  <div class="nav-tab" data-nav="sysmonitor">&#x1F5A5;&#xFE0F; System Monitor <span class="count blue" id="navMonitorCount" style="display:none">0</span></div>
   <div class="nav-tab" data-nav="ai">&#x1F9E0; Claude AI</div>
   <div class="nav-tab" data-nav="logs">&#x1F4DC; Logs <span class="count blue" id="navLogCount">0</span></div>
 </div>
@@ -1341,6 +1342,80 @@ td.log-msg{white-space:pre-wrap;word-break:break-word;max-width:600px;font-famil
   </div>
 </div>
 
+<div class="nav-panel" id="panel-sysmonitor">
+  <div style="display:flex;gap:12px;align-items:center;margin-bottom:16px;flex-wrap:wrap">
+    <button onclick="runMonitorScan()" class="action-btn" style="background:var(--accent);color:#fff;border:none">&#x1F50D; הרץ סריקה מלאה</button>
+    <span id="monitorLastScan" style="font-size:12px;color:var(--text2)">לא בוצעה סריקה עדיין</span>
+  </div>
+
+  <!-- Trend Banner -->
+  <div id="monitorTrendBanner" style="margin-bottom:16px"></div>
+
+  <!-- Alert Summary -->
+  <div class="section" style="margin-bottom:16px">
+    <div class="section-header"><h2>&#x1F6A8; התראות מוניטור</h2><span class="badge" id="monitorAlertBadge">0</span></div>
+    <div id="monitorAlerts" style="padding:12px 16px;font-size:13px;color:var(--text2)">הרץ סריקה כדי לראות תוצאות</div>
+  </div>
+
+  <!-- Check Cards -->
+  <div class="cards" id="monitorCheckCards" style="margin-bottom:16px"></div>
+
+  <!-- Detailed Results -->
+  <div class="grid2">
+    <div class="section">
+      <div class="section-header"><h2>&#x2699;&#xFE0F; WebJob</h2></div>
+      <div id="monitorWebjob" style="padding:12px 16px;font-size:13px">—</div>
+    </div>
+    <div class="section">
+      <div class="section-header"><h2>&#x1F30D; Zenith SOAP</h2></div>
+      <div id="monitorZenith" style="padding:12px 16px;font-size:13px">—</div>
+    </div>
+  </div>
+  <div class="grid2" style="margin-top:16px">
+    <div class="section">
+      <div class="section-header"><h2>&#x1F5FA;&#xFE0F; Mapping Quality</h2></div>
+      <div id="monitorMapping" style="padding:12px 16px;font-size:13px">—</div>
+    </div>
+    <div class="section">
+      <div class="section-header"><h2>&#x1F4CA; Cancel Errors</h2></div>
+      <div id="monitorCancelErrors" style="padding:12px 16px;font-size:13px">—</div>
+    </div>
+  </div>
+
+  <div class="grid2" style="margin-top:16px">
+    <div class="section">
+      <div class="section-header"><h2>&#x1F6D2; BuyRooms</h2></div>
+      <div id="monitorBuyrooms" style="padding:12px 16px;font-size:13px">—</div>
+    </div>
+    <div class="section">
+      <div class="section-header"><h2>&#x1F4E5; Reservations</h2></div>
+      <div id="monitorReservations" style="padding:12px 16px;font-size:13px">—</div>
+    </div>
+  </div>
+  <div class="grid2" style="margin-top:16px">
+    <div class="section">
+      <div class="section-header"><h2>&#x1F4B0; Sales & P&L</h2></div>
+      <div id="monitorSales" style="padding:12px 16px;font-size:13px">—</div>
+    </div>
+    <div class="section">
+      <div class="section-header"><h2>&#x1F4E1; Data Freshness</h2></div>
+      <div id="monitorFreshness" style="padding:12px 16px;font-size:13px">—</div>
+    </div>
+  </div>
+
+  <!-- Tables -->
+  <div class="section" style="margin-top:16px">
+    <div class="section-header"><h2>&#x1F5C4;&#xFE0F; Table Health</h2></div>
+    <div id="monitorTables" style="padding:0">—</div>
+  </div>
+
+  <!-- History -->
+  <div class="section" style="margin-top:16px">
+    <div class="section-header"><h2>&#x1F4C8; היסטוריית סריקות</h2></div>
+    <div id="monitorHistory" style="padding:12px 16px;font-size:13px">—</div>
+  </div>
+</div>
+
 <div class="nav-panel" id="panel-ai">
 
   <!-- Status Bar -->
@@ -1372,13 +1447,18 @@ td.log-msg{white-space:pre-wrap;word-break:break-word;max-width:600px;font-famil
       <div style="font-weight:700;font-size:14px">סיכום יומי</div>
       <div style="font-size:11px;color:var(--text2);margin-top:4px">Daily briefing מלא למנהל</div>
     </button>
+    <button onclick="aiAction('analyse-monitor')" class="ai-action-btn" style="background:linear-gradient(135deg,#9b59b622,#9b59b611);border:1px solid #9b59b655;color:var(--text);padding:16px;border-radius:12px;cursor:pointer;text-align:right;transition:all .2s">
+      <div style="font-size:20px;margin-bottom:6px">🖥️</div>
+      <div style="font-weight:700;font-size:14px">ניתוח System Monitor</div>
+      <div style="font-size:11px;color:var(--text2);margin-top:4px">13 בדיקות + ניתוח AI מלא</div>
+    </button>
   </div>
 
   <!-- Chat Section -->
   <div class="section" style="margin-bottom:16px">
-    <div class="section-header"><h2>💬 שאל את Claude</h2></div>
+    <div class="section-header"><h2>💬 שאל את Claude (עם הקשר מוניטור)</h2></div>
     <div style="display:flex;gap:8px;padding:0 0 12px">
-      <input id="aiChatInput" type="text" placeholder="שאל שאלה על המערכת..." style="flex:1;background:var(--surface2);color:var(--text);border:1px solid var(--border);padding:10px 14px;border-radius:8px;font-size:14px;font-family:inherit" onkeyup="if(event.key==='Enter')aiChat()">
+      <input id="aiChatInput" type="text" placeholder="שאל על המערכת... (למשל: למה Zenith איטי? האם BuyRooms עובד?)" style="flex:1;background:var(--surface2);color:var(--text);border:1px solid var(--border);padding:10px 14px;border-radius:8px;font-size:14px;font-family:inherit" onkeyup="if(event.key==='Enter')aiChat()">
       <button onclick="aiChat()" style="background:var(--blue);color:#fff;border:none;padding:10px 20px;border-radius:8px;cursor:pointer;font-weight:700;font-size:14px;white-space:nowrap">🚀 שלח</button>
     </div>
   </div>
@@ -1462,6 +1542,7 @@ document.querySelectorAll('.nav-tab').forEach(tab => {
     if (tab.dataset.nav === 'deepverify') loadVerifyStatus();
     if (tab.dataset.nav === 'reconciliation') { loadReconStatus(); loadReconHistory(); }
     if (tab.dataset.nav === 'financial') loadPnl();
+    if (tab.dataset.nav === 'sysmonitor') loadMonitorStatus();
     if (tab.dataset.nav === 'suppliers') loadSupplierScorecard();
     if (tab.dataset.nav === 'occupancy') loadHeatmap();
   });
@@ -2444,7 +2525,7 @@ async function aiChat() {
   area.innerHTML = '<div style="text-align:center;padding:30px"><div class="spinner"></div><br><span style="color:var(--text2);font-size:13px">Claude חושב...</span></div>';
   meta.textContent = '';
   try {
-    const resp = await apiFetch('/api/ai/chat', {
+    const resp = await apiFetch('/api/ai/chat-monitor', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ message: msg })
@@ -4269,6 +4350,207 @@ async function loadReconHistory() {
     });
     html += '</table>';
     document.getElementById('reconHistory').innerHTML = html;
+  } catch(e) {}
+}
+
+// ── System Monitor ──
+async function runMonitorScan() {
+  document.getElementById('monitorLastScan').textContent = 'סורק...';
+  try {
+    const r = await apiFetch('/api/monitor/full');
+    const d = await r.json();
+    renderMonitorReport(d);
+  } catch(e) { document.getElementById('monitorAlerts').innerHTML = '<span style="color:var(--red)">שגיאה בסריקה: '+e.message+'</span>'; }
+}
+
+async function loadMonitorStatus() {
+  try {
+    const r = await apiFetch('/api/monitor/status');
+    const d = await r.json();
+    if (d.status === 'NO_SCAN_YET') return;
+    renderMonitorReport(d);
+  } catch(e) {}
+}
+
+function renderMonitorReport(d) {
+  // Last scan time
+  document.getElementById('monitorLastScan').textContent = 'סריקה אחרונה: ' + new Date(d.timestamp).toLocaleString('he-IL');
+
+  // Alerts
+  const alerts = d.alerts || [];
+  const critCount = alerts.filter(a => a.severity === 'CRITICAL' || a.severity === 'EMERGENCY').length;
+  const warnCount = alerts.filter(a => a.severity === 'WARNING').length;
+  const badge = document.getElementById('monitorAlertBadge');
+  badge.textContent = alerts.length;
+  badge.className = 'badge ' + (critCount > 0 ? 'red' : warnCount > 0 ? 'yellow' : 'green');
+
+  const navBadge = document.getElementById('navMonitorCount');
+  if (critCount > 0) { navBadge.textContent = critCount; navBadge.style.display = ''; navBadge.className = 'count red'; }
+  else if (warnCount > 0) { navBadge.textContent = warnCount; navBadge.style.display = ''; navBadge.className = 'count yellow'; }
+  else navBadge.style.display = 'none';
+
+  if (!alerts.length) {
+    document.getElementById('monitorAlerts').innerHTML = '<div style="color:var(--green);font-weight:600">&#x2705; אין התראות — כל המערכות תקינות</div>';
+  } else {
+    let html = '';
+    alerts.forEach(a => {
+      const icon = {EMERGENCY:'&#x1F534;&#x1F534;',CRITICAL:'&#x1F534;',WARNING:'&#x1F7E1;',ERROR:'&#x1F7E0;',INFO:'&#x2139;&#xFE0F;'}[a.severity]||'&#x2139;&#xFE0F;';
+      const color = {EMERGENCY:'var(--red)',CRITICAL:'var(--red)',WARNING:'var(--yellow)',ERROR:'var(--orange)'}[a.severity]||'var(--text2)';
+      html += `<div style="padding:6px 0;border-bottom:1px solid var(--border);display:flex;gap:8px;align-items:center">
+        <span>${icon}</span>
+        <span style="font-weight:600;color:${color};min-width:80px">[${a.component}]</span>
+        <span>${a.message}</span>
+      </div>`;
+    });
+    document.getElementById('monitorAlerts').innerHTML = html;
+  }
+
+  // Trend banner
+  const trend = d.trend;
+  if (trend) {
+    const trendIcon = {DEGRADING:'&#x1F4C9;',IMPROVING:'&#x1F4C8;',STABLE:'&#x27A1;&#xFE0F;'}[trend.overallTrend]||'&#x27A1;&#xFE0F;';
+    const trendColor = trend.overallTrend === 'DEGRADING' ? 'var(--red)' : trend.overallTrend === 'IMPROVING' ? 'var(--green)' : 'var(--accent)';
+    document.getElementById('monitorTrendBanner').innerHTML = `
+      <div style="display:flex;gap:16px;align-items:center;padding:12px 16px;background:var(--surface);border:1px solid ${trendColor};border-radius:8px">
+        <span style="font-size:24px">${trendIcon}</span>
+        <div>
+          <div style="font-weight:600;color:${trendColor}">טרנד: ${trend.overallTrend}</div>
+          <div style="font-size:12px;color:var(--text2)">סריקות: ${trend.totalRuns} | בריאות: ${trend.healthPct}% | התראות: ${trend.firstHalfAlerts} → ${trend.secondHalfAlerts}</div>
+        </div>
+      </div>`;
+  }
+
+  // Check cards
+  const results = d.results || {};
+  const checkNames = {webjob:'WebJob ⚙️',tables:'Tables 🗄️',mapping:'Mapping 🗺️',skills:'Skills 🛠️',orders:'Orders 📦',zenith:'Zenith 🌐',cancellation:'Cancellation ❌',cancel_errors:'Cancel Errors 📊',buyrooms:'BuyRooms 🛒',reservations:'Reservations 📥',price_override_pipeline:'Overrides 💲',data_freshness:'Data Freshness 📡',booking_sales:'Sales & P&L 💰'};
+  let cardsHtml = '';
+  Object.keys(checkNames).forEach(key => {
+    const exists = results[key] !== undefined;
+    cardsHtml += `<div class="card ${exists ? 'ok' : ''}"><div class="label">${checkNames[key]}</div><div class="value" style="font-size:16px">${exists ? '✅' : '—'}</div></div>`;
+  });
+  document.getElementById('monitorCheckCards').innerHTML = cardsHtml;
+
+  // WebJob detail
+  if (results.webjob) {
+    const wj = results.webjob;
+    const log = wj.last_log;
+    document.getElementById('monitorWebjob').innerHTML = `
+      <div style="margin-bottom:8px"><b>Last log:</b> ${log ? log.minutes_ago + ' דקות (Order ' + log.order_id + ')' : 'N/A'}</div>
+      <div><b>Pending:</b> ${wj.pending_orders || 0} | <b>Failed:</b> ${wj.failed_orders || 0}</div>
+      <div><b>Active:</b> ${wj.active_orders || 0} | <b>Cycle:</b> ~${wj.estimated_cycle_hours || '?'}h</div>
+      ${wj.in_progress && wj.in_progress.length ? '<div style="margin-top:8px"><b>In Progress:</b> ' + wj.in_progress.map(p => p.hotel).join(', ') + '</div>' : ''}`;
+  }
+
+  // Zenith detail
+  if (results.zenith) {
+    const z = results.zenith;
+    const color = z.status === 'OK' ? 'var(--green)' : 'var(--red)';
+    document.getElementById('monitorZenith').innerHTML = `
+      <div style="font-size:18px;font-weight:700;color:${color};margin-bottom:8px">${z.status}</div>
+      <div><b>Latency:</b> ${z.latency_ms || '?'}ms</div>
+      <div><b>HTTP:</b> ${z.http_status || '?'}</div>
+      ${z.error ? '<div style="color:var(--red);margin-top:4px">' + z.error + '</div>' : ''}`;
+  }
+
+  // Mapping detail
+  if (results.mapping) {
+    const m = results.mapping;
+    const gaps = m.order_detail_gaps || [];
+    document.getElementById('monitorMapping').innerHTML = `
+      <div><b>Hotels:</b> ${m.active_hotels || 0} active | <b>BB:</b> ${m.hotels_with_bb || 0}</div>
+      <div><b>ratebycat:</b> ${m.hotels_with_ratebycat || 0} hotels</div>
+      <div><b>Miss rate:</b> ${m.miss_rate_last_hour || 0}/hour</div>
+      <div><b>Open misses:</b> ${(m.open_misses||[]).length}</div>
+      ${gaps.length ? '<div style="margin-top:8px;color:var(--yellow)"><b>ORDER≠DETAIL gaps:</b> ' + gaps.map(g => g.hotel + ' (' + g.gap + ')').join(', ') + '</div>' : '<div style="color:var(--green);margin-top:4px">✅ ORDER=DETAIL: ALL PASS</div>'}`;
+  }
+
+  // Cancel errors detail
+  if (results.cancel_errors) {
+    const ce = results.cancel_errors;
+    const trendColor2 = ce.trend === 'INCREASING' ? 'var(--red)' : ce.trend === 'DECREASING' ? 'var(--green)' : 'var(--text2)';
+    document.getElementById('monitorCancelErrors').innerHTML = `
+      <div><b>Total:</b> ${ce.total_errors || 0} | <b>Trend:</b> <span style="color:${trendColor2}">${ce.trend || '?'}</span></div>
+      ${(ce.top_error_types||[]).length ? '<div style="margin-top:8px"><b>Top errors:</b></div>' + (ce.top_error_types||[]).slice(0,5).map(e => '<div style="font-size:12px;color:var(--text2)">' + e.count + '× ' + (e.error||'').substring(0,60) + '</div>').join('') : ''}
+      ${(ce.daily_trend_7d||[]).length ? '<div style="margin-top:8px"><b>7d daily:</b> ' + (ce.daily_trend_7d||[]).map(d2 => d2.date.slice(5) + ':' + d2.count).join(' | ') + '</div>' : ''}`;
+  }
+
+  // BuyRooms detail
+  if (results.buyrooms) {
+    const br = results.buyrooms;
+    const sellRate = br.sell_rate_pct || 0;
+    const sellColor = sellRate > 50 ? 'var(--green)' : sellRate > 30 ? 'var(--yellow)' : 'var(--red)';
+    document.getElementById('monitorBuyrooms').innerHTML = `
+      <div><b>Last purchase:</b> ${br.minutes_since_last_purchase || '?'} min ago</div>
+      <div><b>Purchases:</b> last hour=${br.purchases_last_hour || 0} | 24h=${br.purchases_last_24h || 0}</div>
+      <div><b>Active:</b> ${br.active_bookings || 0} | <b>Sold:</b> ${br.sold_bookings || 0} | <b>Unsold:</b> ${br.unsold_bookings || 0}</div>
+      <div><b>Sell rate:</b> <span style="color:${sellColor};font-weight:600">${sellRate}%</span></div>
+      <div><b>Active value:</b> $${(br.total_active_value || 0).toLocaleString()}</div>`;
+  }
+
+  // Reservations detail
+  if (results.reservations) {
+    const rv = results.reservations;
+    document.getElementById('monitorReservations').innerHTML = `
+      <div><b>Last callback:</b> ${rv.minutes_since_last_reservation || '?'} min ago</div>
+      <div><b>Last 24h:</b> ${rv.last_24h || 0} total | ${rv.committed_24h || 0} committed | ${rv.cancelled_24h || 0} cancelled</div>
+      <div><b>Last hour:</b> ${rv.last_hour || 0}</div>
+      <div><b>Revenue 24h:</b> $${(rv.revenue_24h || 0).toLocaleString()}</div>`;
+  }
+
+  // Sales & P&L detail
+  if (results.booking_sales) {
+    const bs = results.booking_sales;
+    const profitColor = (bs.profit_7d || 0) >= 0 ? 'var(--green)' : 'var(--red)';
+    document.getElementById('monitorSales').innerHTML = `
+      <div><b>7d:</b> Bought=${bs.bought_7d || 0} | Sold=${bs.sold_7d || 0} | Conversion=${bs.conversion_7d_pct || 0}%</div>
+      <div><b>Expiring 48h:</b> <span style="color:${(bs.expiring_48h||0)>5?'var(--red)':'inherit'}">${bs.expiring_48h || 0}</span> | <b>Wasted:</b> ${bs.wasted_7d || 0}</div>
+      <div><b>P&L 7d:</b> Buy=$${(bs.buy_total_7d||0).toLocaleString()} | Sell=$${(bs.sell_total_7d||0).toLocaleString()}</div>
+      <div><b>Profit:</b> <span style="color:${profitColor};font-weight:700">$${(bs.profit_7d||0).toLocaleString()} (${bs.margin_pct||0}%)</span></div>
+      <div><b>Opportunities 24h:</b> ${bs.opportunities_24h || 0} (active=${bs.opp_active || 0})</div>`;
+  }
+
+  // Data Freshness detail
+  if (results.data_freshness) {
+    const df = results.data_freshness;
+    const scanAge = df.scan_log_age_minutes || 0;
+    const detailAge = df.detail_age_minutes || 0;
+    const scanColor = scanAge > 60 ? 'var(--red)' : scanAge > 30 ? 'var(--yellow)' : 'var(--green)';
+    const detailColor = detailAge > 60 ? 'var(--red)' : detailAge > 30 ? 'var(--yellow)' : 'var(--green)';
+    document.getElementById('monitorFreshness').innerHTML = `
+      <div><b>Last scan log:</b> <span style="color:${scanColor}">${scanAge} min ago</span></div>
+      <div><b>Last price detail:</b> <span style="color:${detailColor}">${detailAge} min ago</span></div>
+      <div><b>Price changes:</b> last hour=${df.price_changes_last_hour || 0} | 24h=${df.price_changes_last_24h || 0}</div>
+      <div><b>Hotels scanned 24h:</b> ${df.hotels_scanned_24h || '?'}</div>`;
+  }
+
+  // Tables
+  if (results.tables) {
+    let thtml = '<table><thead><tr><th>Table</th><th>Total</th><th>Active</th></tr></thead><tbody>';
+    Object.entries(results.tables).forEach(([name, info]) => {
+      if (info.error) { thtml += `<tr><td>${name}</td><td colspan="2" style="color:var(--red)">${info.error}</td></tr>`; }
+      else { thtml += `<tr><td>${name}</td><td>${(info.total||0).toLocaleString()}</td><td>${info.active !== null && info.active !== undefined ? info.active.toLocaleString() : '—'}</td></tr>`; }
+    });
+    thtml += '</tbody></table>';
+    document.getElementById('monitorTables').innerHTML = thtml;
+  }
+
+  // History
+  loadMonitorHistory();
+}
+
+async function loadMonitorHistory() {
+  try {
+    const r = await apiFetch('/api/monitor/history?last=20');
+    const history = await r.json();
+    if (!history.length) { document.getElementById('monitorHistory').innerHTML = '<div style="color:var(--text2)">אין היסטוריה</div>'; return; }
+    let html = '<table><thead><tr><th>זמן</th><th>התראות</th><th>פרטים</th></tr></thead><tbody>';
+    history.forEach(h => {
+      const color = h.alertCount === 0 ? 'var(--green)' : h.alertCount >= 3 ? 'var(--red)' : 'var(--yellow)';
+      const details = (h.alerts||[]).slice(0,3).map(a => `[${a.severity}] ${a.component}`).join(', ');
+      html += `<tr><td>${new Date(h.timestamp).toLocaleString('he-IL')}</td><td style="color:${color};font-weight:600">${h.alertCount}</td><td style="font-size:12px;color:var(--text2)">${details||'✅ Clean'}</td></tr>`;
+    });
+    html += '</tbody></table>';
+    document.getElementById('monitorHistory').innerHTML = html;
   } catch(e) {}
 }
 

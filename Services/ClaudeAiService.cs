@@ -16,6 +16,7 @@ public class ClaudeAiService
     private readonly ILogger<ClaudeAiService> _logger;
     private readonly DataService _data;
     private readonly AzureMonitoringService _azure;
+    private readonly SystemMonitorService _monitor;
     private readonly IConfiguration _config;
     private AnthropicClient? _client;
 
@@ -38,11 +39,13 @@ public class ClaudeAiService
         ILogger<ClaudeAiService> logger,
         DataService data,
         AzureMonitoringService azure,
+        SystemMonitorService monitor,
         IConfiguration config)
     {
         _logger = logger;
         _data = data;
         _azure = azure;
+        _monitor = monitor;
         _config = config;
         Init();
     }
@@ -445,7 +448,124 @@ public class ClaudeAiService
         }
     }
 
-    // ─── 5. Free-form Chat ───────────────────────────────────────
+    // ─── 5. Analyse System Monitor ──────────────────────────────
+
+    public async Task<AiAnalysisResult> AnalyseMonitor()
+    {
+        if (!IsAvailable) return Unavailable();
+        try
+        {
+            var report = _monitor.LastReport ?? await _monitor.RunFullScan();
+            var trend = _monitor.GetTrendAnalysis(24);
+
+            var monitorData = new
+            {
+                report.Timestamp,
+                AlertCount = report.Alerts.Count,
+                Alerts = report.Alerts.Select(a => new { a.Severity, a.Component, a.Message }),
+                Trend = new { trend.OverallTrend, trend.HealthPct, trend.TotalRuns, trend.FirstHalfAlerts, trend.SecondHalfAlerts,
+                    EscalationComponents = trend.Components.Where(c => c.Value.ConsecutiveCritical >= 3).Select(c => new { Component = c.Key, c.Value.ConsecutiveCritical }) },
+                Checks = report.Results.Keys.ToList(),
+                report.Results
+            };
+
+            var json = JsonSerializer.Serialize(monitorData, JsonOpts);
+
+            var prompt = $@"להלן תוצאות סריקת System Monitor מלאה של מערכת Medici Hotels (13 בדיקות):
+```json
+{json}
+```
+
+הסריקה כוללת: WebJob, Tables, Mapping, Skills, Orders, Zenith SOAP, Cancellation, Cancel Errors, BuyRooms, Reservations, Price Override Pipeline, Data Freshness, Booking Sales.
+
+נתח את התוצאות:
+1. 🏥 **מצב כללי** — ציון 1-10 לבריאות המערכת
+2. 🔴 **בעיות קריטיות** — מה דורש טיפול מיידי?
+3. 🟡 **אזהרות** — מה כדאי לשים לב אליו?
+4. 📈 **טרנד** — האם המערכת משתפרת או מידרדרת?
+5. 🛒 **BuyRooms & Sales** — האם הרכישות והמכירות תקינות? conversion rate?
+6. 🌐 **Zenith & Reservations** — האם הממשק עם Zenith תקין? callbacks מגיעים?
+7. 🗺️ **Mapping** — האם יש בעיות mapping שמונעות סריקות?
+8. 📡 **Data Freshness** — האם הנתונים עדכניים?
+9. 💡 **המלצות** — 3 דברים לעשות עכשיו
+10. ⚠️ **ESCALATION** — האם יש רכיבים עם CRITICAL חוזרים?";
+
+            return await Ask(prompt);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "AnalyseMonitor failed");
+            return Error(ex);
+        }
+    }
+
+    // ─── 6. Chat with full Monitor context ────────────────────────
+
+    public async Task<AiAnalysisResult> ChatWithMonitor(string userMessage)
+    {
+        if (!IsAvailable) return Unavailable();
+        if (string.IsNullOrWhiteSpace(userMessage))
+            return new AiAnalysisResult { Success = false, Error = "הודעה ריקה" };
+
+        try
+        {
+            // Gather rich context from multiple sources
+            var status = await _data.GetFullStatus();
+            var report = _monitor.LastReport;
+            var trend = _monitor.GetTrendAnalysis(24);
+
+            var context = new
+            {
+                SystemStatus = new
+                {
+                    status.DbConnected, status.TotalActiveBookings, status.BoughtToday, status.SoldToday,
+                    status.BoughtTodayValue, status.SoldTodayValue, status.ProfitLoss,
+                    status.BookingErrorsLast24h, status.CancelErrorsLast24h, status.StuckCancellations,
+                    status.WasteRoomsTotal, status.WasteTotalValue, status.QueuePending,
+                    status.SalesOfficePending, status.SalesOfficeInProgress, status.SalesOfficeFailed,
+                    status.ReservationsToday, status.BuyRoomsHealthy
+                },
+                Monitor = report != null ? new
+                {
+                    report.Timestamp,
+                    AlertCount = report.Alerts.Count,
+                    CriticalAlerts = report.Alerts.Where(a => a.Severity is "CRITICAL" or "EMERGENCY")
+                        .Select(a => $"{a.Component}: {a.Message}").ToList(),
+                    WarningAlerts = report.Alerts.Where(a => a.Severity == "WARNING")
+                        .Select(a => $"{a.Component}: {a.Message}").ToList(),
+                    Checks = report.Results.Keys.ToList(),
+                    Results = report.Results
+                } : null as object,
+                Trend = new { trend.OverallTrend, trend.HealthPct, trend.TotalRuns,
+                    trend.FirstHalfAlerts, trend.SecondHalfAlerts }
+            };
+
+            var json = JsonSerializer.Serialize(context, JsonOpts);
+
+            var prompt = $@"הקשר מלא של מערכת Medici Hotels (סטטוס + System Monitor + טרנדים):
+```json
+{json}
+```
+
+10 תהליכים פועלים: (1) SalesOffice Scanning (2) BuyRoom (3) Reservation Callback (4) Auto-Cancellation (5) Sales Management (6) MediMap (7) Price Override (8) Insert Opp (9) System Monitor (10) Hotel Data Explorer.
+
+13 בדיקות מוניטור: WebJob, Tables, Mapping, Skills, Orders, Zenith, Cancellation, CancelErrors, BuyRooms, Reservations, PriceOverridePipeline, DataFreshness, BookingSales.
+
+שאלת המשתמש: {userMessage}
+
+ענה בעברית. אם השאלה דורשת חקירה ספציפית — ציין איזו בדיקה (/monitor_check <name>) או פקודה (/hotel, /trace, /verify) כדאי להריץ.
+אם יש בעיה — הסבר מה הגורם, מה ההשפעה העסקית, ומה לעשות עכשיו.";
+
+            return await Ask(prompt);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "ChatWithMonitor failed");
+            return Error(ex);
+        }
+    }
+
+    // ─── 7. Free-form Chat (basic) ────────────────────────────────
 
     public async Task<AiAnalysisResult> Chat(string userMessage)
     {

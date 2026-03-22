@@ -1,0 +1,391 @@
+{
+  "timestamp": "2026-03-20T12:20:28.249006",
+  "results": {
+    "webjob": {
+      "last_log": {
+        "order_id": 1852,
+        "time": "2026-03-20 10:19:50",
+        "minutes_ago": 120.3
+      },
+      "in_progress": [
+        {
+          "order_id": 1853,
+          "hotel": "Crystal Beach Suites Hotel"
+        }
+      ],
+      "pending_orders": 0,
+      "failed_orders": 0,
+      "active_orders": 1772,
+      "estimated_cycle_hours": 14.8
+    },
+    "tables": {
+      "SalesOffice.Orders": {
+        "total": 1772,
+        "active": 1772
+      },
+      "SalesOffice.Details": {
+        "total": 6757,
+        "active": 4051
+      },
+      "SalesOffice.MappingMisses": {
+        "total": 57,
+        "active": 52
+      },
+      "SalesOffice.PriceOverride": {
+        "total": 1,
+        "active": 0
+      },
+      "SalesOffice.Log": {
+        "total": 1341865,
+        "active": null
+      },
+      "Med_Hotels_ratebycat": {
+        "total": 1033,
+        "active": null
+      },
+      "BackOfficeOPT": {
+        "total": 1823,
+        "active": 0
+      },
+      "MED_Book": {
+        "total": 5047,
+        "active": 95
+      },
+      "MED_CancelBook": {
+        "total": 4684,
+        "active": null
+      },
+      "MED_CancelBookError": {
+        "total": 34048,
+        "active": null
+      }
+    },
+    "mapping": {
+      "active_hotels": 23,
+      "hotels_with_ratebycat": 263,
+      "hotels_with_bb": 221,
+      "open_misses": [
+        {
+          "hotel_id": 6660,
+          "category": "dormitory",
+          "board": "RO",
+          "hits": 1
+        },
+        {
+          "hotel_id": 6661,
+          "category": "standard",
+          "board": "BB",
+          "hits": 1
+        },
+        {
+          "hotel_id": 6661,
+          "category": "suite",
+          "board": "BB",
+          "hits": 1
+        },
+        {
+          "hotel_id": 6663,
+          "category": "standard",
+          "board": "BB",
+          "hits": 1
+        },
+        {
+          "hotel_id": 6805,
+          "category": "apartment",
+          "board": "BB",
+          "hits": 2
+        },
+        {
+          "hotel_id": 6805,
+          "category": "apartment",
+          "board": "RO",
+          "hits": 2
+        },
+        {
+          "hotel_id": 6805,
+          "category": "deluxe",
+          "board": "HB",
+          "hits": 2
+        },
+        {
+          "hotel_id": 6805,
+          "category": "executive",
+          "board": "BB",
+          "hits": 1
+        },
+        {
+          "hotel_id": 6805,
+          "category": "executive",
+          "board": "RO",
+          "hits": 1
+        },
+        {
+          "hotel_id": 6805,
+          "category": "standard",
+          "board": "HB",
+          "hits": 2
+        },
+        {
+          "hotel_id": 6805,
+          "category": "suite",
+          "board": "HB",
+          "hits": 2
+        },
+        {
+          "hotel_id": 6805,
+          "category": "superior",
+          "board": "HB",
+          "hits": 2
+        },
+        {
+          "hotel_id": 20702,
+          "category": "dormitory",
+          "board": "BB",
+          "hits": 1
+        },
+        {
+          "hotel_id": 20706,
+          "category": "deluxe",
+          "board": "BB",
+          "hits": 1
+        },
+        {
+          "hotel_id": 22034,
+          "category": "apartment",
+          "board": "BB",
+          "hits": 2
+        },
+        {
+          "hotel_id": 24989,
+          "category": "deluxe",
+          "board": "HB",
+          "hits": 2
+        },
+        {
+          "hotel_id": 24989,
+          "category": "standard",
+          "board": "HB",
+          "hits": 2
+        },
+        {
+          "hotel_id": 31226,
+          "category": "apartment",
+          "board": "RO",
+          "hits": 1
+        },
+        {
+          "hotel_id": 31226,
+          "category": "superior",
+          "board": "RO",
+          "hits": 1
+        },
+        {
+          "hotel_id": 31709,
+          "category": "dormitory",
+          "board": "RO",
+          "hits": 2
+        },
+        {
+          "hotel_id": 66737,
+          "category": "deluxe",
+          "board": "BB",
+          "hits": 1
+        },
+        {
+          "hotel_id": 66814,
+          "category": "apartment",
+          "board": "RO",
+          "hits": 1
+        },
+        {
+          "hotel_id": 68833,
+          "category": "apartment",
+          "board": "RO",
+          "hits": 1
+        },
+        {
+          "hotel_id": 193899,
+          "category": "standard",
+          "board": "AI",
+          "hits": 1
+        },
+        {
+          "hotel_id": 193899,
+          "category": "suite",
+          "board": "AI",
+          "hits": 1
+        },
+        {
+          "hotel_id": 241025,
+          "category": "standard",
+          "board": "BB",
+          "hits": 1
+        },
+        {
+          "hotel_id": 241025,
+          "category": "suite",
+          "board": "BB",
+          "hits": 1
+        },
+        {
+          "hotel_id": 254198,
+          "category": "deluxe",
+          "board": "BB",
+          "hits": 1
+        },
+        {
+          "hotel_id": 254198,
+          "category": "dormitory",
+          "board": "RO",
+          "hits": 1
+        },
+        {
+          "hotel_id": 254198,
+          "category": "superior",
+          "board": "BB",
+          "hits": 1
+        },
+        {
+          "hotel_id": 254198,
+          "category": "superior",
+          "board": "RO",
+          "hits": 1
+        },
+        {
+          "hotel_id": 277280,
+          "category": "deluxe",
+          "board": "BB",
+          "hits": 1
+        },
+        {
+          "hotel_id": 383277,
+          "category": "apartment",
+          "board": "BB",
+          "hits": 2
+        },
+        {
+          "hotel_id": 383277,
+          "category": "apartment",
+          "board": "RO",
+          "hits": 2
+        },
+        {
+          "hotel_id": 851633,
+          "category": "deluxe",
+          "board": "BB",
+          "hits": 1
+        },
+        {
+          "hotel_id": 851939,
+          "category": "deluxe",
+          "board": "BB",
+          "hits": 1
+        },
+        {
+          "hotel_id": 851939,
+          "category": "superior",
+          "board": "BB",
+          "hits": 1
+        },
+        {
+          "hotel_id": 851939,
+          "category": "superior",
+          "board": "RO",
+          "hits": 1
+        },
+        {
+          "hotel_id": 854881,
+          "category": "standard",
+          "board": "BB",
+          "hits": 1
+        },
+        {
+          "hotel_id": 855865,
+          "category": "deluxe",
+          "board": "BB",
+          "hits": 1
+        }
+      ],
+      "miss_rate_last_hour": 0,
+      "order_detail_gaps": [
+        {
+          "hotel": "Marseilles Hotel",
+          "hotel_id": 6663,
+          "gap": 8,
+          "total": 78
+        },
+        {
+          "hotel": "FAIRWIND HOTEL & SUITES SOUTH ",
+          "hotel_id": 117491,
+          "gap": 5,
+          "total": 77
+        }
+      ]
+    },
+    "skills": {
+      "autofix_worker": {
+        "last_file": "audit_20260318_142204.json",
+        "age_minutes": 2758.4
+      },
+      "price_override": {
+        "total": 1,
+        "pending": 0,
+        "pushed": 0,
+        "failed": 0
+      },
+      "insert_opp": {
+        "last_24h": 2,
+        "active": 0
+      }
+    },
+    "orders": {
+      "active_hotels": 23,
+      "active_orders": 1772,
+      "status": {
+        "null_pending": 0,
+        "completed": 1771,
+        "in_progress": 1,
+        "failed": 0,
+        "date_error": 0
+      },
+      "details": {
+        "ro": 1945,
+        "bb": 2106,
+        "total": 4051
+      },
+      "archive_orders": 3825,
+      "archive_details": 38434
+    },
+    "zenith": {
+      "status": "OK",
+      "latency_ms": 1275.0,
+      "http_status": 200
+    },
+    "cancellation": {
+      "bookings_near_cx_deadline": 0,
+      "cancellations_24h": 1,
+      "cancel_errors_24h": 0,
+      "active_bookings": 95
+    }
+  },
+  "alerts": [
+    {
+      "severity": "CRITICAL",
+      "component": "WebJob",
+      "message": "No activity for 120 minutes (last: Order 1852)",
+      "timestamp": "2026-03-20T12:20:09.861883"
+    },
+    {
+      "severity": "INFO",
+      "component": "Mapping",
+      "message": "40 open mapping misses",
+      "timestamp": "2026-03-20T12:20:13.178619"
+    },
+    {
+      "severity": "WARNING",
+      "component": "Mapping",
+      "message": "2 hotels with ORDER!=DETAIL gaps",
+      "timestamp": "2026-03-20T12:20:25.304508"
+    }
+  ]
+}

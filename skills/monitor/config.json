@@ -1,0 +1,12 @@
+{
+    "alert_thresholds": {
+        "webjob_stale_minutes": 30,
+        "mapping_miss_rate_per_hour": 10,
+        "order_detail_gap_pct": 5,
+        "override_failure_pct": 20,
+        "table_growth_alert_rows": 10000,
+        "scan_cycle_max_hours": 24
+    },
+    "zenith_probe_venue": "5093",
+    "zenith_probe_rpc": "12062"
+}

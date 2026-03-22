@@ -24,6 +24,7 @@ public class TelegramBotService : BackgroundService
     private readonly InnstantApiClient _innstant;
     private readonly ClaudeAiService _claude;
     private readonly AuditService _audit;
+    private readonly SystemMonitorService _monitor;
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(15) };
 
     // Watch mode (real-time booking alerts)
@@ -65,7 +66,8 @@ public class TelegramBotService : BackgroundService
         NotificationService notifications,
         InnstantApiClient innstant,
         ClaudeAiService claude,
-        AuditService audit)
+        AuditService audit,
+        SystemMonitorService monitor)
     {
         _config = config;
         _logger = logger;
@@ -82,6 +84,7 @@ public class TelegramBotService : BackgroundService
         _innstant = innstant;
         _claude = claude;
         _audit = audit;
+        _monitor = monitor;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -101,7 +104,7 @@ public class TelegramBotService : BackgroundService
         await Task.Delay(TimeSpan.FromSeconds(30), stoppingToken);
 
         // Send startup message
-        await SendToGroup("🟢 *MediciMonitor Online*\nהמערכת פעילה ומתחילה לנטר.\nדוח ראשון ייצא בעוד שעה.\n\nפקודות זמינות:\n/status — סטטוס מהיר\n/report — דוח מלא\n/alerts — התראות פעילות\n/reconcile — בדיקת התאמה\n/killswitch — הפעלת Kill Switch\n/breakers — סטטוס circuit breakers\n/help — עזרה");
+        await SendToGroup("🟢 *MediciMonitor Online*\nהמערכת פעילה ומתחילה לנטר.\nדוח ראשון ייצא בעוד שעה.\n\nפקודות זמינות:\n/status — סטטוס מהיר\n/report — דוח מלא\n/alerts — התראות פעילות\n/monitor — סריקת מערכת (8 בדיקות)\n/reconcile — בדיקת התאמה\n/killswitch — הפעלת Kill Switch\n/breakers — סטטוס circuit breakers\n/help — עזרה");
 
         var lastReportTime = DateTime.UtcNow;
         var lastDailySummaryDate = DateTime.MinValue.Date;
@@ -253,6 +256,24 @@ public class TelegramBotService : BackgroundService
                         case "/ghosts": await HandleGhosts(chatId); break;
                         case "/schedule": await HandleSchedule(chatId, text); break;
 
+                        // ── System Monitor ──
+                        case "/monitor": await HandleMonitorFull(chatId); break;
+                        case "/monitor_check": await HandleMonitorCheck(chatId, text); break;
+                        case "/tables": await HandleMonitorTables(chatId); break;
+                        case "/mapping": await HandleMonitorMapping(chatId); break;
+                        case "/trend": await HandleMonitorTrend(chatId, text); break;
+                        case "/cancel_errors": await HandleCancelErrorAnalysis(chatId); break;
+                        case "/zenith": await HandleZenithProbe(chatId); break;
+                        case "/buyrooms": await HandleMonitorCheck(chatId, "/monitor_check buyrooms"); break;
+                        case "/reservations_check": await HandleMonitorCheck(chatId, "/monitor_check reservations"); break;
+                        case "/freshness": await HandleMonitorCheck(chatId, "/monitor_check data_freshness"); break;
+                        case "/sales_check": await HandleMonitorCheck(chatId, "/monitor_check booking_sales"); break;
+                        case "/overrides": await HandleMonitorCheck(chatId, "/monitor_check price_override_pipeline"); break;
+
+                        // ── AI + Monitor ──
+                        case "/ask_monitor": await HandleAskMonitor(chatId, text); break;
+                        case "/analyse_monitor": await HandleAnalyseMonitor(chatId); break;
+
                         case "/help": await HandleHelp(chatId); break;
                     }
                 }
@@ -373,6 +394,51 @@ public class TelegramBotService : BackgroundService
                 else
                 {
                     sb.AppendLine("*🛑 Kill Switch:* ✅ כל ה-breakers סגורים");
+                }
+            }
+            catch { }
+
+            // System Monitor
+            try
+            {
+                var monReport = _monitor.LastReport;
+                if (monReport != null)
+                {
+                    var monCrit = monReport.Alerts.Count(a => a.Severity is "CRITICAL" or "EMERGENCY");
+                    var monWarn = monReport.Alerts.Count(a => a.Severity == "WARNING");
+                    sb.AppendLine();
+                    if (monCrit > 0 || monWarn > 0)
+                    {
+                        sb.AppendLine($"*🖥️ System Monitor:* 🔴 {monCrit} קריטיות | 🟡 {monWarn} אזהרות");
+                        foreach (var a in monReport.Alerts.Where(a => a.Severity is "CRITICAL" or "EMERGENCY").Take(3))
+                            sb.AppendLine($"  🔴 {a.Component}: {a.Message}");
+                        foreach (var a in monReport.Alerts.Where(a => a.Severity == "WARNING").Take(2))
+                            sb.AppendLine($"  🟡 {a.Component}: {a.Message}");
+                    }
+                    else
+                    {
+                        sb.AppendLine("*🖥️ System Monitor:* ✅ כל 8 הבדיקות תקינות");
+                    }
+                    // Trend
+                    if (monReport.Trend != null)
+                    {
+                        var ti = monReport.Trend.OverallTrend switch { "DEGRADING" => "📉", "IMPROVING" => "📈", _ => "➡️" };
+                        sb.AppendLine($"  {ti} טרנד: {monReport.Trend.OverallTrend} | בריאות: {monReport.Trend.HealthPct}%");
+                    }
+                    // Zenith status
+                    if (monReport.Results.TryGetValue("zenith", out var zObj) && zObj is Dictionary<string, object?> z)
+                    {
+                        var zStatus = z.GetValueOrDefault("status")?.ToString() ?? "?";
+                        var zLatency = z.GetValueOrDefault("latency_ms")?.ToString() ?? "?";
+                        sb.AppendLine($"  🌐 Zenith: {zStatus} ({zLatency}ms)");
+                    }
+                    // Mapping gaps
+                    if (monReport.Results.TryGetValue("mapping", out var mObj) && mObj is Dictionary<string, object?> m)
+                    {
+                        var gaps = m.GetValueOrDefault("order_detail_gaps");
+                        var missRate = m.GetValueOrDefault("miss_rate_last_hour");
+                        sb.AppendLine($"  🗺️ Mapping miss rate: {missRate}/h | BB: {m.GetValueOrDefault("hotels_with_bb")}");
+                    }
                 }
             }
             catch { }
@@ -556,8 +622,23 @@ public class TelegramBotService : BackgroundService
             "*📝 אישורים:*\n" +
             "`/flagged` `/approve <ID> <PIN>` `/reject <ID> <PIN>`\n" +
             "`/cancel <PreBookId> <PIN>` — בקשת ביטול\n\n" +
-            "*🤖 AI:*\n" +
-            "`/ask <שאלה>` — שאל את Claude AI על המערכת\n\n" +
+            "*🖥️ System Monitor:*\n" +
+            "`/monitor` — סריקת מערכת מלאה (8 בדיקות)\n" +
+            "`/monitor_check <name>` — בדיקה ספציפית\n" +
+            "`/tables` — בריאות טבלאות\n" +
+            "`/mapping` — איכות Mapping\n" +
+            "`/zenith` — בדיקת Zenith SOAP\n" +
+            "`/cancel_errors` — ניתוח שגיאות ביטול\n" +
+            "`/trend [hours]` — ניתוח טרנד\n\n" +
+            "`/buyrooms` — בריאות רכישת חדרים\n" +
+            "`/reservations_check` — Zenith callbacks\n" +
+            "`/freshness` — טריות נתונים\n" +
+            "`/sales_check` — מכירות ו-P&L\n" +
+            "`/overrides` — Price Override pipeline\n\n" +
+            "*🤖 AI + Monitor:*\n" +
+            "`/ask <שאלה>` — שאל Claude (עם הקשר מוניטור מלא)\n" +
+            "`/ask_monitor <שאלה>` — שאל על בעיה ספציפית במוניטור\n" +
+            "`/analyse_monitor` — ניתוח AI מלא של כל 13 הבדיקות\n\n" +
             "*📡 מעקב:*\n" +
             "`/watch [on|off|500]` — התראה על הזמנות חדשות\n" +
             "`/mute <hours>` — השתקה זמנית\n\n" +
@@ -753,13 +834,45 @@ public class TelegramBotService : BackgroundService
         var question = text.Length > 5 ? text[5..].Trim() : "";
         if (string.IsNullOrEmpty(question)) { await SendToGroup("שימוש: `/ask <שאלה>`\nלדוגמה: `/ask למה יש ירידה בהזמנות?`", chatId); return; }
         if (!_claude.IsAvailable) { await SendToGroup("❌ Claude AI לא מוגדר (חסר API key)", chatId); return; }
-        await SendToGroup("🤖 חושב...", chatId);
+        await SendToGroup("🤖 חושב... (עם הקשר מוניטור מלא)", chatId);
         try
         {
-            var response = await _claude.Chat(question);
-            var answer = response?.ToString() ?? "אין תשובה";
+            var response = await _claude.ChatWithMonitor(question);
+            var answer = response.Success ? response.Response : $"שגיאה: {response.Error}";
             if (answer.Length > 3800) answer = answer[..3800] + "\n\n_...תשובה קוצרה_";
             await SendToGroup($"🤖 *Claude AI:*\n\n{answer}", chatId);
+        }
+        catch (Exception ex) { await SendToGroup($"❌ שגיאה: {ex.Message}", chatId); }
+    }
+
+    private async Task HandleAskMonitor(string chatId, string text)
+    {
+        var question = text.Length > 13 ? text[13..].Trim() : "";
+        if (string.IsNullOrEmpty(question)) { await SendToGroup("שימוש: `/ask_monitor <שאלה>`\nלדוגמה:\n`/ask_monitor למה Zenith איטי?`\n`/ask_monitor מה הטרנד של cancel errors?`\n`/ask_monitor האם BuyRooms עובד תקין?`", chatId); return; }
+        if (!_claude.IsAvailable) { await SendToGroup("❌ Claude AI לא מוגדר (חסר API key)", chatId); return; }
+        await SendToGroup("🤖🖥️ מנתח מוניטור + חושב...", chatId);
+        try
+        {
+            var response = await _claude.ChatWithMonitor(question);
+            var answer = response.Success ? response.Response : $"שגיאה: {response.Error}";
+            if (answer.Length > 3800) answer = answer[..3800] + "\n\n_...תשובה קוצרה_";
+            var meta = response.DurationMs > 0 ? $"\n\n_⏱️ {response.DurationMs}ms | {response.Mode}_" : "";
+            await SendToGroup($"🤖🖥️ *Claude + Monitor:*\n\n{answer}{meta}", chatId);
+        }
+        catch (Exception ex) { await SendToGroup($"❌ שגיאה: {ex.Message}", chatId); }
+    }
+
+    private async Task HandleAnalyseMonitor(string chatId)
+    {
+        if (!_claude.IsAvailable) { await SendToGroup("❌ Claude AI לא מוגדר (חסר API key)", chatId); return; }
+        await SendToGroup("🤖🖥️ מריץ סריקה מלאה + ניתוח AI...", chatId);
+        try
+        {
+            var response = await _claude.AnalyseMonitor();
+            var answer = response.Success ? response.Response : $"שגיאה: {response.Error}";
+            if (answer.Length > 3800) answer = answer[..3800] + "\n\n_...תשובה קוצרה_";
+            var meta = response.DurationMs > 0 ? $"\n\n_⏱️ {response.DurationMs}ms | {response.InputTokens}→{response.OutputTokens} tokens | {response.Mode}_" : "";
+            await SendToGroup($"🤖🖥️ *ניתוח System Monitor:*\n\n{answer}{meta}", chatId);
         }
         catch (Exception ex) { await SendToGroup($"❌ שגיאה: {ex.Message}", chatId); }
     }
@@ -1197,6 +1310,40 @@ public class TelegramBotService : BackgroundService
                     sb.AppendLine($"  🔴 {b.Name}: {b.Reason}");
             }
 
+            // System Monitor — 24h trend
+            try
+            {
+                var trend = _monitor.GetTrendAnalysis(24);
+                sb.AppendLine();
+                var trendIcon = trend.OverallTrend switch { "DEGRADING" => "📉", "IMPROVING" => "📈", _ => "➡️" };
+                sb.AppendLine($"*🖥️ System Monitor (24h):*");
+                sb.AppendLine($"  {trendIcon} טרנד: *{trend.OverallTrend}*");
+                sb.AppendLine($"  סריקות: {trend.TotalRuns} | בריאות: {trend.HealthPct}%");
+                sb.AppendLine($"  התראות: מחצית ראשונה={trend.FirstHalfAlerts} → שנייה={trend.SecondHalfAlerts}");
+                if (trend.Components.Any())
+                {
+                    foreach (var (comp, stats) in trend.Components.OrderByDescending(c => c.Value.Total).Take(3))
+                    {
+                        var esc = stats.ConsecutiveCritical >= 3 ? " ⚠️ *ESCALATION*" : "";
+                        sb.AppendLine($"  • {comp}: {stats.Total} התראות{esc}");
+                    }
+                }
+
+                // Last scan results
+                var monReport = _monitor.LastReport;
+                if (monReport != null)
+                {
+                    var monCrit = monReport.Alerts.Count(a => a.Severity is "CRITICAL" or "EMERGENCY");
+                    var monWarn = monReport.Alerts.Count(a => a.Severity == "WARNING");
+                    sb.AppendLine($"  סריקה אחרונה: {monCrit} קריטיות | {monWarn} אזהרות");
+                    if (monReport.Results.TryGetValue("zenith", out var zObj) && zObj is Dictionary<string, object?> z)
+                        sb.AppendLine($"  🌐 Zenith: {z.GetValueOrDefault("status")} ({z.GetValueOrDefault("latency_ms")}ms)");
+                    if (monReport.Results.TryGetValue("cancel_errors", out var ceObj) && ceObj is Dictionary<string, object?> ce)
+                        sb.AppendLine($"  📊 Cancel errors trend: {ce.GetValueOrDefault("trend")}");
+                }
+            }
+            catch { }
+
             sb.AppendLine();
             sb.AppendLine("━━━━━━━━━━━━━━━━━━━━");
             sb.AppendLine("_/report לדוח מלא | /help לפקודות_");
@@ -1392,6 +1539,147 @@ public class TelegramBotService : BackgroundService
             }
             return;
         }
+    }
+
+    // ── System Monitor Commands ───────────────────────────────────
+
+    private async Task HandleMonitorFull(string chatId)
+    {
+        await SendToGroup("🔍 מריץ סריקת מערכת מלאה...", chatId);
+        try
+        {
+            var report = await _monitor.RunFullScan();
+            var sb = new StringBuilder("🖥️ *סריקת מערכת מלאה*\n");
+            sb.AppendLine($"🕐 {report.Timestamp:dd/MM/yyyy HH:mm} UTC");
+            sb.AppendLine("━━━━━━━━━━━━━━━━━━━━");
+
+            // Summary per check
+            foreach (var (key, val) in report.Results)
+            {
+                var icon = key switch { "webjob" => "⚙️", "tables" => "🗄️", "mapping" => "🗺️", "skills" => "🛠️", "orders" => "📦", "zenith" => "🌐", "cancellation" => "❌", "cancel_errors" => "📊", _ => "📋" };
+                sb.AppendLine($"\n{icon} *{key}:* ✅");
+            }
+
+            // Alerts
+            if (report.Alerts.Any())
+            {
+                sb.AppendLine($"\n🚨 *{report.Alerts.Count} התראות:*");
+                foreach (var a in report.Alerts.Take(10))
+                {
+                    var icon = a.Severity switch { "EMERGENCY" => "🔴🔴", "CRITICAL" => "🔴", "WARNING" => "🟡", "ERROR" => "🟠", _ => "ℹ️" };
+                    sb.AppendLine($"{icon} [{a.Component}] {a.Message}");
+                }
+                if (report.Alerts.Count > 10) sb.AppendLine($"_...ועוד {report.Alerts.Count - 10}_");
+            }
+            else sb.AppendLine("\n✅ *אין התראות — הכל תקין!*");
+
+            // Trend
+            if (report.Trend != null)
+            {
+                var trendIcon = report.Trend.OverallTrend switch { "DEGRADING" => "📉", "IMPROVING" => "📈", _ => "➡️" };
+                sb.AppendLine($"\n{trendIcon} *טרנד:* {report.Trend.OverallTrend} | בריאות: {report.Trend.HealthPct}%");
+            }
+
+            await SendToGroup(sb.ToString(), chatId);
+        }
+        catch (Exception ex) { await SendToGroup($"❌ שגיאה: {ex.Message}", chatId); }
+    }
+
+    private async Task HandleMonitorCheck(string chatId, string text)
+    {
+        var parts = text.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length < 2)
+        {
+            await SendToGroup("שימוש: `/monitor_check <check>`\nבדיקות: webjob, tables, mapping, skills, orders, zenith, cancellation, cancel\\_errors", chatId);
+            return;
+        }
+        try
+        {
+            var result = await _monitor.RunSingleCheck(parts[1]);
+            var json = System.Text.Json.JsonSerializer.Serialize(result, new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+            if (json.Length > 3800) json = json[..3800] + "\n...";
+            await SendToGroup($"🔍 *בדיקת {parts[1]}:*\n```\n{json}\n```", chatId);
+        }
+        catch (Exception ex) { await SendToGroup($"❌ שגיאה: {ex.Message}", chatId); }
+    }
+
+    private async Task HandleMonitorTables(string chatId)
+    {
+        try
+        {
+            var result = await _monitor.RunSingleCheck("tables");
+            var tables = result["result"] as Dictionary<string, object?>;
+            var sb = new StringBuilder("🗄️ *Table Health:*\n\n");
+            if (tables != null)
+            {
+                var json = System.Text.Json.JsonSerializer.Serialize(tables, new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+                if (json.Length > 3800) json = json[..3800] + "\n...";
+                sb.Append($"```\n{json}\n```");
+            }
+            await SendToGroup(sb.ToString(), chatId);
+        }
+        catch (Exception ex) { await SendToGroup($"❌ שגיאה: {ex.Message}", chatId); }
+    }
+
+    private async Task HandleMonitorMapping(string chatId)
+    {
+        try
+        {
+            var result = await _monitor.RunSingleCheck("mapping");
+            var sb = new StringBuilder("🗺️ *Mapping Quality:*\n\n");
+            var json = System.Text.Json.JsonSerializer.Serialize(result["result"], new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+            if (json.Length > 3800) json = json[..3800] + "\n...";
+            sb.Append($"```\n{json}\n```");
+            await SendToGroup(sb.ToString(), chatId);
+        }
+        catch (Exception ex) { await SendToGroup($"❌ שגיאה: {ex.Message}", chatId); }
+    }
+
+    private async Task HandleMonitorTrend(string chatId, string text)
+    {
+        var parts = text.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        var hours = parts.Length > 1 && int.TryParse(parts[1], out var h) ? h : 24;
+        var trend = _monitor.GetTrendAnalysis(hours);
+        var trendIcon = trend.OverallTrend switch { "DEGRADING" => "📉", "IMPROVING" => "📈", _ => "➡️" };
+        var sb = new StringBuilder($"{trendIcon} *ניתוח טרנד — {hours} שעות:*\n\n");
+        sb.AppendLine($"סריקות: {trend.TotalRuns} | בריאות: {trend.HealthPct}%");
+        sb.AppendLine($"טרנד: *{trend.OverallTrend}*");
+        sb.AppendLine($"התראות: מחצית ראשונה={trend.FirstHalfAlerts} | שנייה={trend.SecondHalfAlerts}");
+        if (trend.Components.Any())
+        {
+            sb.AppendLine("\n*רכיבים:*");
+            foreach (var (comp, stats) in trend.Components)
+            {
+                var esc = stats.ConsecutiveCritical >= 3 ? " ⚠️ ESCALATION" : "";
+                sb.AppendLine($"  {comp}: {stats.Total} התראות (CRITICAL רצופים: {stats.ConsecutiveCritical}){esc}");
+            }
+        }
+        await SendToGroup(sb.ToString(), chatId);
+    }
+
+    private async Task HandleCancelErrorAnalysis(string chatId)
+    {
+        await SendToGroup("📊 מנתח שגיאות ביטול...", chatId);
+        try
+        {
+            var result = await _monitor.RunSingleCheck("cancel_errors");
+            var json = System.Text.Json.JsonSerializer.Serialize(result["result"], new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+            if (json.Length > 3800) json = json[..3800] + "\n...";
+            await SendToGroup($"📊 *ניתוח שגיאות ביטול:*\n```\n{json}\n```", chatId);
+        }
+        catch (Exception ex) { await SendToGroup($"❌ שגיאה: {ex.Message}", chatId); }
+    }
+
+    private async Task HandleZenithProbe(string chatId)
+    {
+        await SendToGroup("🌐 בודק חיבור Zenith SOAP...", chatId);
+        try
+        {
+            var result = await _monitor.RunSingleCheck("zenith");
+            var json = System.Text.Json.JsonSerializer.Serialize(result["result"], new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+            await SendToGroup($"🌐 *Zenith SOAP Probe:*\n```\n{json}\n```", chatId);
+        }
+        catch (Exception ex) { await SendToGroup($"❌ שגיאה: {ex.Message}", chatId); }
     }
 
     // ── Send Message ─────────────────────────────────────────────
