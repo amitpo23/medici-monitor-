@@ -18,6 +18,7 @@ public class SystemMonitorBackgroundService : BackgroundService
     private readonly ILogger<SystemMonitorBackgroundService> _logger;
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(15) };
     private readonly int _intervalMinutes;
+    private readonly string _predictionApiUrl;
 
     // Cooldown: don't spam Telegram with the same alert signature.
     private readonly Dictionary<string, DateTime> _lastTelegramAlertByKey = new(StringComparer.OrdinalIgnoreCase);
@@ -34,6 +35,7 @@ public class SystemMonitorBackgroundService : BackgroundService
         _config = config;
         _logger = logger;
         _intervalMinutes = config.GetValue<int?>("SystemMonitor:IntervalMinutes") ?? 30;
+        _predictionApiUrl = config["Integration:PredictionApiUrl"] ?? "https://medici-prediction-api.azurewebsites.net";
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -92,6 +94,9 @@ public class SystemMonitorBackgroundService : BackgroundService
             {
                 _logger.LogDebug("[SystemMonitor-{Source}] All clear — 0 alerts", source);
             }
+
+            // Push monitor results to Prediction API for confidence adjustments
+            await PushToPrediction(report);
         }
         catch (Exception ex)
         {
@@ -214,4 +219,45 @@ public class SystemMonitorBackgroundService : BackgroundService
 
     private static string GetAlertCooldownKey(MonitorAlert alert)
         => $"{alert.Component}|{alert.Message}";
+
+    /// <summary>
+    /// Push monitor scan results to Prediction API so it can adjust confidence levels.
+    /// POST /api/v1/salesoffice/monitor/ingest
+    /// </summary>
+    private async Task PushToPrediction(MonitorReport report)
+    {
+        if (string.IsNullOrEmpty(_predictionApiUrl)) return;
+
+        try
+        {
+            var payload = JsonSerializer.Serialize(new
+            {
+                source = "medici-monitor",
+                timestamp = report.Timestamp,
+                alerts = report.Alerts.Select(a => new { a.Severity, a.Component, a.Message }),
+                results = report.Results,
+                trend = report.Trend != null ? new
+                {
+                    report.Trend.OverallTrend,
+                    report.Trend.HealthPct,
+                    report.Trend.TotalRuns,
+                    report.Trend.FirstHalfAlerts,
+                    report.Trend.SecondHalfAlerts
+                } : null
+            });
+
+            var content = new StringContent(payload, Encoding.UTF8, "application/json");
+            var url = $"{_predictionApiUrl.TrimEnd('/')}/api/v1/salesoffice/monitor/ingest";
+            var response = await _http.PostAsync(url, content);
+
+            if (response.IsSuccessStatusCode)
+                _logger.LogInformation("[SystemMonitor] Pushed scan results to Prediction API");
+            else
+                _logger.LogWarning("[SystemMonitor] Prediction API ingest returned {Status}", response.StatusCode);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug("[SystemMonitor] Prediction push failed (non-critical): {Err}", ex.Message);
+        }
+    }
 }
