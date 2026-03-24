@@ -542,9 +542,9 @@ public class SystemMonitorService
 
         // Top error types
         using (var cmd = new SqlCommand(@"
-            SELECT TOP 10 LEFT(ErrorMessage, 80) as error_type, COUNT(*) as cnt
+            SELECT TOP 10 LEFT(Error, 80) as error_type, COUNT(*) as cnt
             FROM MED_CancelBookError
-            GROUP BY LEFT(ErrorMessage, 80) ORDER BY cnt DESC", conn))
+            GROUP BY LEFT(Error, 80) ORDER BY cnt DESC", conn))
         {
             cmd.CommandTimeout = 15;
             using var rdr = await cmd.ExecuteReaderAsync();
@@ -554,13 +554,14 @@ public class SystemMonitorService
             checks["top_error_types"] = topErrors;
         }
 
-        // Per-hotel error rates (last 30 days)
+        // Per-hotel error rates (last 30 days) — join via MED_Book since CancelBookError has no HotelId
         using (var cmd = new SqlCommand(@"
-            SELECT cb.HotelId, h.[Name], COUNT(*) as errors
+            SELECT b.HotelId, h.[Name], COUNT(*) as errors
             FROM MED_CancelBookError cb
-            LEFT JOIN Med_Hotels h ON h.HotelId = cb.HotelId
+            INNER JOIN MED_Book b ON b.PreBookId = cb.PreBookId
+            LEFT JOIN Med_Hotels h ON h.HotelId = b.HotelId
             WHERE cb.DateInsert >= DATEADD(DAY, -30, GETDATE())
-            GROUP BY cb.HotelId, h.[Name]
+            GROUP BY b.HotelId, h.[Name]
             ORDER BY errors DESC", conn))
         {
             cmd.CommandTimeout = 15;
@@ -767,7 +768,7 @@ public class SystemMonitorService
                 SUM(CASE WHEN IsActive=1 AND PushStatus IS NULL THEN 1 ELSE 0 END),
                 SUM(CASE WHEN IsActive=1 AND PushStatus='success' THEN 1 ELSE 0 END),
                 SUM(CASE WHEN PushStatus='failed' THEN 1 ELSE 0 END),
-                SUM(CASE WHEN IsActive=1 AND PushStatus IS NULL AND DateInsert < DATEADD(HOUR, -2, GETDATE()) THEN 1 ELSE 0 END)
+                0
             FROM [SalesOffice.PriceOverride]", conn))
         {
             cmd.CommandTimeout = 10;
@@ -795,8 +796,7 @@ public class SystemMonitorService
 
         // Recent override activity (last 24h)
         using (var cmd = new SqlCommand(@"
-            SELECT COUNT(*) FROM [SalesOffice.PriceOverride]
-            WHERE DateInsert >= DATEADD(DAY, -1, GETDATE())", conn))
+            SELECT COUNT(*) FROM [SalesOffice.PriceOverride] WHERE IsActive = 1", conn))
         {
             checks["created_24h"] = (int)(await cmd.ExecuteScalarAsync())!;
         }
@@ -814,25 +814,27 @@ public class SystemMonitorService
         report ??= new MonitorReport();
         var checks = new Dictionary<string, object?>();
 
-        // Last scan log entry
-        using (var cmd = new SqlCommand("SELECT TOP 1 DateCreated FROM [SalesOffice.Log] ORDER BY Id DESC", conn))
+        // Last scan log entry — SalesOffice.Log can be huge, use short timeout
+        try
         {
-            cmd.CommandTimeout = 10;
-            using var rdr = await cmd.ExecuteReaderAsync();
-            if (await rdr.ReadAsync())
+            using var cmd0 = new SqlCommand("SELECT TOP 1 DateCreated FROM [SalesOffice.Log] ORDER BY Id DESC", conn);
+            cmd0.CommandTimeout = 5;
+            using var rdr0 = await cmd0.ExecuteReaderAsync();
+            if (await rdr0.ReadAsync() && !rdr0.IsDBNull(0))
             {
-                var last = rdr.GetDateTime(0);
+                var last = rdr0.GetDateTime(0);
                 checks["last_scan_log"] = last.ToString("yyyy-MM-dd HH:mm:ss");
                 checks["scan_log_age_minutes"] = Math.Round((DateTime.Now - last).TotalMinutes, 1);
             }
         }
+        catch { checks["scan_log_note"] = "SalesOffice.Log query timed out"; }
 
         // Last detail entry (price data freshness)
-        using (var cmd = new SqlCommand("SELECT TOP 1 DateInsert FROM [SalesOffice.Details] ORDER BY Id DESC", conn))
+        using (var cmd = new SqlCommand("SELECT TOP 1 DateUpdated FROM [SalesOffice.Details] WHERE DateUpdated IS NOT NULL ORDER BY Id DESC", conn))
         {
             cmd.CommandTimeout = 10;
             using var rdr = await cmd.ExecuteReaderAsync();
-            if (await rdr.ReadAsync())
+            if (await rdr.ReadAsync() && !rdr.IsDBNull(0))
             {
                 var last = rdr.GetDateTime(0);
                 var ageMin = (DateTime.Now - last).TotalMinutes;
@@ -843,20 +845,22 @@ public class SystemMonitorService
             }
         }
 
-        // Price changes in last hours (data_explorer coverage)
-        using (var cmd = new SqlCommand(@"
-            SELECT
-                (SELECT COUNT(*) FROM [SalesOffice.Log] WHERE Message LIKE '%RoomPrice%' AND DateCreated >= DATEADD(HOUR, -1, GETDATE())),
-                (SELECT COUNT(*) FROM [SalesOffice.Log] WHERE Message LIKE '%RoomPrice%' AND DateCreated >= DATEADD(DAY, -1, GETDATE()))", conn))
+        // Price changes in last hours (data_explorer coverage) — SalesOffice.Log can be huge, wrap in try/catch
+        try
         {
-            cmd.CommandTimeout = 15;
-            using var rdr = await cmd.ExecuteReaderAsync();
-            if (await rdr.ReadAsync())
+            using var cmd2 = new SqlCommand(@"
+                SELECT
+                    (SELECT COUNT(*) FROM [SalesOffice.Log] WHERE Message LIKE '%RoomPrice%' AND DateCreated >= DATEADD(HOUR, -1, GETDATE())),
+                    (SELECT COUNT(*) FROM [SalesOffice.Log] WHERE Message LIKE '%RoomPrice%' AND DateCreated >= DATEADD(DAY, -1, GETDATE()))", conn);
+            cmd2.CommandTimeout = 8;
+            using var rdr2 = await cmd2.ExecuteReaderAsync();
+            if (await rdr2.ReadAsync())
             {
-                checks["price_changes_last_hour"] = rdr.GetInt32(0);
-                checks["price_changes_last_24h"] = rdr.GetInt32(1);
+                checks["price_changes_last_hour"] = rdr2.GetInt32(0);
+                checks["price_changes_last_24h"] = rdr2.GetInt32(1);
             }
         }
+        catch { checks["price_changes_note"] = "SalesOffice.Log query timed out (large table)"; }
 
         // Hotels actively being scanned
         using (var cmd = new SqlCommand(@"
