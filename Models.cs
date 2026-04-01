@@ -111,6 +111,13 @@ public class SystemStatus
     public List<RoomWasteInfo> WasteRooms { get; set; } = new();
     public List<PriceDriftInfo> PriceDrifts { get; set; } = new();
     public List<ConversionByHotelInfo> ConversionByHotel { get; set; } = new();
+
+    // SalesOffice scan & mapping integration (from medici-hotels)
+    public List<ScanReportInfo> ScanReports { get; set; } = new();
+    public List<BrowserScanInfo> BrowserScanResults { get; set; } = new();
+    public int IncomingPending { get; set; }
+    public int MappingMissesNew { get; set; }
+    public int MappingMissesFixed { get; set; }
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -561,6 +568,25 @@ public class HistoricalSnapshot
 // ════════════════════════════════════════════════════════════════════════
 //  Alerting Models
 // ════════════════════════════════════════════════════════════════════════
+
+public class ScanReportInfo
+{
+    public string City { get; set; } = "";
+    public int Working { get; set; }
+    public int ZenithFail { get; set; }
+    public int TotalDetails { get; set; }
+    public DateTime? LastScan { get; set; }
+}
+
+public class BrowserScanInfo
+{
+    public int HotelId { get; set; }
+    public string? HotelName { get; set; }
+    public string? ScanStatus { get; set; }
+    public int PagesScanned { get; set; }
+    public int PricesFound { get; set; }
+    public DateTime? LastScan { get; set; }
+}
 
 public class AlertInfo
 {

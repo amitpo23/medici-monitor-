@@ -55,7 +55,11 @@ public class DataService
                 Safe(() => LoadConversionRevenue(conn, s)),
                 Safe(() => LoadPriceDrift(conn, s)),
                 Safe(() => LoadBuyRoomsHeartbeat(conn, s)),
-                Safe(() => LoadBuyRoomsFunnel(conn, s))
+                Safe(() => LoadBuyRoomsFunnel(conn, s)),
+                Safe(() => LoadScanReports(conn, s)),
+                Safe(() => LoadBrowserScanResults(conn, s)),
+                Safe(() => LoadIncomingReservations(conn, s)),
+                Safe(() => LoadMappingMisses(conn, s))
             );
         }
         catch (Exception ex)
@@ -1771,6 +1775,84 @@ public class DataService
               AND NOT EXISTS (SELECT 1 FROM MED_Book b WHERE b.PreBookId = p.PreBookId)", conn);
         cmd3.CommandTimeout = 10;
         s.OrphanedPreBooks = Convert.ToInt32(await cmd3.ExecuteScalarAsync() ?? 0);
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  SalesOffice Scan & Mapping Integration (from medici-hotels)
+    // ═══════════════════════════════════════════════════════════════
+
+    private async Task LoadScanReports(SqlConnection conn, SystemStatus s)
+    {
+        using var cmd = new SqlCommand(@"
+            SELECT City,
+                   SUM(CASE WHEN ZenithStatus = 'OK' THEN 1 ELSE 0 END) AS Working,
+                   SUM(CASE WHEN ZenithStatus != 'OK' THEN 1 ELSE 0 END) AS ZenithFail,
+                   SUM(TotalDetails) AS TotalDetails,
+                   MAX(ScanDate) AS LastScan
+            FROM [SalesOffice].[ScanReports]
+            WHERE ScanDate >= DATEADD(DAY, -1, GETDATE())
+            GROUP BY City", conn);
+        cmd.CommandTimeout = 15;
+        using var rdr = await cmd.ExecuteReaderAsync();
+        while (await rdr.ReadAsync())
+        {
+            s.ScanReports.Add(new ScanReportInfo
+            {
+                City = rdr.IsDBNull(0) ? "" : rdr.GetString(0),
+                Working = rdr.IsDBNull(1) ? 0 : rdr.GetInt32(1),
+                ZenithFail = rdr.IsDBNull(2) ? 0 : rdr.GetInt32(2),
+                TotalDetails = rdr.IsDBNull(3) ? 0 : rdr.GetInt32(3),
+                LastScan = rdr.IsDBNull(4) ? null : rdr.GetDateTime(4)
+            });
+        }
+    }
+
+    private async Task LoadBrowserScanResults(SqlConnection conn, SystemStatus s)
+    {
+        using var cmd = new SqlCommand(@"
+            SELECT HotelId, HotelName, ScanStatus, PagesScanned, PricesFound, LastScan
+            FROM [SalesOffice].[BrowserScanResults]
+            WHERE LastScan >= DATEADD(DAY, -1, GETDATE())
+            ORDER BY LastScan DESC", conn);
+        cmd.CommandTimeout = 15;
+        using var rdr = await cmd.ExecuteReaderAsync();
+        while (await rdr.ReadAsync())
+        {
+            s.BrowserScanResults.Add(new BrowserScanInfo
+            {
+                HotelId = rdr.IsDBNull(0) ? 0 : rdr.GetInt32(0),
+                HotelName = rdr.IsDBNull(1) ? null : rdr.GetString(1),
+                ScanStatus = rdr.IsDBNull(2) ? null : rdr.GetString(2),
+                PagesScanned = rdr.IsDBNull(3) ? 0 : rdr.GetInt32(3),
+                PricesFound = rdr.IsDBNull(4) ? 0 : rdr.GetInt32(4),
+                LastScan = rdr.IsDBNull(5) ? null : rdr.GetDateTime(5)
+            });
+        }
+    }
+
+    private async Task LoadIncomingReservations(SqlConnection conn, SystemStatus s)
+    {
+        using var cmd = new SqlCommand(@"
+            SELECT COUNT(*) FROM [SalesOffice].[IncomingReservations]
+            WHERE Status = 'Pending'", conn);
+        cmd.CommandTimeout = 10;
+        s.IncomingPending = Convert.ToInt32(await cmd.ExecuteScalarAsync() ?? 0);
+    }
+
+    private async Task LoadMappingMisses(SqlConnection conn, SystemStatus s)
+    {
+        using var cmd = new SqlCommand(@"
+            SELECT
+                SUM(CASE WHEN IsFixed = 0 THEN 1 ELSE 0 END),
+                SUM(CASE WHEN IsFixed = 1 THEN 1 ELSE 0 END)
+            FROM [SalesOffice].[MappingMisses]", conn);
+        cmd.CommandTimeout = 10;
+        using var rdr = await cmd.ExecuteReaderAsync();
+        if (await rdr.ReadAsync())
+        {
+            s.MappingMissesNew = rdr.IsDBNull(0) ? 0 : rdr.GetInt32(0);
+            s.MappingMissesFixed = rdr.IsDBNull(1) ? 0 : rdr.GetInt32(1);
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════
