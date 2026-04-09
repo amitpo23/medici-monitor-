@@ -611,7 +611,7 @@ public class ClaudeAiService
     }
 
     private readonly Dictionary<string, AgentConversation> _agentConversations = new();
-    private static readonly TimeSpan ConversationTimeout = TimeSpan.FromMinutes(30);
+    private static readonly TimeSpan ConversationTimeout = TimeSpan.FromMinutes(60);
     private const int MaxConversationTurns = 20;
 
     public AgentConversation? GetActiveConversation(string chatId)
@@ -646,11 +646,18 @@ public class ClaudeAiService
         {
             var convKey = $"{chatId}:{agentName}";
 
-            // Clean expired conversations
+            // Clean expired conversations — track what expired for notification
             var expired = _agentConversations
                 .Where(kv => DateTime.UtcNow - kv.Value.LastActivity > ConversationTimeout)
-                .Select(kv => kv.Key).ToList();
-            foreach (var k in expired) _agentConversations.Remove(k);
+                .ToList();
+            foreach (var kv in expired)
+            {
+                _logger.LogInformation("Conversation with {Agent} expired after {Min} min inactivity",
+                    kv.Value.Agent, (int)(DateTime.UtcNow - kv.Value.LastActivity).TotalMinutes);
+                _agentConversations.Remove(kv.Key);
+            }
+            // Flag if THIS conversation just expired (user will see message)
+            var thisExpired = expired.Any(kv => kv.Key == convKey);
 
             // Get or create conversation
             if (!_agentConversations.TryGetValue(convKey, out var conv))

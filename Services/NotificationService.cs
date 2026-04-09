@@ -363,13 +363,41 @@ public class NotificationService
             if (text.Length > 4000) text = text[..4000] + "\n...";
 
             var url = $"https://api.telegram.org/bot{Config.TelegramBotToken}/sendMessage";
-            var payload = JsonSerializer.Serialize(new
+            object payloadObj;
+            if (severity == "Critical")
             {
-                chat_id = Config.TelegramChatId,
-                text,
-                parse_mode = "Markdown",
-                disable_web_page_preview = true
-            });
+                // Add Ack/Snooze buttons for critical alerts
+                var alertKey = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(title))[..8];
+                payloadObj = new
+                {
+                    chat_id = Config.TelegramChatId,
+                    text,
+                    parse_mode = "Markdown",
+                    disable_web_page_preview = true,
+                    reply_markup = new
+                    {
+                        inline_keyboard = new[]
+                        {
+                            new[]
+                            {
+                                new { text = "✅ אישור", callback_data = $"ack:{alertKey}" },
+                                new { text = "😴 השתק שעה", callback_data = $"snooze:{alertKey}" }
+                            }
+                        }
+                    }
+                };
+            }
+            else
+            {
+                payloadObj = new
+                {
+                    chat_id = Config.TelegramChatId,
+                    text,
+                    parse_mode = "Markdown",
+                    disable_web_page_preview = true
+                };
+            }
+            var payload = JsonSerializer.Serialize(payloadObj);
             var content = new StringContent(payload, Encoding.UTF8, "application/json");
             var resp = await _http.PostAsync(url, content);
             result.Channels.Add(new ChannelResult { Channel = "Telegram", Success = resp.IsSuccessStatusCode, Detail = $"HTTP {(int)resp.StatusCode}" });

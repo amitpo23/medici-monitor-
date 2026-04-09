@@ -58,6 +58,8 @@ public class AgentProactivityService : BackgroundService
                 await CheckShimon();   // Safety threat level changes
                 await CheckAmir();     // SOM miss rate / failed orders
                 await CheckMichael();  // New mapping gaps
+                await CheckYossi();    // Room seller pricing updates
+                await CheckYael();     // Monitor health changes
                 await CheckAryeh();    // Morning summary at 10:00 Israel
             }
             catch (Exception ex)
@@ -227,6 +229,66 @@ public class AgentProactivityService : BackgroundService
 
             sb.AppendLine($"\n_בוקר טוב! 🌅_");
             await SendAgentMessage(sb.ToString());
+        }
+        catch { }
+    }
+
+    // ── יוסי (Room Seller) — pricing update completed ──
+
+    private string? _lastYossiReport;
+    private async Task CheckYossi()
+    {
+        try
+        {
+            var encodedName = Uri.EscapeDataString("יוסי");
+            var json = await _http.GetStringAsync($"http://127.0.0.1:5050/agent/{encodedName}");
+            using var doc = JsonDocument.Parse(json);
+            var reportFile = doc.RootElement.TryGetProperty("report_file", out var rf) ? rf.GetString() : null;
+
+            if (reportFile != null && reportFile != _lastYossiReport && _lastYossiReport != null && CanSpeak("יוסי"))
+            {
+                // New report appeared — pricing cycle completed
+                var stats = "";
+                if (doc.RootElement.TryGetProperty("data", out var data) && data.TryGetProperty("stats", out var s))
+                {
+                    var total = s.TryGetProperty("total", out var t) ? t.GetInt32() : 0;
+                    var updated = s.TryGetProperty("updated", out var u) ? u.GetInt32() : 0;
+                    stats = $" סה\"כ {total} חדרים, {updated} עודכנו.";
+                }
+                await SendAgentMessage($"💰 *יוסי (מכירות):* סיימתי עדכון מחירים.{stats}");
+                MarkSpoken("יוסי");
+            }
+            _lastYossiReport = reportFile;
+        }
+        catch { }
+    }
+
+    // ── יעל (System Monitor) — health changes ──
+
+    private int _lastYaelAlertCount = -1;
+    private async Task CheckYael()
+    {
+        try
+        {
+            var encodedName = Uri.EscapeDataString("יעל");
+            var json = await _http.GetStringAsync($"http://127.0.0.1:5050/agent/{encodedName}");
+            using var doc = JsonDocument.Parse(json);
+
+            if (doc.RootElement.TryGetProperty("data", out var data))
+            {
+                // Count critical alerts from checks
+                int alerts = 0;
+                if (data.TryGetProperty("checks", out var checks))
+                    foreach (var c in checks.EnumerateArray())
+                        if (c.TryGetProperty("passed", out var p) && !p.GetBoolean()) alerts++;
+
+                if (_lastYaelAlertCount >= 0 && alerts > _lastYaelAlertCount && alerts > 0 && CanSpeak("יעל"))
+                {
+                    await SendAgentMessage($"🖥️ *יעל (מוניטור):* מספר הכשלים עלה ל-{alerts} (היה {_lastYaelAlertCount}).");
+                    MarkSpoken("יעל");
+                }
+                _lastYaelAlertCount = alerts;
+            }
         }
         catch { }
     }

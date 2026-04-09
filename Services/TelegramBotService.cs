@@ -50,6 +50,61 @@ public class TelegramBotService : BackgroundService
     private string _botToken = "";
     private string _chatId = "";
     private int _lastUpdateId = 0;
+    private HashSet<string> _authorizedUsers = new();
+
+    // State persistence
+    private static readonly string BotStateFile = Path.Combine(AppContext.BaseDirectory, "bot-state.json");
+
+    private void SaveBotState()
+    {
+        try
+        {
+            var state = new Dictionary<string, object?>
+            {
+                ["watchEnabled"] = _watchEnabled,
+                ["watchMinAmount"] = _watchMinAmount,
+                ["muteUntil"] = _muteUntil?.ToString("o"),
+                ["pauseUntil"] = _pauseUntil?.ToString("o"),
+                ["oncallName"] = _oncallName,
+                ["scheduledCommands"] = _scheduledCommands.Select(s => new { s.hour, s.minute, s.command }).ToList(),
+            };
+            File.WriteAllText(BotStateFile, System.Text.Json.JsonSerializer.Serialize(state, new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
+        }
+        catch (Exception ex) { _logger.LogDebug("SaveBotState failed: {Err}", ex.Message); }
+    }
+
+    private void LoadBotState()
+    {
+        try
+        {
+            if (!File.Exists(BotStateFile)) return;
+            using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(BotStateFile));
+            var root = doc.RootElement;
+
+            if (root.TryGetProperty("watchEnabled", out var we)) _watchEnabled = we.GetBoolean();
+            if (root.TryGetProperty("watchMinAmount", out var wm)) _watchMinAmount = wm.GetDouble();
+            if (root.TryGetProperty("oncallName", out var on) && on.ValueKind == System.Text.Json.JsonValueKind.String)
+                _oncallName = on.GetString();
+            if (root.TryGetProperty("muteUntil", out var mu) && mu.ValueKind == System.Text.Json.JsonValueKind.String
+                && DateTime.TryParse(mu.GetString(), out var muDt) && muDt > DateTime.UtcNow)
+                _muteUntil = muDt;
+            if (root.TryGetProperty("pauseUntil", out var pu) && pu.ValueKind == System.Text.Json.JsonValueKind.String
+                && DateTime.TryParse(pu.GetString(), out var puDt) && puDt > DateTime.UtcNow)
+                _pauseUntil = puDt;
+            if (root.TryGetProperty("scheduledCommands", out var sc) && sc.ValueKind == System.Text.Json.JsonValueKind.Array)
+            {
+                foreach (var cmd in sc.EnumerateArray())
+                {
+                    var h = cmd.TryGetProperty("hour", out var hh) ? hh.GetInt32() : 0;
+                    var m = cmd.TryGetProperty("minute", out var mm) ? mm.GetInt32() : 0;
+                    var c = cmd.TryGetProperty("command", out var cc) ? cc.GetString() ?? "" : "";
+                    if (!string.IsNullOrEmpty(c)) _scheduledCommands.Add((h, m, c));
+                }
+            }
+            _logger.LogInformation("Bot state restored from {File}", BotStateFile);
+        }
+        catch (Exception ex) { _logger.LogDebug("LoadBotState failed: {Err}", ex.Message); }
+    }
 
     public TelegramBotService(
         IConfiguration config,
@@ -91,6 +146,10 @@ public class TelegramBotService : BackgroundService
     {
         _botToken = _config["Notifications:TelegramBotToken"] ?? "";
         _chatId = _config["Notifications:TelegramChatId"] ?? "";
+        _authorizedUsers = (_config["Telegram:AuthorizedUsers"] ?? "")
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .ToHashSet();
+        LoadBotState();
 
         if (string.IsNullOrEmpty(_botToken) || string.IsNullOrEmpty(_chatId))
         {
@@ -124,9 +183,11 @@ public class TelegramBotService : BackgroundService
                     lastReportTime = DateTime.UtcNow;
                 }
 
-                // Hourly dashboards at :03 every hour
+                // Hourly dashboards at :03 every hour (skip quiet hours 23:00-07:00 Israel)
                 var nowUtc = DateTime.UtcNow;
-                if (nowUtc.Minute >= 3 && nowUtc.Minute < 6 && nowUtc.Hour != lastDashboardHour)
+                var israelHour = nowUtc.AddHours(3).Hour;
+                var isQuietHours = israelHour >= 23 || israelHour < 7;
+                if (nowUtc.Minute >= 3 && nowUtc.Minute < 6 && nowUtc.Hour != lastDashboardHour && !isQuietHours)
                 {
                     lastDashboardHour = nowUtc.Hour;
                     _ = Task.Run(async () =>
@@ -216,15 +277,25 @@ public class TelegramBotService : BackgroundService
                 var text = textEl.GetString() ?? "";
                 var chat = msg.GetProperty("chat");
                 var chatId = chat.GetProperty("id").GetInt64().ToString();
-                var from = msg.TryGetProperty("from", out var fromEl)
-                    ? $"{fromEl.GetProperty("first_name").GetString()}"
-                    : "Unknown";
+                var userId = msg.TryGetProperty("from", out var fromEl)
+                    ? fromEl.GetProperty("id").GetInt64().ToString() : "";
+                var from = fromEl.ValueKind != JsonValueKind.Undefined
+                    ? $"{fromEl.GetProperty("first_name").GetString()}" : "Unknown";
 
                 // Handle commands (/) and natural language kill switch
                 if (text.StartsWith("/"))
                 {
                     var command = text.Split('@')[0].Split(' ')[0].ToLower();
-                    _logger.LogInformation("Telegram command: {Cmd} from {From}", command, from);
+                    _logger.LogInformation("Telegram command: {Cmd} from {From} (uid:{Uid})", command, from, userId);
+
+                    // Auth check for sensitive commands
+                    var sensitiveCommands = new[] { "/killswitch", "/trip", "/reset", "/cancel", "/pause", "/approve", "/reject" };
+                    if (sensitiveCommands.Contains(command) && _authorizedUsers.Count > 0 && !_authorizedUsers.Contains(userId))
+                    {
+                        await SendToGroup($"🔒 אין הרשאה. פקודה זו מוגבלת למשתמשים מורשים בלבד.\nUser ID: {userId}", chatId);
+                        _logger.LogWarning("Unauthorized command {Cmd} from {From} (uid:{Uid})", command, from, userId);
+                        continue;
+                    }
 
                     switch (command)
                     {
@@ -1297,6 +1368,7 @@ public class TelegramBotService : BackgroundService
         var reason = parts.Length > 2 ? string.Join(" ", parts.Skip(2)) : "Paused via Telegram";
         _failSafe.TripAll($"Pause {minutes}m: {reason} (by {from})", from);
         _pauseUntil = DateTime.UtcNow.AddMinutes(minutes);
+        SaveBotState();
         await SendToGroup($"⏸️ *מערכת מוקפאת ל-{minutes} דקות*\nסיבה: {reason}\nע\"י: {from}\nשחרור אוטומטי: {_pauseUntil:HH:mm} UTC", chatId);
     }
 
@@ -1307,9 +1379,9 @@ public class TelegramBotService : BackgroundService
         var parts = text.Split(' ', StringSplitOptions.RemoveEmptyEntries);
         if (parts.Length < 2) { await SendToGroup($"📡 Watch mode: {(_watchEnabled ? $"*פעיל* (min: ${_watchMinAmount:N0})" : "*כבוי*")}\n\nשימוש:\n`/watch on` — הפעל\n`/watch off` — כבה\n`/watch 500` — רק מעל $500", chatId); return; }
         var arg = parts[1].ToLower();
-        if (arg == "off") { _watchEnabled = false; await SendToGroup("📡 Watch mode *כבוי*", chatId); }
-        else if (arg == "on") { _watchEnabled = true; _watchMinAmount = 0; await SendToGroup("📡 Watch mode *פעיל* — כל הזמנה חדשה", chatId); }
-        else if (double.TryParse(arg, out var min)) { _watchEnabled = true; _watchMinAmount = min; await SendToGroup($"📡 Watch mode *פעיל* — הזמנות מעל ${min:N0}", chatId); }
+        if (arg == "off") { _watchEnabled = false; SaveBotState(); await SendToGroup("📡 Watch mode *כבוי*", chatId); }
+        else if (arg == "on") { _watchEnabled = true; _watchMinAmount = 0; SaveBotState(); await SendToGroup("📡 Watch mode *פעיל* — כל הזמנה חדשה", chatId); }
+        else if (double.TryParse(arg, out var min)) { _watchEnabled = true; _watchMinAmount = min; SaveBotState(); await SendToGroup($"📡 Watch mode *פעיל* — הזמנות מעל ${min:N0}", chatId); }
     }
 
     private async Task CheckNewReservations()
@@ -1354,6 +1426,7 @@ public class TelegramBotService : BackgroundService
         if (parts.Length < 2 || !int.TryParse(parts[1], out var hours))
         { await SendToGroup($"שימוש: `/mute <hours>`\nמצב נוכחי: {(_muteUntil.HasValue && DateTime.UtcNow < _muteUntil ? $"מושתק עד {_muteUntil:HH:mm} UTC" : "פעיל")}", chatId); return; }
         _muteUntil = DateTime.UtcNow.AddHours(hours);
+        SaveBotState();
         await SendToGroup($"🔕 *הושתק ל-{hours} שעות* ע\"י {from}\nרק Critical יעבור.\nשחרור: {_muteUntil:HH:mm} UTC", chatId);
     }
 
@@ -1370,6 +1443,7 @@ public class TelegramBotService : BackgroundService
         var parts = text.Split(' ', StringSplitOptions.RemoveEmptyEntries);
         if (parts.Length < 2) { await SendToGroup($"👤 *תורנות:* {_oncallName ?? "לא הוגדר"}\n\nשימוש: `/oncall <שם>`", chatId); return; }
         _oncallName = string.Join(" ", parts.Skip(1));
+        SaveBotState();
         await SendToGroup($"👤 *תורנות עודכנה:* {_oncallName}", chatId);
     }
 
@@ -2266,6 +2340,15 @@ public class TelegramBotService : BackgroundService
             }
             return;
         }
+
+        // Fallback — nothing matched
+        await SendInlineKeyboard(chatId,
+            "🤔 לא הבנתי. מה תרצה לעשות?",
+            new object[][]
+            {
+                new[] { Btn("🏢 צוות סוכנים", "team"), Btn("📊 דשבורד", "cmd:dashboard") },
+                new[] { Btn("📋 סטטוס", "cmd:status"), Btn("❓ עזרה", "cmd:help") },
+            });
     }
 
     // ── System Monitor Commands ───────────────────────────────────
@@ -2581,9 +2664,23 @@ public class TelegramBotService : BackgroundService
         }
         else if (data.StartsWith("suggest:"))
         {
-            // User picked a suggested agent
             var agentName = data[8..];
             await HandleAgentReportView(chatId, agentName, "");
+        }
+        else if (data.StartsWith("cmd:"))
+        {
+            var cmd = data[4..];
+            if (cmd == "dashboard") { await SendDashboardAgents(chatId); await SendDashboardSales(chatId); await SendDashboardRisks(chatId); }
+            else if (cmd == "status") await HandleStatus(chatId);
+            else if (cmd == "help") await HandleHelp(chatId);
+        }
+        else if (data.StartsWith("ack:"))
+        {
+            await SendToGroup($"✅ התראה אושרה.", chatId);
+        }
+        else if (data.StartsWith("snooze:"))
+        {
+            await SendToGroup($"😴 התראה מושתקת לשעה.", chatId);
         }
     }
 
