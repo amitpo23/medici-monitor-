@@ -24,6 +24,10 @@ public class SystemMonitorBackgroundService : BackgroundService
     private readonly Dictionary<string, DateTime> _lastTelegramAlertByKey = new(StringComparer.OrdinalIgnoreCase);
     private static readonly TimeSpan TelegramCooldown = TimeSpan.FromMinutes(15);
 
+    // Dynamic interval + escalation tracking
+    private TimeSpan _nextInterval;
+    private readonly Dictionary<string, int> _consecutiveFailures = new(StringComparer.OrdinalIgnoreCase);
+
     public SystemMonitorBackgroundService(
         SystemMonitorService monitor,
         NotificationService notifications,
@@ -40,6 +44,7 @@ public class SystemMonitorBackgroundService : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        _nextInterval = TimeSpan.FromMinutes(_intervalMinutes);
         _logger.LogInformation("SystemMonitor background service started — interval: {Min} min", _intervalMinutes);
 
         // Wait for app warmup
@@ -50,7 +55,7 @@ public class SystemMonitorBackgroundService : BackgroundService
 
         while (!stoppingToken.IsCancellationRequested)
         {
-            await Task.Delay(TimeSpan.FromMinutes(_intervalMinutes), stoppingToken);
+            await Task.Delay(_nextInterval, stoppingToken);
             await RunScan("Background");
         }
     }
@@ -94,6 +99,35 @@ public class SystemMonitorBackgroundService : BackgroundService
             {
                 _logger.LogDebug("[SystemMonitor-{Source}] All clear — 0 alerts", source);
             }
+
+            // Dynamic interval: speed up when problems detected
+            if (criticals.Count > 0)
+                _nextInterval = TimeSpan.FromMinutes(10);
+            else if (warnings.Count > 0)
+                _nextInterval = TimeSpan.FromMinutes(20);
+            else
+                _nextInterval = TimeSpan.FromMinutes(_intervalMinutes);
+
+            // Track consecutive failures per component for escalation
+            var criticalComponents = new HashSet<string>(criticals.Select(a => a.Component), StringComparer.OrdinalIgnoreCase);
+            foreach (var alert in criticals)
+            {
+                var comp = alert.Component;
+                _consecutiveFailures[comp] = _consecutiveFailures.GetValueOrDefault(comp, 0) + 1;
+
+                if (_consecutiveFailures[comp] == 3)
+                {
+                    // ESCALATION: 3 consecutive failures — immediate Telegram alert
+                    _logger.LogWarning("[SystemMonitor] ESCALATION: {Component} failed {Count} times consecutively", comp, 3);
+                    await _notifications.SendAsync(
+                        $"ESCALATION: {comp} — 3 כשלים רצופים",
+                        $"🚨 הרכיב {comp} נכשל 3 פעמים רצופות.\nאחרון: {alert.Message}\nנדרשת בדיקה מיידית.",
+                        "Critical", "Escalation");
+                }
+            }
+            // Reset counters for components that passed
+            foreach (var comp in _consecutiveFailures.Keys.Where(c => !criticalComponents.Contains(c)).ToList())
+                _consecutiveFailures.Remove(comp);
 
             // Push monitor results to Prediction API for confidence adjustments
             await PushToPrediction(report);

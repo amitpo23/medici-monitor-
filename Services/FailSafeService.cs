@@ -74,6 +74,7 @@ public class FailSafeService
     // ── Last scan cache ──
     private FailSafeScanResult? _lastScan;
     private DateTime _lastScanTime = DateTime.MinValue;
+    public FailSafeScanResult? LastScanResult => _lastScan;
 
     // ── Scan counter for background ──
     public int ScanCount { get; private set; }

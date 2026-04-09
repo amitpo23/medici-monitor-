@@ -35,6 +35,7 @@ builder.Services.AddHostedService<AlertNotificationService>();
 builder.Services.AddHostedService<ReconciliationBackgroundService>();
 builder.Services.AddHostedService<SystemMonitorBackgroundService>();
 builder.Services.AddHostedService<TelegramBotService>();
+builder.Services.AddHostedService<AgentProactivityService>();
 builder.Services.AddSignalR();
 builder.Services.AddSingleton<MonitorHubNotifier>();
 builder.Services.AddCors(o => o.AddDefaultPolicy(p => p.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader()));
@@ -58,6 +59,14 @@ app.Services.GetRequiredService<SlaTrackingService>().SetStateStorageService(sta
 app.Services.GetRequiredService<FailSafeService>().SetStateStorageService(stateStorage);
 
 builder.Configuration.GetSection("Notifications").Bind(notificationSvc.Config);
+
+// Ensure Telegram config is populated for real-time critical alerts
+if (string.IsNullOrEmpty(notificationSvc.Config.TelegramBotToken))
+    notificationSvc.Config.TelegramBotToken = builder.Configuration["Notifications:TelegramBotToken"] ?? "";
+if (string.IsNullOrEmpty(notificationSvc.Config.TelegramChatId))
+    notificationSvc.Config.TelegramChatId = builder.Configuration["Notifications:TelegramChatId"] ?? "";
+if (!string.IsNullOrEmpty(notificationSvc.Config.TelegramBotToken) && !string.IsNullOrEmpty(notificationSvc.Config.TelegramChatId))
+    notificationSvc.Config.TelegramEnabled = true;
 var configuredThresholds = builder.Configuration.GetSection("AlertThresholds").Get<AlertThresholds>();
 if (configuredThresholds != null)
     alertingSvc.Thresholds = configuredThresholds;

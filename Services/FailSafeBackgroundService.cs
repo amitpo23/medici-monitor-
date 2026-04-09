@@ -26,17 +26,21 @@ public class FailSafeBackgroundService : BackgroundService
         if (_failSafe.Config.ScanOnStartup)
         {
             await Task.Delay(TimeSpan.FromSeconds(10), stoppingToken); // Wait for app warmup
-            await RunScan("Startup");
+            _ = await RunScan("Startup");
         }
 
+        var lastStatus = "OK";
         while (!stoppingToken.IsCancellationRequested)
         {
-            var interval = Math.Max(300, _failSafe.Config.ScanIntervalSeconds); // Min 5 min, default 30 min
+            // Dynamic interval: 5 min when CRITICAL, normal otherwise
+            var interval = lastStatus == "CRITICAL"
+                ? Math.Max(300, 300)  // 5 min when critical
+                : Math.Max(300, _failSafe.Config.ScanIntervalSeconds);
             await Task.Delay(TimeSpan.FromSeconds(interval), stoppingToken);
 
             if (!_failSafe.Config.Enabled) continue;
 
-            await RunScan("Background");
+            lastStatus = await RunScan("Background");
 
             // Check if daily summary should be sent
             try { await _failSafe.SendDailySummaryIfDueAsync(); }
@@ -44,7 +48,7 @@ public class FailSafeBackgroundService : BackgroundService
         }
     }
 
-    private async Task RunScan(string source)
+    private async Task<string> RunScan(string source)
     {
         try
         {
@@ -58,10 +62,12 @@ public class FailSafeBackgroundService : BackgroundService
                 _logger.LogInformation("[FailSafe-{Source}] Warning — {Msg}", source, result.Message);
             else
                 _logger.LogDebug("[FailSafe-{Source}] OK — {Msg}", source, result.Message);
+            return status;
         }
         catch (Exception ex)
         {
             _logger.LogError("[FailSafe-{Source}] Scan error: {Err}", source, ex.Message);
+            return "ERROR";
         }
     }
 }

@@ -7,15 +7,18 @@ namespace MediciMonitor.Services;
 public class ReconciliationBackgroundService : BackgroundService
 {
     private readonly BookingReconciliationService _reconciliation;
+    private readonly NotificationService _notifications;
     private readonly IConfiguration _config;
     private readonly ILogger<ReconciliationBackgroundService> _logger;
 
     public ReconciliationBackgroundService(
         BookingReconciliationService reconciliation,
+        NotificationService notifications,
         IConfiguration config,
         ILogger<ReconciliationBackgroundService> logger)
     {
         _reconciliation = reconciliation;
+        _notifications = notifications;
         _config = config;
         _logger = logger;
     }
@@ -42,7 +45,17 @@ public class ReconciliationBackgroundService : BackgroundService
         {
             try
             {
-                await _reconciliation.RunReconciliation(lookbackHours);
+                var report = await _reconciliation.RunReconciliation(lookbackHours);
+                if (report != null && report.CriticalMismatches > 0)
+                {
+                    var details = string.Join("\n", report.Mismatches
+                        .Where(m => m.Severity == "Critical").Take(5)
+                        .Select(m => $"  🔴 {m.Description}"));
+                    await _notifications.SendAsync(
+                        $"Reconciliation: {report.CriticalMismatches} אי-התאמות קריטיות",
+                        $"נמצאו {report.CriticalMismatches} אי-התאמות קריטיות ב-{lookbackHours} שעות אחרונות:\n{details}",
+                        "Critical", "Reconciliation");
+                }
             }
             catch (Exception ex)
             {

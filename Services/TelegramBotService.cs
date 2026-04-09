@@ -107,6 +107,7 @@ public class TelegramBotService : BackgroundService
         await SendToGroup("🟢 *MediciMonitor Online*\nהמערכת פעילה ומתחילה לנטר.\nדוח ראשון ייצא בעוד שעה.\n\nפקודות זמינות:\n/status — סטטוס מהיר\n/report — דוח מלא\n/alerts — התראות פעילות\n/monitor — סריקת מערכת (8 בדיקות)\n/reconcile — בדיקת התאמה\n/killswitch — הפעלת Kill Switch\n/breakers — סטטוס circuit breakers\n/help — עזרה");
 
         var lastReportTime = DateTime.UtcNow;
+        var lastDashboardHour = -1;
         var lastDailySummaryDate = DateTime.MinValue.Date;
 
         while (!stoppingToken.IsCancellationRequested)
@@ -121,6 +122,25 @@ public class TelegramBotService : BackgroundService
                 {
                     await SendHourlyReport();
                     lastReportTime = DateTime.UtcNow;
+                }
+
+                // Hourly dashboards at :03 every hour
+                var nowUtc = DateTime.UtcNow;
+                if (nowUtc.Minute >= 3 && nowUtc.Minute < 6 && nowUtc.Hour != lastDashboardHour)
+                {
+                    lastDashboardHour = nowUtc.Hour;
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            await SendDashboardAgents();
+                            await Task.Delay(2000);
+                            await SendDashboardSales();
+                            await Task.Delay(2000);
+                            await SendDashboardRisks();
+                        }
+                        catch (Exception ex) { _logger.LogWarning("Dashboard error: {Err}", ex.Message); }
+                    });
                 }
 
                 // Daily summary at 07:00 UTC (10:00 Israel)
@@ -181,6 +201,14 @@ public class TelegramBotService : BackgroundService
             foreach (var update in doc.RootElement.GetProperty("result").EnumerateArray())
             {
                 _lastUpdateId = update.GetProperty("update_id").GetInt32();
+
+                // Handle button clicks (callback_query)
+                if (update.TryGetProperty("callback_query", out var cbQuery))
+                {
+                    try { await HandleCallbackQuery(cbQuery); }
+                    catch (Exception ex) { _logger.LogDebug("Callback error: {Err}", ex.Message); }
+                    continue;
+                }
 
                 if (!update.TryGetProperty("message", out var msg)) continue;
                 if (!msg.TryGetProperty("text", out var textEl)) continue;
@@ -269,6 +297,24 @@ public class TelegramBotService : BackgroundService
                         case "/freshness": await HandleMonitorCheck(chatId, "/monitor_check data_freshness"); break;
                         case "/sales_check": await HandleMonitorCheck(chatId, "/monitor_check booking_sales"); break;
                         case "/overrides": await HandleMonitorCheck(chatId, "/monitor_check price_override_pipeline"); break;
+
+                        // ── Dashboards ──
+                        case "/dashboard": await SendDashboardAgents(chatId); await SendDashboardSales(chatId); await SendDashboardRisks(chatId); break;
+                        case "/dash_agents": await SendDashboardAgents(chatId); break;
+                        case "/dash_sales": await SendDashboardSales(chatId); break;
+                        case "/dash_risks": await SendDashboardRisks(chatId); break;
+
+                        // ── Agent API (medici-hotels) ──
+                        case "/agents": await HandleAgentQuery(chatId, "/agents"); break;
+                        case "/agent": await HandleAgentQuery(chatId, text); break;
+                        case "/rooms": await HandleAgentQuery(chatId, "/rooms"); break;
+                        case "/safety_report": await HandleAgentQuery(chatId, "/safety"); break;
+                        case "/scans_report": await HandleAgentQuery(chatId, "/scans"); break;
+
+                        // ── Agent Chat ──
+                        case "/team": await HandleTeamMenu(chatId); break;
+                        case "/talk": await HandleTalkToAgent(chatId, text); break;
+                        case "/bye": _claude.EndAllConversations(chatId); await SendToGroup("👋 שיחות סוכנים נסגרו.", chatId); break;
 
                         // ── AI + Monitor ──
                         case "/ask_monitor": await HandleAskMonitor(chatId, text); break;
@@ -454,6 +500,340 @@ public class TelegramBotService : BackgroundService
         {
             _logger.LogWarning("Failed to send hourly report: {Err}", ex.Message);
         }
+    }
+
+    // ── Dashboard 1: Agent Status ──────────────────────────────────
+
+    private async Task SendDashboardAgents(string? targetChatId = null)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("🤖 *דשבורד סוכנים*");
+        sb.AppendLine($"🕐 {DateTime.UtcNow:dd/MM HH:mm} UTC");
+        sb.AppendLine("━━━━━━━━━━━━━━━━━━━━");
+
+        try
+        {
+            var json = await _http.GetStringAsync("http://127.0.0.1:5050/agents");
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            var root = doc.RootElement;
+
+            var agents = root.GetProperty("agents");
+            int active = 0, stale = 0, noReport = 0;
+
+            foreach (var agent in agents.EnumerateArray())
+            {
+                var name = agent.GetProperty("name").GetString() ?? "?";
+                var skill = agent.GetProperty("skill").GetString() ?? "?";
+                var isStale = agent.TryGetProperty("stale", out var s) && s.GetBoolean();
+                var hasReport = agent.TryGetProperty("last_report", out var lr) && lr.ValueKind != System.Text.Json.JsonValueKind.Null;
+                var ageMin = agent.TryGetProperty("age_minutes", out var a) && a.ValueKind == System.Text.Json.JsonValueKind.Number
+                    ? a.GetDouble() : -1;
+
+                string icon, status;
+                if (!hasReport) { icon = "⚪"; status = "ללא דוח"; noReport++; }
+                else if (isStale) { icon = "🔴"; status = $"stale ({(int)ageMin}d)"; stale++; }
+                else if (ageMin > 60) { icon = "🟡"; status = $"{(int)ageMin}d"; active++; }
+                else { icon = "🟢"; status = $"{(int)ageMin}d"; active++; }
+
+                sb.AppendLine($"  {icon} *{name}* ({skill}) — {status}");
+            }
+
+            sb.AppendLine();
+            sb.AppendLine($"📊 סה\"כ: 🟢 {active} פעילים | 🔴 {stale} stale | ⚪ {noReport} ללא דוח");
+
+            // Key metrics from specific agents
+            sb.AppendLine();
+            sb.AppendLine("*📊 מדדים מרכזיים:*");
+            await AppendAgentKeyMetric(sb, "אמיר", j =>
+            {
+                if (j.TryGetProperty("data", out var d) && d.TryGetProperty("phases", out var p))
+                {
+                    var scans = p.TryGetProperty("scans", out var s) ? s : default;
+                    var missRate = scans.ValueKind != System.Text.Json.JsonValueKind.Undefined && scans.TryGetProperty("miss_rate_pct", out var mr) ? mr.ToString() : "?";
+                    var activeOrders = scans.ValueKind != System.Text.Json.JsonValueKind.Undefined && scans.TryGetProperty("active_orders", out var ao) ? ao.ToString() : "?";
+                    return $"📋 SOM: miss rate {missRate}% | {activeOrders} orders";
+                }
+                return null;
+            });
+            await AppendAgentKeyMetric(sb, "שמעון", j =>
+            {
+                if (j.TryGetProperty("data", out var d))
+                {
+                    var threat = d.TryGetProperty("worst_threat", out var wt) ? wt.GetString() : "?";
+                    var checks = d.TryGetProperty("checks", out var c) ? c.GetArrayLength() : 0;
+                    var passed = 0;
+                    if (d.TryGetProperty("checks", out var ch))
+                        foreach (var ck in ch.EnumerateArray())
+                            if (ck.TryGetProperty("passed", out var pp) && pp.GetBoolean()) passed++;
+                    return $"🛡️ Safety: {threat} | {passed}/{checks} passed";
+                }
+                return null;
+            });
+            await AppendAgentKeyMetric(sb, "מיכאל", j =>
+            {
+                if (j.TryGetProperty("data", out var d) && d.TryGetProperty("phases", out var p) && p.TryGetProperty("phase2", out var p2))
+                {
+                    var total = p2.TryGetProperty("total", out var t) ? t.ToString() : "?";
+                    return $"🗺️ Mapping: {total} gaps";
+                }
+                return null;
+            });
+        }
+        catch (Exception ex)
+        {
+            sb.AppendLine($"⚠️ Agent API לא זמין: {ex.Message}");
+        }
+
+        await SendToGroup(sb.ToString(), targetChatId);
+    }
+
+    private async Task AppendAgentKeyMetric(StringBuilder sb, string agentName, Func<System.Text.Json.JsonElement, string?> extractor)
+    {
+        try
+        {
+            var encodedName = Uri.EscapeDataString(agentName);
+            var json = await _http.GetStringAsync($"http://127.0.0.1:5050/agent/{encodedName}");
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            var metric = extractor(doc.RootElement);
+            if (metric != null) sb.AppendLine($"  {metric}");
+        }
+        catch { /* Agent API might be down — skip silently */ }
+    }
+
+    // ── Dashboard 2: Rooms & Sales ──────────────────────────────────
+
+    private async Task SendDashboardSales(string? targetChatId = null)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("💰 *דשבורד חדרים ומכירות*");
+        sb.AppendLine($"🕐 {DateTime.UtcNow:dd/MM HH:mm} UTC");
+        sb.AppendLine("━━━━━━━━━━━━━━━━━━━━");
+
+        try
+        {
+            var status = await _data.GetFullStatus();
+
+            sb.AppendLine();
+            sb.AppendLine("*🏨 חדרים:*");
+            sb.AppendLine($"  📦 פעילים: *{status.TotalActiveBookings}*");
+            sb.AppendLine($"  📈 עתידיים: *{status.FutureBookings}*");
+            if (status.WasteRoomsTotal > 0)
+                sb.AppendLine($"  💸 לא נמכרו (waste): *{status.WasteRoomsTotal}* (${status.WasteTotalValue:N0})");
+
+            sb.AppendLine();
+            sb.AppendLine("*💵 כספים:*");
+            sb.AppendLine($"  🛒 קנינו: *{status.TotalBought}* חדרים (${status.BoughtTodayValue:N0})");
+            sb.AppendLine($"  🏷️ מכרנו: *{status.TotalSold}* חדרים (${status.SoldTodayValue:N0})");
+            sb.AppendLine($"  📊 רווח/הפסד: *${status.ProfitLoss:N0}*");
+            if (status.ConversionRate > 0)
+                sb.AppendLine($"  🎯 המרה: *{status.ConversionRate:F1}%*");
+
+            sb.AppendLine();
+            sb.AppendLine("*📥 הזמנות:*");
+            sb.AppendLine($"  📥 Reservations היום: *{status.ReservationsToday}*");
+            sb.AppendLine($"  🔄 ביטולים תקועים: *{status.StuckCancellations}*");
+            if (status.RoomsBoughtToday > 0)
+                sb.AppendLine($"  🛍️ רכישות היום: *{status.RoomsBoughtToday}*");
+
+            // Scans / mapping miss rate from Agent API
+            try
+            {
+                var scansJson = await _http.GetStringAsync("http://127.0.0.1:5050/scans");
+                using var scansDoc = System.Text.Json.JsonDocument.Parse(scansJson);
+                var scansRoot = scansDoc.RootElement;
+                var missRate = scansRoot.TryGetProperty("miss_rate", out var mr) ? mr.GetDouble() : 0;
+                var details = scansRoot.TryGetProperty("details", out var dt) ? dt.GetInt32() : 0;
+                var misses = scansRoot.TryGetProperty("misses", out var ms) ? ms.GetInt32() : 0;
+                sb.AppendLine();
+                var missIcon = missRate > 80 ? "🔴" : missRate > 50 ? "🟡" : "🟢";
+                sb.AppendLine($"*🗺️ סריקות:*");
+                sb.AppendLine($"  {missIcon} Miss rate: *{missRate:F1}%* ({misses} misses / {details} details)");
+            }
+            catch { }
+
+            // Add rooms from Agent API
+            try
+            {
+                var roomsJson = await _http.GetStringAsync("http://127.0.0.1:5050/rooms");
+                using var doc = System.Text.Json.JsonDocument.Parse(roomsJson);
+                if (doc.RootElement.TryGetProperty("hotels", out var hotels))
+                {
+                    sb.AppendLine();
+                    sb.AppendLine("*🏨 חדרים לפי מלון:*");
+                    int count = 0;
+                    foreach (var h in hotels.EnumerateArray())
+                    {
+                        if (count++ >= 8) { sb.AppendLine("  _...ועוד_"); break; }
+                        var name = h.GetProperty("hotel").GetString() ?? "?";
+                        var rooms = h.GetProperty("rooms").GetInt32();
+                        var unsold = h.GetProperty("unsold").GetInt32();
+                        var sold = rooms - unsold;
+                        var icon = sold > 0 ? "✅" : "⬜";
+                        sb.AppendLine($"  {icon} {name}: {rooms} ({sold} נמכרו)");
+                    }
+                }
+            }
+            catch { }
+        }
+        catch (Exception ex)
+        {
+            sb.AppendLine($"⚠️ שגיאה: {ex.Message}");
+        }
+
+        await SendToGroup(sb.ToString(), targetChatId);
+    }
+
+    // ── Dashboard 3: Risks & WebJobs ────────────────────────────────
+
+    private async Task SendDashboardRisks(string? targetChatId = null)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("⚠️ *דשבורד כשלים וסיכונים*");
+        sb.AppendLine($"🕐 {DateTime.UtcNow:dd/MM HH:mm} UTC");
+        sb.AppendLine("━━━━━━━━━━━━━━━━━━━━");
+
+        // Safety report from Agent API
+        try
+        {
+            var safetyJson = await _http.GetStringAsync("http://127.0.0.1:5050/safety");
+            using var doc = System.Text.Json.JsonDocument.Parse(safetyJson);
+            var root = doc.RootElement;
+
+            var worstThreat = root.TryGetProperty("worst_threat", out var wt) ? wt.GetString() : "?";
+            var threatIcon = worstThreat switch { "OK" => "🟢", "MEDIUM" => "🟡", "HIGH" => "🟠", "WARNING" => "🟡", "CRITICAL" => "🔴", _ => "❓" };
+
+            sb.AppendLine();
+            sb.AppendLine($"*🛡️ בטיחות (שמעון):* {threatIcon} {worstThreat}");
+
+            if (root.TryGetProperty("checks", out var checks))
+            {
+                foreach (var check in checks.EnumerateArray())
+                {
+                    var name = check.GetProperty("check").GetString() ?? "?";
+                    var passed = check.TryGetProperty("passed", out var p) && p.GetBoolean();
+                    var msg = check.TryGetProperty("message", out var m) ? m.GetString() ?? "" : "";
+                    var icon = passed ? "✅" : "❌";
+                    sb.AppendLine($"  {icon} {name}: {(msg.Length > 60 ? msg[..60] + "..." : msg)}");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            sb.AppendLine($"  ⚠️ Safety API: {ex.Message}");
+        }
+
+        // System Monitor alerts
+        try
+        {
+            var monReport = _monitor.LastReport;
+            if (monReport != null)
+            {
+                sb.AppendLine();
+                sb.AppendLine("*🖥️ System Monitor:*");
+
+                var criticals = monReport.Alerts.Where(a => a.Severity is "CRITICAL" or "EMERGENCY").ToList();
+                var warnings = monReport.Alerts.Where(a => a.Severity == "WARNING").ToList();
+
+                if (criticals.Any())
+                {
+                    foreach (var a in criticals.Take(5))
+                        sb.AppendLine($"  🔴 {a.Component}: {a.Message}");
+                }
+                if (warnings.Any())
+                {
+                    foreach (var a in warnings.Take(5))
+                        sb.AppendLine($"  🟡 {a.Component}: {a.Message}");
+                }
+                if (!criticals.Any() && !warnings.Any())
+                    sb.AppendLine("  ✅ אין התראות");
+
+                // Trend
+                if (monReport.Trend != null)
+                {
+                    var ti = monReport.Trend.OverallTrend switch { "DEGRADING" => "📉", "IMPROVING" => "📈", _ => "➡️" };
+                    sb.AppendLine($"  {ti} טרנד: {monReport.Trend.OverallTrend} | בריאות: {monReport.Trend.HealthPct}%");
+
+                    // Escalations
+                    var escalations = monReport.Trend.Components
+                        .Where(c => c.Value.ConsecutiveCritical >= 3)
+                        .Select(c => c.Key).ToList();
+                    if (escalations.Any())
+                        sb.AppendLine($"  🚨 ESCALATION: {string.Join(", ", escalations)}");
+                }
+            }
+        }
+        catch { }
+
+        // Circuit Breakers
+        try
+        {
+            var breakers = _failSafe.GetBreakers();
+            var openBreakers = breakers.Where(b => b.IsOpen).ToList();
+            sb.AppendLine();
+            if (openBreakers.Any())
+            {
+                sb.AppendLine($"*🛑 Circuit Breakers:* {openBreakers.Count} פתוחים!");
+                foreach (var b in openBreakers)
+                    sb.AppendLine($"  🔴 {b.Name}: {b.Reason}");
+            }
+            else
+            {
+                sb.AppendLine("*🛑 Circuit Breakers:* ✅ הכל סגור");
+            }
+        }
+        catch { }
+
+        // FailSafe scan summary
+        try
+        {
+            var lastScan = _failSafe.LastScanResult;
+            if (lastScan != null)
+            {
+                var fsIcon = lastScan.Status switch { "CRITICAL" => "🔴", "WARNING" => "🟡", _ => "🟢" };
+                sb.AppendLine();
+                sb.AppendLine($"*🔒 FailSafe:* {fsIcon} {lastScan.Status}");
+                if (lastScan.Violations?.Any() == true)
+                {
+                    foreach (var v in lastScan.Violations.Take(3))
+                        sb.AppendLine($"  ⚠️ {v.RuleName}: {v.Description}");
+                }
+            }
+        }
+        catch { }
+
+        // Data freshness from SystemMonitor
+        try
+        {
+            var monReport = _monitor.LastReport;
+            if (monReport?.Results.TryGetValue("data_freshness", out var dfObj) == true && dfObj is Dictionary<string, object?> df)
+            {
+                sb.AppendLine();
+                sb.AppendLine("*📡 Data Freshness:*");
+                if (df.TryGetValue("last_detail_minutes", out var ldm))
+                    sb.AppendLine($"  Details: {ldm}min ago {((int?)ldm > 60 ? "🟡" : "🟢")}");
+                if (df.TryGetValue("last_purchase_minutes", out var lpm))
+                    sb.AppendLine($"  Purchase: {lpm}min ago {((int?)lpm > 360 ? "🔴" : "🟢")}");
+                if (df.TryGetValue("last_reservation_minutes", out var lrm))
+                    sb.AppendLine($"  Reservation: {lrm}min ago");
+            }
+        }
+        catch { }
+
+        // Recent errors
+        try
+        {
+            var status = await _data.GetFullStatus();
+            sb.AppendLine();
+            sb.AppendLine("*❌ שגיאות 24 שעות:*");
+            sb.AppendLine($"  הזמנות: *{status.BookingErrorsLast24h}*");
+            sb.AppendLine($"  ביטולים: *{status.CancelErrorsLast24h}*");
+            sb.AppendLine($"  BackOffice: *{status.BackOfficeErrorsLast24h}*");
+            if (status.SalesOfficeFailed > 0)
+                sb.AppendLine($"  SalesOffice failed: *{status.SalesOfficeFailed}*");
+        }
+        catch { }
+
+        await SendToGroup(sb.ToString(), targetChatId);
     }
 
     // ── Command Handlers ─────────────────────────────────────────
@@ -860,6 +1240,36 @@ public class TelegramBotService : BackgroundService
             await SendToGroup($"🤖🖥️ *Claude + Monitor:*\n\n{answer}{meta}", chatId);
         }
         catch (Exception ex) { await SendToGroup($"❌ שגיאה: {ex.Message}", chatId); }
+    }
+
+    private async Task HandleAgentQuery(string chatId, string text)
+    {
+        try
+        {
+            var endpoint = "http://127.0.0.1:5050";
+            string path;
+
+            if (text.StartsWith("/agent "))
+            {
+                var name = Uri.EscapeDataString(text[7..].Trim());
+                path = $"/agent/{name}";
+            }
+            else if (text == "/agents") path = "/agents";
+            else if (text == "/rooms") path = "/rooms";
+            else if (text.Contains("safety")) path = "/safety";
+            else if (text.Contains("scans")) path = "/scans";
+            else path = "/health";
+
+            await SendToGroup("🔍 מתחבר לסוכנים...", chatId);
+            var resp = await _http.GetStringAsync($"{endpoint}{path}");
+
+            if (resp.Length > 3800) resp = resp[..3800] + "\n...";
+            await SendToGroup($"🤖 *Agent Response:*\n```\n{resp}\n```", chatId);
+        }
+        catch (Exception ex)
+        {
+            await SendToGroup($"❌ Agent API לא זמין: {ex.Message}", chatId);
+        }
     }
 
     private async Task HandleAnalyseMonitor(string chatId)
@@ -1434,8 +1844,325 @@ public class TelegramBotService : BackgroundService
 
     // ── Natural Language Kill Switch ─────────────────────────────
 
+    // ── Agent Chat (natural conversation with agents) ──────────────
+
+    private static readonly Dictionary<string, string[]> AgentTriggers = new()
+    {
+        ["אריה"] = new[] { "אריה", "חדר בקרה", "control room" },
+        ["אמיר"] = new[] { "אמיר", "מנכ\"ל", "som" },
+        ["שמעון"] = new[] { "שמעון", "בטיחות", "safety" },
+        ["דני"] = new[] { "דני", "שגריר", "coordinator" },
+        ["יוסי"] = new[] { "יוסי", "מוכר", "seller" },
+        ["רוני"] = new[] { "רוני", "השלמות", "completion" },
+        ["מיכאל"] = new[] { "מיכאל", "מיפויים", "fixer" },
+        ["גבי"] = new[] { "גבי", "autofix" },
+        ["יעל"] = new[] { "יעל", "מפקחת", "monitor agent" },
+        ["משה"] = new[] { "משה", "kill switch" },
+    };
+
+    private string? DetectAgentInMessage(string text)
+    {
+        var lower = text.ToLower().Trim();
+        foreach (var (agent, triggers) in AgentTriggers)
+        {
+            foreach (var trigger in triggers)
+            {
+                if (lower.StartsWith(trigger) || lower.StartsWith($"@{trigger}") ||
+                    lower.Contains($" {trigger},") || lower.Contains($" {trigger} "))
+                    return agent;
+            }
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Smart routing — detect the topic and route to the right agent automatically.
+    /// Returns null if no topic match (not an agent question).
+    /// </summary>
+    private static string? RouteToAgent(string text)
+    {
+        var lower = text.ToLower().Trim();
+
+        // Topic → Agent mapping (checked in order — first match wins)
+        // שמעון: safety, risk, exposure, spending, kill switch, refundable
+        if (ContainsAny(lower, "בטיחות", "סיכון", "חשיפה", "הוצאות", "spending", "kill switch",
+            "refundable", "exposure", "reconcil", "התאמה", "איום", "threat"))
+            return "שמעון";
+
+        // אמיר: orders, sales orders, SOM, bookings, miss rate, scans
+        if (ContainsAny(lower, "sales order", "הזמנות", "orders", "miss rate", "חסרים",
+            "סריקות", "scans", "booking", "הזמנה נכשלה", "failed order", "som"))
+            return "אמיר";
+
+        // יוסי: pricing, rooms, selling, margins, competitors
+        if (ContainsAny(lower, "מחיר", "תמחור", "pricing", "margin", "חדרים", "rooms",
+            "מכירות", "selling", "מתחרה", "competitor", "רווח"))
+            return "יוסי";
+
+        // מיכאל: mapping, gaps, venues, ratebycat
+        if (ContainsAny(lower, "מיפוי", "mapping", "gaps", "venue", "ratebycat",
+            "מיפויים", "gap", "type a", "type b"))
+            return "מיכאל";
+
+        // רוני: completion, B2B, visibility, availability, safety wall
+        if (ContainsAny(lower, "השלמות", "completion", "b2b", "visibility", "availability",
+            "safety wall", "נראות", "זמינות"))
+            return "רוני";
+
+        // יעל: monitoring, system, webjobs, zenith, health checks
+        if (ContainsAny(lower, "מוניטור", "monitor", "webjob", "zenith", "בדיקות",
+            "health check", "system", "בריאות", "data freshness"))
+            return "יעל";
+
+        // דני: coordination, prediction, cross-system, integration
+        if (ContainsAny(lower, "תיאום", "prediction", "coordinator", "אינטגרציה",
+            "integration", "cross", "מערכות"))
+            return "דני";
+
+        // גבי: autofix, quick fix, type A
+        if (ContainsAny(lower, "autofix", "תיקון מהיר", "type a fix"))
+            return "גבי";
+
+        // אריה: general questions about agents, status, who does what
+        if (ContainsAny(lower, "סוכן", "סוכנים", "agents", "מי מטפל", "מי אחראי",
+            "מי עובד", "מי תקוע", "מה המצב", "סטטוס", "status", "דווח",
+            "מה קורה", "עדכון", "תן סטטוס"))
+            return "אריה";
+
+        return null;
+    }
+
+    private static bool ContainsAny(string text, params string[] patterns)
+        => patterns.Any(p => text.Contains(p, StringComparison.OrdinalIgnoreCase));
+
+    private string StripAgentName(string text, string agent)
+    {
+        var lower = text.Trim();
+        // Remove the agent name/trigger from the beginning
+        foreach (var trigger in AgentTriggers[agent])
+        {
+            if (lower.StartsWith(trigger, StringComparison.OrdinalIgnoreCase))
+            {
+                lower = lower[trigger.Length..].TrimStart(',', ' ', ':', '-', '—');
+                break;
+            }
+            if (lower.StartsWith($"@{trigger}", StringComparison.OrdinalIgnoreCase))
+            {
+                lower = lower[(trigger.Length + 1)..].TrimStart(',', ' ', ':', '-', '—');
+                break;
+            }
+        }
+        return string.IsNullOrWhiteSpace(lower) ? "מה המצב?" : lower;
+    }
+
+    private async Task HandleTalkToAgent(string chatId, string text)
+    {
+        var name = text.Length > 6 ? text[6..].Trim() : "";
+        if (string.IsNullOrEmpty(name))
+        {
+            await SendToGroup("שימוש: `/talk <שם סוכן>`\nלדוגמה: `/talk שמעון`\n\nסוכנים: אריה, אמיר, שמעון, דני, יוסי, רוני, מיכאל, גבי, יעל, משה", chatId);
+            return;
+        }
+
+        // Resolve agent name
+        var agent = DetectAgentInMessage(name) ?? name;
+        var quickStats = await FormatAgentQuickStats(agent);
+        if (quickStats == null)
+        {
+            await SendToGroup($"❌ סוכן '{name}' לא נמצא.", chatId);
+            return;
+        }
+
+        // Show quick stats (no Claude API call)
+        await SendToGroup($"📋 *{agent}* — סטטוס מהיר:\n{quickStats}\n\n_כתוב שאלה להמשך שיחה עם {agent}_", chatId);
+
+        // Set active conversation for follow-ups
+        if (_claude.IsAvailable)
+            await _claude.ChatWithAgent(chatId, agent, "__init__"); // Silent init — sets conversation state
+    }
+
+    private async Task<string?> FormatAgentQuickStats(string agentName)
+    {
+        try
+        {
+            var encodedName = Uri.EscapeDataString(agentName);
+            var json = await _http.GetStringAsync($"http://127.0.0.1:5050/agent/{encodedName}");
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            var root = doc.RootElement;
+
+            if (root.TryGetProperty("error", out _)) return null;
+
+            var sb = new StringBuilder();
+            var skill = root.TryGetProperty("skill", out var s) ? s.GetString() : "?";
+            var age = root.TryGetProperty("age_minutes", out var a) ? a.GetDouble() : -1;
+            var reportFile = root.TryGetProperty("report_file", out var rf) ? rf.GetString() : "?";
+
+            sb.AppendLine($"  🔧 Skill: {skill}");
+            sb.AppendLine($"  ⏱️ דוח אחרון: {(age >= 0 ? $"{(int)age} דקות" : "לא ידוע")}");
+            sb.AppendLine($"  📄 קובץ: {reportFile}");
+
+            // Extract key data based on agent
+            if (root.TryGetProperty("data", out var data))
+            {
+                if (data.TryGetProperty("worst_threat", out var wt))
+                    sb.AppendLine($"  🛡️ רמת איום: *{wt.GetString()}*");
+                if (data.TryGetProperty("checks", out var checks))
+                {
+                    int passed = 0, total = checks.GetArrayLength();
+                    foreach (var c in checks.EnumerateArray())
+                        if (c.TryGetProperty("passed", out var p) && p.GetBoolean()) passed++;
+                    sb.AppendLine($"  ✅ בדיקות: {passed}/{total} עברו");
+                }
+                if (data.TryGetProperty("phases", out var phases))
+                {
+                    if (phases.TryGetProperty("scans", out var scans) && scans.TryGetProperty("miss_rate_pct", out var mr))
+                        sb.AppendLine($"  🗺️ Miss rate: *{mr}%*");
+                    if (phases.TryGetProperty("orders", out var orders) && orders.TryGetProperty("signals_received", out var sig))
+                        sb.AppendLine($"  📡 Signals: {sig}");
+                }
+                if (data.TryGetProperty("kpis", out var kpis))
+                {
+                    if (kpis.TryGetProperty("active_rooms", out var ar))
+                        sb.AppendLine($"  🏨 חדרים פעילים: *{ar}*");
+                    if (kpis.TryGetProperty("sold_rooms", out var sr))
+                        sb.AppendLine($"  🏷️ נמכרו: *{sr}*");
+                    if (kpis.TryGetProperty("safety_status", out var ss))
+                        sb.AppendLine($"  🛡️ בטיחות: {ss}");
+                }
+                if (data.TryGetProperty("stats", out var stats))
+                {
+                    if (stats.TryGetProperty("total", out var tot))
+                        sb.AppendLine($"  📊 סה\"כ חדרים: {tot}");
+                    if (stats.TryGetProperty("updated", out var upd))
+                        sb.AppendLine($"  ✏️ עודכנו: {upd}");
+                }
+            }
+
+            return sb.ToString();
+        }
+        catch { return null; }
+    }
+
+    private async Task HandleAgentChat(string chatId, string agentName, string userMessage)
+    {
+        // Simple status questions — answer from data directly without Claude
+        var simplePatterns = new[] { "מה המצב", "סטטוס", "status", "מה קורה", "עדכון", "דווח" };
+        if (simplePatterns.Any(p => userMessage.Trim().Contains(p, StringComparison.OrdinalIgnoreCase)))
+        {
+            var quickStats = await FormatAgentQuickStats(agentName);
+            if (quickStats != null)
+            {
+                await SendToGroup($"*{agentName}:*\n{quickStats}\n_שאל שאלה ספציפית לתשובה מפורטת (Claude AI)_", chatId);
+                return;
+            }
+        }
+
+        if (!_claude.IsAvailable)
+        {
+            // Fallback: show data without Claude
+            var fallbackStats = await FormatAgentQuickStats(agentName);
+            if (fallbackStats != null)
+            {
+                await SendToGroup($"*{agentName}:*\n{fallbackStats}\n\n_Claude AI לא זמין — מציג נתונים בלבד_", chatId);
+                return;
+            }
+            await SendToGroup("❌ Claude AI לא מוגדר ו-Agent API לא זמין", chatId);
+            return;
+        }
+
+        // Check if starting new conversation or continuing
+        var existing = _claude.GetActiveConversation(chatId);
+        var isNew = existing == null || existing.Agent != agentName;
+        if (isNew)
+            await SendToGroup($"💬 פותח שיחה עם *{agentName}*...\n_כתוב כל הודעה ו{agentName} ימשיך לענות. כתוב \"ביי\" או שם סוכן אחר כדי לעבור._", chatId);
+
+        try
+        {
+            var response = await _claude.ChatWithAgent(chatId, agentName, userMessage);
+            var answer = response.Success ? response.Response : $"שגיאה: {response.Error}";
+            if (answer.Length > 3800) answer = answer[..3800] + "\n\n_...תשובה קוצרה_";
+            var meta = response.DurationMs > 0 ? $"\n_⏱️ {response.DurationMs}ms_" : "";
+
+            // Detect if the agent mentions another agent → offer handoff buttons
+            var mentioned = DetectMentionedAgents(answer, agentName);
+            if (mentioned.Any())
+            {
+                var agentIcons = new Dictionary<string, string>
+                {
+                    ["שמעון"] = "🛡️", ["אמיר"] = "📋", ["יוסי"] = "💰", ["מיכאל"] = "🗺️",
+                    ["יעל"] = "🖥️", ["רוני"] = "🏨", ["דני"] = "🔀", ["גבי"] = "⚡", ["אריה"] = "🏢", ["משה"] = "🔒"
+                };
+                var buttons = new List<object[]>();
+                var row = mentioned.Take(3).Select(m =>
+                    Btn($"{agentIcons.GetValueOrDefault(m, "📋")} עבור ל{m}", $"handoff:{agentName}:{m}")).ToArray();
+                buttons.Add(row);
+                buttons.Add(new[] { Btn($"🗺️ המשך עם {agentName}", $"stay:{agentName}") });
+
+                await SendInlineKeyboard(chatId, $"*{agentName}:*\n\n{answer}{meta}", buttons.ToArray());
+            }
+            else
+            {
+                await SendToGroup($"*{agentName}:*\n\n{answer}{meta}", chatId);
+            }
+        }
+        catch (Exception ex) { await SendToGroup($"❌ שגיאה: {ex.Message}", chatId); }
+    }
+
+    /// <summary>
+    /// Detect if an agent's response mentions other agents by name.
+    /// </summary>
+    private static List<string> DetectMentionedAgents(string text, string currentAgent)
+    {
+        var allAgents = new[] { "שמעון", "אמיר", "יוסי", "מיכאל", "יעל", "רוני", "דני", "גבי", "אריה", "משה" };
+        return allAgents
+            .Where(a => a != currentAgent && text.Contains(a))
+            .ToList();
+    }
+
+    // ── Natural Language Processing ─────────────────────────────────
+
     private async Task HandleNaturalLanguage(string chatId, string text, string from)
     {
+        // End conversation commands
+        var endPatterns = new[] { "ביי", "bye", "סגור", "תודה", "יאללה", "סיום" };
+        if (endPatterns.Any(p => text.Trim().Equals(p, StringComparison.OrdinalIgnoreCase) ||
+                                  text.Trim().StartsWith(p + " ", StringComparison.OrdinalIgnoreCase)))
+        {
+            var activeConv = _claude.GetActiveConversation(chatId);
+            if (activeConv != null)
+            {
+                var agentName = activeConv.Agent;
+                _claude.EndAllConversations(chatId);
+                await SendToGroup($"👋 שיחה עם *{agentName}* נסגרה.", chatId);
+                return;
+            }
+        }
+
+        // Check if message is addressed to a specific agent
+        var agent = DetectAgentInMessage(text);
+        if (agent != null)
+        {
+            var message = StripAgentName(text, agent);
+            await HandleAgentChat(chatId, agent, message);
+            return;
+        }
+
+        // Continue active conversation (no agent name mentioned)
+        var existingConv = _claude.GetActiveConversation(chatId);
+        if (existingConv != null)
+        {
+            await HandleAgentChat(chatId, existingConv.Agent, text);
+            return;
+        }
+
+        // Smart suggest — detect topic and offer agent buttons (don't auto-route)
+        var routedAgent = RouteToAgent(text);
+        if (routedAgent != null)
+        {
+            await HandleSuggestAgent(chatId, text);
+            return;
+        }
+
         var lower = text.ToLower().Trim();
 
         // Kill switch patterns (Hebrew + English)
@@ -1707,5 +2434,210 @@ public class TelegramBotService : BackgroundService
         {
             _logger.LogDebug("Telegram send error: {Err}", ex.Message);
         }
+    }
+
+    // ── Inline Keyboard (buttons) ────────────────────────────────
+
+    private async Task SendInlineKeyboard(string chatId, string text, object[][] buttons)
+    {
+        try
+        {
+            var url = $"https://api.telegram.org/bot{_botToken}/sendMessage";
+            if (text.Length > 4000) text = text[..4000];
+
+            var keyboard = buttons.Select(row =>
+                row.Select(btn => (object)btn).ToArray()
+            ).ToArray();
+
+            var payload = JsonSerializer.Serialize(new
+            {
+                chat_id = chatId,
+                text,
+                parse_mode = "Markdown",
+                disable_web_page_preview = true,
+                reply_markup = new { inline_keyboard = keyboard }
+            });
+            await _http.PostAsync(url, new StringContent(payload, Encoding.UTF8, "application/json"));
+        }
+        catch (Exception ex) { _logger.LogDebug("Telegram keyboard send error: {Err}", ex.Message); }
+    }
+
+    private async Task EditMessageWithKeyboard(string chatId, string messageId, string text, object[][]? buttons = null)
+    {
+        try
+        {
+            var url = $"https://api.telegram.org/bot{_botToken}/editMessageText";
+            if (text.Length > 4000) text = text[..4000];
+
+            var payload = new Dictionary<string, object?>
+            {
+                ["chat_id"] = chatId,
+                ["message_id"] = messageId,
+                ["text"] = text,
+                ["parse_mode"] = "Markdown",
+                ["disable_web_page_preview"] = true
+            };
+            if (buttons != null)
+                payload["reply_markup"] = new { inline_keyboard = buttons.Select(row => row.Select(btn => (object)btn).ToArray()).ToArray() };
+
+            await _http.PostAsync(url, new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json"));
+        }
+        catch (Exception ex) { _logger.LogDebug("Telegram edit error: {Err}", ex.Message); }
+    }
+
+    private async Task AnswerCallbackQuery(string callbackQueryId, string? text = null)
+    {
+        try
+        {
+            var url = $"https://api.telegram.org/bot{_botToken}/answerCallbackQuery";
+            var payload = new Dictionary<string, object?> { ["callback_query_id"] = callbackQueryId };
+            if (text != null) payload["text"] = text;
+            await _http.PostAsync(url, new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json"));
+        }
+        catch { }
+    }
+
+    private static object Btn(string text, string callbackData) =>
+        new { text, callback_data = callbackData };
+
+    // ── /team — Agent Team Menu ──────────────────────────────────
+
+    private async Task HandleTeamMenu(string chatId)
+    {
+        var buttons = new object[][]
+        {
+            new[] { Btn("🛡️ שמעון - בטיחות", "agent:שמעון"), Btn("📋 אמיר - הזמנות", "agent:אמיר") },
+            new[] { Btn("💰 יוסי - מכירות", "agent:יוסי"), Btn("🗺️ מיכאל - מיפויים", "agent:מיכאל") },
+            new[] { Btn("🖥️ יעל - מוניטור", "agent:יעל"), Btn("🏨 רוני - השלמות", "agent:רוני") },
+            new[] { Btn("🔀 דני - תיאום", "agent:דני"), Btn("⚡ גבי - תיקונים", "agent:גבי") },
+            new[] { Btn("🏢 אריה - סה\"כ", "agent:אריה") },
+        };
+
+        await SendInlineKeyboard(chatId,
+            "🏢 *צוות הסוכנים* — לחץ לדוח מיידי:",
+            buttons);
+    }
+
+    // ── Callback Query Handler (button clicks) ──────────────────
+
+    private async Task HandleCallbackQuery(JsonElement callbackQuery)
+    {
+        var callbackId = callbackQuery.GetProperty("id").GetString() ?? "";
+        var data = callbackQuery.TryGetProperty("data", out var d) ? d.GetString() ?? "" : "";
+        var msg = callbackQuery.TryGetProperty("message", out var m) ? m : default;
+        var chatId = msg.ValueKind != JsonValueKind.Undefined
+            ? msg.GetProperty("chat").GetProperty("id").GetInt64().ToString()
+            : _chatId;
+        var messageId = msg.ValueKind != JsonValueKind.Undefined
+            ? msg.GetProperty("message_id").GetInt32().ToString()
+            : "";
+
+        await AnswerCallbackQuery(callbackId);
+
+        if (data.StartsWith("agent:"))
+        {
+            var agentName = data[6..];
+            await HandleAgentReportView(chatId, agentName, messageId);
+        }
+        else if (data.StartsWith("ask:"))
+        {
+            var agentName = data[4..];
+            // Set active conversation for Claude chat
+            await SendToGroup($"💬 אתה בשיחה עם *{agentName}*.\nכתוב שאלה ו-{agentName} יענה:", chatId);
+            if (_claude.IsAvailable)
+                await _claude.ChatWithAgent(chatId, agentName, "__init__");
+        }
+        else if (data.StartsWith("refresh:"))
+        {
+            var agentName = data[8..];
+            await HandleAgentReportView(chatId, agentName, messageId);
+        }
+        else if (data == "team")
+        {
+            await HandleTeamMenu(chatId);
+        }
+        else if (data.StartsWith("handoff:"))
+        {
+            // Handoff: agent A mentions agent B → switch + inject B's data
+            var parts = data[8..].Split(':');
+            if (parts.Length == 2)
+            {
+                var fromAgent = parts[0];
+                var toAgent = parts[1];
+                // Fetch target agent's report
+                var targetData = await FormatAgentQuickStats(toAgent);
+                var context = targetData != null
+                    ? $"הועברת מ-{fromAgent}. הנה הנתונים של {toAgent}:\n{targetData}"
+                    : $"הועברת מ-{fromAgent}";
+
+                await SendToGroup($"🔀 עוברים ל-*{toAgent}*...", chatId);
+                await HandleAgentChat(chatId, toAgent, context);
+            }
+        }
+        else if (data.StartsWith("stay:"))
+        {
+            var agentName = data[5..];
+            await SendToGroup($"👍 ממשיכים עם *{agentName}*. כתוב שאלה:", chatId);
+        }
+        else if (data.StartsWith("suggest:"))
+        {
+            // User picked a suggested agent
+            var agentName = data[8..];
+            await HandleAgentReportView(chatId, agentName, "");
+        }
+    }
+
+    // ── Agent Report View (instant, no Claude) ──────────────────
+
+    private async Task HandleAgentReportView(string chatId, string agentName, string messageId)
+    {
+        var report = await FormatAgentQuickStats(agentName);
+        if (report == null)
+        {
+            await SendToGroup($"❌ סוכן '{agentName}' לא זמין", chatId);
+            return;
+        }
+
+        var buttons = new object[][]
+        {
+            new[] { Btn("💬 שאל שאלה", $"ask:{agentName}"), Btn("🔄 רענן", $"refresh:{agentName}") },
+            new[] { Btn("⬅️ חזרה לצוות", "team") },
+        };
+
+        var text = $"*{agentName}*\n━━━━━━━━━━━━━━━━━━\n{report}";
+
+        if (!string.IsNullOrEmpty(messageId))
+            await EditMessageWithKeyboard(chatId, messageId, text, buttons);
+        else
+            await SendInlineKeyboard(chatId, text, buttons);
+    }
+
+    // ── Suggest Agent (for free text questions) ──────────────────
+
+    private async Task HandleSuggestAgent(string chatId, string text)
+    {
+        // Find the best matching agent(s)
+        var primary = RouteToAgent(text);
+        if (primary == null) primary = "אריה"; // default
+
+        // Build suggestion buttons — primary + אריה (always available)
+        var suggestions = new List<(string name, string icon)>();
+        var agentIcons = new Dictionary<string, string>
+        {
+            ["שמעון"] = "🛡️", ["אמיר"] = "📋", ["יוסי"] = "💰", ["מיכאל"] = "🗺️",
+            ["יעל"] = "🖥️", ["רוני"] = "🏨", ["דני"] = "🔀", ["גבי"] = "⚡", ["אריה"] = "🏢"
+        };
+
+        suggestions.Add((primary, agentIcons.GetValueOrDefault(primary, "📋")));
+        if (primary != "אריה")
+            suggestions.Add(("אריה", "🏢"));
+
+        var buttons = new List<object[]>();
+        var row = suggestions.Select(s => Btn($"{s.icon} {s.name}", $"suggest:{s.name}")).ToArray();
+        buttons.Add(row);
+
+        await SendInlineKeyboard(chatId,
+            $"🔀 למי להעביר?\n\n_\"{(text.Length > 50 ? text[..50] + "..." : text)}\"_",
+            buttons.ToArray());
     }
 }

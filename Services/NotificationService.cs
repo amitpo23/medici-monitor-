@@ -16,6 +16,7 @@ public class NotificationService
     private readonly List<NotificationRecord> _history = new();
     private readonly object _lock = new();
     private const int MaxHistory = 500;
+    private readonly Dictionary<string, DateTime> _telegramCooldown = new();
 
     // ── Configuration (runtime-editable) ──
     public NotificationConfig Config { get; set; } = new();
@@ -64,8 +65,25 @@ public class NotificationService
                 tasks.Add(SendWhatsAppTwilioLegacy(title, message, severity, result));
         }
 
-        // Telegram is handled separately by TelegramBotService (every 3 hours)
-        // Not sent here to avoid frequent messages on every alert
+        // Telegram — send immediately for Critical events (with 10-min cooldown)
+        if (Config.TelegramEnabled && !string.IsNullOrEmpty(Config.TelegramBotToken)
+            && !string.IsNullOrEmpty(Config.TelegramChatId)
+            && severity == "Critical")
+        {
+            var cooldownKey = $"{title}:{severity}";
+            var now = DateTime.UtcNow;
+            lock (_lock)
+            {
+                if (!_telegramCooldown.TryGetValue(cooldownKey, out var lastSent) || now - lastSent > TimeSpan.FromMinutes(10))
+                {
+                    _telegramCooldown[cooldownKey] = now;
+                    tasks.Add(SendTelegram(title, message, severity, result));
+                }
+                // Clean old cooldown entries
+                var expired = _telegramCooldown.Where(kv => now - kv.Value > TimeSpan.FromMinutes(30)).Select(kv => kv.Key).ToList();
+                foreach (var k in expired) _telegramCooldown.Remove(k);
+            }
+        }
 
         // Always log
         _logger.LogInformation("Notification [{Severity}] {Title}: {Message}", severity, title, message);
