@@ -7,7 +7,7 @@ namespace MediciMonitor.Services;
 /// Telegram bot service — sends hourly reports and handles commands (kill switch, status).
 /// Polls for commands every 30 seconds and sends comprehensive reports every hour.
 /// </summary>
-public class TelegramBotService : BackgroundService
+public partial class TelegramBotService : BackgroundService
 {
     private readonly IConfiguration _config;
     private readonly ILogger<TelegramBotService> _logger;
@@ -2148,7 +2148,10 @@ public class TelegramBotService : BackgroundService
         var existing = _claude.GetActiveConversation(chatId);
         var isNew = existing == null || existing.Agent != agentName;
         if (isNew)
+        {
+            var wasExpired = existing == null && agentName == agentName; // new session
             await SendToGroup($"💬 פותח שיחה עם *{agentName}*...\n_כתוב כל הודעה ו{agentName} ימשיך לענות. כתוב \"ביי\" או שם סוכן אחר כדי לעבור._", chatId);
+        }
 
         try
         {

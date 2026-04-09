@@ -60,7 +60,11 @@ public class AgentProactivityService : BackgroundService
                 await CheckMichael();  // New mapping gaps
                 await CheckYossi();    // Room seller pricing updates
                 await CheckYael();     // Monitor health changes
+                await CheckRoni();     // Hotel completion cycles
+                await CheckDani();     // Coordinator health
+                await CheckGabi();     // Autofix completions
                 await CheckAryeh();    // Morning summary at 10:00 Israel
+                await SaveDailySnapshot(); // Daily KPI history
             }
             catch (Exception ex)
             {
@@ -291,6 +295,144 @@ public class AgentProactivityService : BackgroundService
             }
         }
         catch { }
+    }
+
+    // ── רוני (Hotel Completion) — completion status changes ──
+
+    private string? _lastRoniReport;
+    private async Task CheckRoni()
+    {
+        try
+        {
+            var encodedName = Uri.EscapeDataString("רוני");
+            var json = await _http.GetStringAsync($"http://127.0.0.1:5050/agent/{encodedName}");
+            using var doc = JsonDocument.Parse(json);
+            var reportFile = doc.RootElement.TryGetProperty("report_file", out var rf) ? rf.GetString() : null;
+
+            if (reportFile != null && reportFile != _lastRoniReport && _lastRoniReport != null && CanSpeak("רוני"))
+            {
+                var stats = "";
+                if (doc.RootElement.TryGetProperty("data", out var data) && data.TryGetProperty("stats", out var s))
+                {
+                    var processed = s.TryGetProperty("venues_processed", out var vp) ? vp.GetInt32() : 0;
+                    var closed = s.TryGetProperty("ranges_closed", out var rc) ? rc.GetInt32() : 0;
+                    stats = $" {processed} venues, {closed} ranges closed.";
+                }
+                await SendAgentMessage($"🏨 *רוני (השלמות):* סיימתי סבב השלמה.{stats}");
+                MarkSpoken("רוני");
+            }
+            _lastRoniReport = reportFile;
+        }
+        catch { }
+    }
+
+    // ── דני (Coordinator) — cross-system health changes ──
+
+    private string? _lastDaniReport;
+    private async Task CheckDani()
+    {
+        try
+        {
+            var encodedName = Uri.EscapeDataString("דני");
+            var json = await _http.GetStringAsync($"http://127.0.0.1:5050/agent/{encodedName}");
+            using var doc = JsonDocument.Parse(json);
+            var reportFile = doc.RootElement.TryGetProperty("report_file", out var rf) ? rf.GetString() : null;
+
+            if (reportFile != null && reportFile != _lastDaniReport && _lastDaniReport != null && CanSpeak("דני"))
+            {
+                await SendAgentMessage($"🔀 *דני (תיאום):* דוח תיאום חדש מוכן.");
+                MarkSpoken("דני");
+            }
+            _lastDaniReport = reportFile;
+        }
+        catch { }
+    }
+
+    // ── גבי (Autofix Worker) — fixes completed ──
+
+    private string? _lastGabiReport;
+    private async Task CheckGabi()
+    {
+        try
+        {
+            var encodedName = Uri.EscapeDataString("גבי");
+            var json = await _http.GetStringAsync($"http://127.0.0.1:5050/agent/{encodedName}");
+            using var doc = JsonDocument.Parse(json);
+            var reportFile = doc.RootElement.TryGetProperty("report_file", out var rf) ? rf.GetString() : null;
+
+            if (reportFile != null && reportFile != _lastGabiReport && _lastGabiReport != null && CanSpeak("גבי"))
+            {
+                var fixes = "";
+                if (doc.RootElement.TryGetProperty("data", out var data) && data.TryGetProperty("fixes_applied", out var fa))
+                    fixes = $" {fa.GetInt32()} תיקונים.";
+                await SendAgentMessage($"⚡ *גבי (תיקון מהיר):* סיימתי סבב autofix.{fixes}");
+                MarkSpoken("גבי");
+            }
+            _lastGabiReport = reportFile;
+        }
+        catch { }
+    }
+
+    // ── Daily KPI Snapshot ──
+
+    private static readonly string HistoryFile = Path.Combine(AppContext.BaseDirectory, "agent-history.json");
+    private DateTime _lastSnapshotDate = DateTime.MinValue;
+
+    private async Task SaveDailySnapshot()
+    {
+        if (_lastSnapshotDate.Date == DateTime.UtcNow.Date) return;
+
+        try
+        {
+            var snapshot = new Dictionary<string, object?> { ["date"] = DateTime.UtcNow.ToString("yyyy-MM-dd") };
+
+            // Collect key metrics
+            try
+            {
+                var safetyJson = await _http.GetStringAsync("http://127.0.0.1:5050/safety");
+                using var sd = JsonDocument.Parse(safetyJson);
+                snapshot["safety_threat"] = sd.RootElement.TryGetProperty("worst_threat", out var wt) ? wt.GetString() : null;
+            } catch { }
+
+            try
+            {
+                var scansJson = await _http.GetStringAsync("http://127.0.0.1:5050/scans");
+                using var sc = JsonDocument.Parse(scansJson);
+                snapshot["miss_rate"] = sc.RootElement.TryGetProperty("miss_rate", out var mr) ? mr.GetDouble() : 0;
+                snapshot["details"] = sc.RootElement.TryGetProperty("details", out var dt) ? dt.GetInt32() : 0;
+            } catch { }
+
+            try
+            {
+                var roomsJson = await _http.GetStringAsync("http://127.0.0.1:5050/rooms");
+                using var rm = JsonDocument.Parse(roomsJson);
+                if (rm.RootElement.TryGetProperty("rooms", out var r))
+                {
+                    snapshot["active_rooms"] = r.TryGetProperty("total", out var t) ? t.GetInt32() : 0;
+                    snapshot["sold_rooms"] = r.TryGetProperty("sold", out var s) ? s.GetInt32() : 0;
+                }
+            } catch { }
+
+            // Load existing history
+            var history = new List<Dictionary<string, object?>>();
+            if (File.Exists(HistoryFile))
+            {
+                try
+                {
+                    var existing = JsonSerializer.Deserialize<List<Dictionary<string, object?>>>(File.ReadAllText(HistoryFile));
+                    if (existing != null) history = existing;
+                } catch { }
+            }
+
+            // Keep last 90 days
+            history.Add(snapshot);
+            if (history.Count > 90) history.RemoveRange(0, history.Count - 90);
+
+            File.WriteAllText(HistoryFile, JsonSerializer.Serialize(history, new JsonSerializerOptions { WriteIndented = true }));
+            _lastSnapshotDate = DateTime.UtcNow;
+            _logger.LogInformation("Daily agent snapshot saved ({Count} days)", history.Count);
+        }
+        catch (Exception ex) { _logger.LogDebug("Snapshot save failed: {Err}", ex.Message); }
     }
 
     // ── Helpers ──
