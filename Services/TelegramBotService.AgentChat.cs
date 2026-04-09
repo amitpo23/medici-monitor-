@@ -237,10 +237,18 @@ public partial class TelegramBotService
         }
 
         else if (data.StartsWith("ack:"))
-            await SendToGroup("✅ התראה אושרה.", chatId);
+        {
+            // Edit the original alert message — remove buttons, mark as acknowledged
+            if (!string.IsNullOrEmpty(messageId))
+                await EditMessageWithKeyboard(chatId, messageId, "✅ *התראה אושרה.*", null);
+        }
 
         else if (data.StartsWith("snooze:"))
-            await SendToGroup("😴 התראה מושתקת לשעה.", chatId);
+        {
+            // Edit the original alert message — remove buttons, mark as snoozed
+            if (!string.IsNullOrEmpty(messageId))
+                await EditMessageWithKeyboard(chatId, messageId, "😴 *התראה מושתקת לשעה.*", null);
+        }
 
         else if (data == "endchat")
         {
