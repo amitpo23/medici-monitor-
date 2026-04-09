@@ -224,6 +224,43 @@ public class ClaudeAiService
     public bool IsAvailable => _mode != AiMode.None;
     public string Mode => _mode.ToString();
 
+    /// <summary>
+    /// Proactively refresh OAuth token before it expires.
+    /// Called periodically by a background timer or before API calls.
+    /// Falls back to reloading from macOS keychain if refresh fails.
+    /// </summary>
+    public async Task EnsureTokenFreshAsync()
+    {
+        if (_mode != AiMode.OAuth) return;
+
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var marginMs = 30 * 60 * 1000L; // 30 min before expiry
+
+        if (now < _oauthExpiresAt - marginMs) return; // Still fresh
+
+        _logger.LogInformation("OAuth token expiring soon, refreshing...");
+
+        if (await RefreshOAuthTokenAsync())
+        {
+            _logger.LogInformation("OAuth token refreshed successfully, expires in {Min}min",
+                (_oauthExpiresAt - DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()) / 60000);
+            return;
+        }
+
+        // Refresh failed — try reloading from macOS keychain (claude CLI may have refreshed it)
+        _logger.LogWarning("OAuth refresh failed, attempting keychain reload...");
+        if (TryLoadOAuthToken())
+        {
+            var expiresIn = TimeSpan.FromMilliseconds(Math.Max(0, _oauthExpiresAt - DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()));
+            _logger.LogInformation("OAuth token reloaded from keychain, expires in {H}h {M}m",
+                (int)expiresIn.TotalHours, expiresIn.Minutes);
+        }
+        else
+        {
+            _logger.LogError("OAuth token expired and cannot be refreshed or reloaded");
+        }
+    }
+
     // ─── System prompt (Hebrew, Medici context) ───────────────────
 
     private static readonly string SystemPrompt = @"

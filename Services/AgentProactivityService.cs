@@ -12,6 +12,7 @@ public class AgentProactivityService : BackgroundService
 {
     private readonly IConfiguration _config;
     private readonly ILogger<AgentProactivityService> _logger;
+    private readonly ClaudeAiService? _claude;
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(10) };
 
     // State tracking — detect changes, not just thresholds
@@ -29,10 +30,11 @@ public class AgentProactivityService : BackgroundService
     private string _botToken = "";
     private string _chatId = "";
 
-    public AgentProactivityService(IConfiguration config, ILogger<AgentProactivityService> logger)
+    public AgentProactivityService(IConfiguration config, ILogger<AgentProactivityService> logger, ClaudeAiService claude)
     {
         _config = config;
         _logger = logger;
+        _claude = claude;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -65,6 +67,10 @@ public class AgentProactivityService : BackgroundService
                 await CheckGabi();     // Autofix completions
                 await CheckAryeh();    // Morning summary at 10:00 Israel
                 await SaveDailySnapshot(); // Daily KPI history
+
+                // Keep OAuth token fresh (refreshes 30min before expiry)
+                try { await _claude.EnsureTokenFreshAsync(); }
+                catch (Exception ex) { _logger.LogDebug("Token refresh check: {Err}", ex.Message); }
             }
             catch (Exception ex)
             {
