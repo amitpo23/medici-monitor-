@@ -104,72 +104,138 @@ public partial class TelegramBotService
             var ageStr = age >= 0 ? (age < 60 ? $"{(int)age} דקות" : $"{age / 60:F1} שעות") : "לא ידוע";
             sb.AppendLine($"⏱️ דוח מלפני {ageStr}");
 
-            if (root.TryGetProperty("data", out var data))
+            if (!root.TryGetProperty("data", out var data)) return sb.ToString();
+
+            // ── שמעון (Safety) — worst_threat + checks ──
+            if (data.TryGetProperty("worst_threat", out var wt))
             {
-                // Safety (שמעון)
-                if (data.TryGetProperty("worst_threat", out var wt))
+                var threatIcon = wt.GetString() switch { "OK" => "🟢", "MEDIUM" => "🟡", "HIGH" => "🟠", "CRITICAL" => "🔴", _ => "❓" };
+                sb.AppendLine($"{threatIcon} רמת איום: *{wt.GetString()}*");
+            }
+            if (data.TryGetProperty("checks", out var checks))
+            {
+                foreach (var c in checks.EnumerateArray())
                 {
-                    var threatIcon = wt.GetString() switch { "OK" => "🟢", "MEDIUM" => "🟡", "HIGH" => "🟠", "CRITICAL" => "🔴", _ => "❓" };
-                    sb.AppendLine($"{threatIcon} רמת איום: *{wt.GetString()}*");
-                }
-                if (data.TryGetProperty("checks", out var checks))
-                {
-                    int passed = 0, total = checks.GetArrayLength();
-                    foreach (var c in checks.EnumerateArray())
-                    {
-                        var checkPassed = c.TryGetProperty("passed", out var p) && p.GetBoolean();
-                        if (checkPassed) passed++;
-                        var checkName = c.TryGetProperty("check", out var cn) ? cn.GetString() ?? "" : "";
-                        var checkMsg = c.TryGetProperty("message", out var cm) ? cm.GetString() ?? "" : "";
-                        var checkIcon = checkPassed ? "✅" : "❌";
-                        if (checkMsg.Length > 50) checkMsg = checkMsg[..50] + "...";
-                        sb.AppendLine($"  {checkIcon} {checkName}: {checkMsg}");
-                    }
-                }
-
-                // SOM (אמיר)
-                if (data.TryGetProperty("phases", out var phases))
-                {
-                    if (phases.TryGetProperty("scans", out var scans))
-                    {
-                        var missRate = scans.TryGetProperty("miss_rate_pct", out var mr) ? mr.GetDouble() : -1;
-                        var activeOrders = scans.TryGetProperty("active_orders", out var ao) ? ao.GetInt32() : 0;
-                        var staleOrders = scans.TryGetProperty("stale_orders", out var so) ? so.GetInt32() : 0;
-                        if (missRate >= 0) sb.AppendLine($"🗺️ Miss rate: *{missRate:F1}%* | Orders: {activeOrders} (stale: {staleOrders})");
-                    }
-                    if (phases.TryGetProperty("bookings", out var bookings))
-                    {
-                        var uncovered = bookings.TryGetProperty("uncovered", out var uc) ? uc.GetInt32() : 0;
-                        if (uncovered > 0) sb.AppendLine($"⚠️ *{uncovered} הזמנות ללא כיסוי!*");
-                    }
-                }
-
-                // Control Room (אריה)
-                if (data.TryGetProperty("kpis", out var kpis))
-                {
-                    var rooms = kpis.TryGetProperty("active_rooms", out var ar) ? ar.GetInt32() : 0;
-                    var sold = kpis.TryGetProperty("sold_rooms", out var sr) ? sr.GetInt32() : 0;
-                    var safety = kpis.TryGetProperty("safety_status", out var ss) ? ss.GetString() : "?";
-                    sb.AppendLine($"🏨 חדרים: {rooms} ({sold} נמכרו) | בטיחות: {safety}");
-                }
-
-                // Room Seller (יוסי)
-                if (data.TryGetProperty("stats", out var stats))
-                {
-                    var total = stats.TryGetProperty("total", out var t) ? t.GetInt32() : 0;
-                    var updated = stats.TryGetProperty("updated", out var u) ? u.GetInt32() : 0;
-                    var skipped = stats.TryGetProperty("skipped", out var sk) ? sk.GetInt32() : 0;
-                    sb.AppendLine($"📊 חדרים: {total} | עודכנו: {updated} | דולגו: {skipped}");
-                }
-
-                // Mapping Fixer (מיכאל)
-                if (data.TryGetProperty("phases", out var mPhases) && mPhases.TryGetProperty("phase2", out var p2))
-                {
-                    var gapTotal = p2.TryGetProperty("total", out var gt) ? gt.GetInt32() : 0;
-                    var autoFix = p2.TryGetProperty("auto_fixable", out var af) ? af.GetInt32() : 0;
-                    if (gapTotal > 0) sb.AppendLine($"🔧 Gaps: {gapTotal} (auto-fixable: {autoFix})");
+                    var p = c.TryGetProperty("passed", out var pp) && pp.GetBoolean();
+                    var n = c.TryGetProperty("check", out var cn) ? cn.GetString() ?? "" : "";
+                    var m = c.TryGetProperty("message", out var cm) ? cm.GetString() ?? "" : "";
+                    if (m.Length > 55) m = m[..55] + "...";
+                    sb.AppendLine($"  {(p ? "✅" : "❌")} {n}: {m}");
                 }
             }
+
+            // ── אמיר (SOM) — phases: bookings, purchase, scans, rebuy ──
+            if (data.TryGetProperty("phases", out var phases))
+            {
+                if (phases.TryGetProperty("scans", out var scans))
+                {
+                    var missRate = scans.TryGetProperty("miss_rate_pct", out var mr) ? mr.ToString() : null;
+                    var activeOrders = scans.TryGetProperty("active_orders", out var ao) ? ao.ToString() : "0";
+                    var stale = scans.TryGetProperty("stale_orders", out var so) ? so.ToString() : "0";
+                    sb.AppendLine($"📊 Orders: {activeOrders} (stale: {stale})");
+                    if (missRate != null) sb.AppendLine($"🗺️ Miss rate: *{missRate}%*");
+                }
+                if (phases.TryGetProperty("bookings", out var bk))
+                {
+                    var checked_ = bk.TryGetProperty("checked", out var ck) ? ck.GetInt32() : 0;
+                    var uncovered = bk.TryGetProperty("uncovered", out var uc) ? uc.GetInt32() : 0;
+                    var cancelled = bk.TryGetProperty("cancelled", out var ca) ? ca.GetInt32() : 0;
+                    sb.AppendLine($"📥 Bookings checked: {checked_} | uncovered: {uncovered} | cancelled: {cancelled}");
+                    if (uncovered > 0) sb.AppendLine($"  ⚠️ *{uncovered} ללא כיסוי!*");
+                }
+                if (phases.TryGetProperty("purchase", out var pur))
+                {
+                    var attempted = pur.TryGetProperty("attempted", out var at) ? at.GetInt32() : 0;
+                    var purchased = pur.TryGetProperty("purchased_normal", out var pn) ? pn.GetInt32() : 0;
+                    var tooExp = pur.TryGetProperty("too_expensive", out var te) ? te.GetInt32() : 0;
+                    if (attempted > 0) sb.AppendLine($"🛒 Purchase: {purchased}/{attempted} (too expensive: {tooExp})");
+                }
+                // מיכאל (Mapping Fixer) — phase2
+                if (phases.TryGetProperty("phase1", out var p1))
+                {
+                    var scanned = p1.TryGetProperty("active_rooms_scanned", out var ars) ? ars.GetInt32() : 0;
+                    var gaps = p1.TryGetProperty("raw_gaps_found", out var rg) ? rg.GetInt32() : 0;
+                    sb.AppendLine($"🔍 Scanned: {scanned} rooms, {gaps} gaps found");
+                }
+                if (phases.TryGetProperty("phase2", out var p2))
+                {
+                    var total = p2.TryGetProperty("total", out var gt) ? gt.GetInt32() : 0;
+                    var auto = p2.TryGetProperty("auto_fixable", out var af) ? af.GetInt32() : 0;
+                    var manual = p2.TryGetProperty("needs_manual", out var nm) ? nm.GetInt32() : 0;
+                    sb.AppendLine($"🔧 Gaps: {total} (auto: {auto}, manual: {manual})");
+                }
+            }
+
+            // ── אריה (Control Room) — kpis + agents ──
+            if (data.TryGetProperty("kpis", out var kpis))
+            {
+                var rooms = kpis.TryGetProperty("active_rooms", out var ar) ? ar.GetInt32() : 0;
+                var sold = kpis.TryGetProperty("sold_rooms", out var sr) ? sr.GetInt32() : 0;
+                var safety = kpis.TryGetProperty("safety_status", out var ss) ? ss.GetString() : "?";
+                var misses = kpis.TryGetProperty("mapping_misses_24h", out var mm) ? mm.GetInt32() : 0;
+                sb.AppendLine($"🏨 חדרים: {rooms} ({sold} נמכרו)");
+                sb.AppendLine($"🛡️ בטיחות: {safety} | misses 24h: {misses}");
+            }
+            if (data.TryGetProperty("agents", out var agentsList) && agentsList.ValueKind == JsonValueKind.Array)
+            {
+                int agActive = 0, agStale = 0;
+                foreach (var ag in agentsList.EnumerateArray())
+                {
+                    var stale = ag.TryGetProperty("last_report_age_min", out var lra) && lra.GetDouble() > 180;
+                    if (stale) agStale++; else agActive++;
+                }
+                sb.AppendLine($"👥 סוכנים: {agActive} פעילים, {agStale} stale");
+            }
+
+            // ── יוסי (Room Seller) — stats ──
+            if (data.TryGetProperty("stats", out var stats))
+            {
+                var total = stats.TryGetProperty("total", out var t) ? t.GetInt32() : 0;
+                var updated = stats.TryGetProperty("updated", out var u) ? u.GetInt32() : 0;
+                var skipped = stats.TryGetProperty("skipped", out var sk) ? sk.GetInt32() : 0;
+                var errors = stats.TryGetProperty("errors", out var er) ? er.GetInt32() : 0;
+                sb.AppendLine($"📊 חדרים: {total} | עודכנו: {updated} | דולגו: {skipped}");
+                if (errors > 0) sb.AppendLine($"  ❌ שגיאות: {errors}");
+            }
+
+            // ── רוני (Hotel Completion) — scope, fixes, escalations ──
+            if (data.TryGetProperty("scope_summary", out var scope))
+            {
+                var pairs = scope.TryGetProperty("total_pairs", out var tp) ? tp.GetInt32() : 0;
+                var venues = scope.TryGetProperty("unique_venues", out var uv) ? uv.GetInt32() : 0;
+                sb.AppendLine($"🏨 Scope: {pairs} pairs, {venues} venues");
+            }
+            if (data.TryGetProperty("fixes", out var fixes) && fixes.ValueKind == JsonValueKind.Array)
+                sb.AppendLine($"🔧 Fixes: {fixes.GetArrayLength()}");
+            if (data.TryGetProperty("escalations", out var esc) && esc.ValueKind == JsonValueKind.Array && esc.GetArrayLength() > 0)
+                sb.AppendLine($"⚠️ Escalations: {esc.GetArrayLength()}");
+
+            // ── דני (Coordinator) — systems health ──
+            if (data.TryGetProperty("hotels", out var hotels))
+            {
+                var hStatus = hotels.TryGetProperty("status", out var hs) ? hs.GetString() : "?";
+                sb.AppendLine($"🏨 Hotels DB: {hStatus}");
+            }
+            if (data.TryGetProperty("prediction", out var pred))
+            {
+                var pStatus = pred.TryGetProperty("status", out var ps) ? ps.GetString() : "?";
+                sb.AppendLine($"📡 Prediction: {pStatus}");
+            }
+
+            // ── גבי (Autofix) — results summary ──
+            if (data.TryGetProperty("summary", out var summary))
+            {
+                var fixed_ = summary.TryGetProperty("fixed", out var fx) ? fx.GetInt32() : 0;
+                var skipped_ = summary.TryGetProperty("skipped", out var sk2) ? sk2.GetInt32() : 0;
+                var alerts = summary.TryGetProperty("alerts", out var al) ? al.GetInt32() : 0;
+                sb.AppendLine($"⚡ Fixed: {fixed_} | Skipped: {skipped_} | Alerts: {alerts}");
+            }
+            if (data.TryGetProperty("results", out var results) && results.ValueKind == JsonValueKind.Array)
+                sb.AppendLine($"📋 Results: {results.GetArrayLength()} items");
+
+            // ── mode + version ──
+            var mode = data.TryGetProperty("mode", out var md) ? md.GetString() : null;
+            if (mode != null) sb.AppendLine($"⚙️ Mode: {mode}");
 
             return sb.ToString();
         }
