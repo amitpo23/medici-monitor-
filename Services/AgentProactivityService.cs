@@ -460,6 +460,9 @@ public class AgentProactivityService : BackgroundService
 
     private async Task SendAgentMessage(string text)
     {
+        // Skip if user is in an active agent conversation (mute state)
+        if (TelegramBotService.IsConversationMuted) return;
+
         try
         {
             var url = $"https://api.telegram.org/bot{_botToken}/sendMessage";

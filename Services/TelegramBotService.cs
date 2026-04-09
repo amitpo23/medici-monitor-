@@ -162,8 +162,9 @@ public partial class TelegramBotService : BackgroundService
         // Wait for app to warm up
         await Task.Delay(TimeSpan.FromSeconds(30), stoppingToken);
 
-        // Send startup message
-        await SendToGroup("🟢 *MediciMonitor Online*\nהמערכת פעילה ומתחילה לנטר.\nדוח ראשון ייצא בעוד שעה.\n\nפקודות זמינות:\n/status — סטטוס מהיר\n/report — דוח מלא\n/alerts — התראות פעילות\n/monitor — סריקת מערכת (8 בדיקות)\n/reconcile — בדיקת התאמה\n/killswitch — הפעלת Kill Switch\n/breakers — סטטוס circuit breakers\n/help — עזרה");
+        // Send startup message (skip if conversation is muted — avoids interrupting active chats after restart)
+        if (!IsConversationMuted)
+            await SendToGroup("🟢 *MediciMonitor Online*\nהמערכת פעילה ומתחילה לנטר.\nדוח ראשון ייצא בעוד שעה.\n\nפקודות זמינות:\n/status — סטטוס מהיר\n/report — דוח מלא\n/alerts — התראות פעילות\n/monitor — סריקת מערכת (8 בדיקות)\n/reconcile — בדיקת התאמה\n/killswitch — הפעלת Kill Switch\n/breakers — סטטוס circuit breakers\n/help — עזרה");
 
         var lastReportTime = DateTime.UtcNow;
         var lastDashboardHour = -1;

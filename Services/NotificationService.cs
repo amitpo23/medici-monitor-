@@ -17,11 +17,54 @@ public class NotificationService
     private readonly object _lock = new();
     private const int MaxHistory = 500;
     private readonly Dictionary<string, DateTime> _telegramCooldown = new();
+    private static readonly string CooldownStateFile = Path.Combine(AppContext.BaseDirectory, "notification-cooldown.json");
 
     // ── Configuration (runtime-editable) ──
     public NotificationConfig Config { get; set; } = new();
 
-    public NotificationService(ILogger<NotificationService> logger) => _logger = logger;
+    public NotificationService(ILogger<NotificationService> logger)
+    {
+        _logger = logger;
+        LoadCooldownState();
+    }
+
+    private void SaveCooldownState()
+    {
+        try
+        {
+            lock (_lock)
+            {
+                var state = _telegramCooldown.ToDictionary(kv => kv.Key, kv => kv.Value.ToString("o"));
+                File.WriteAllText(CooldownStateFile, JsonSerializer.Serialize(state, new JsonSerializerOptions { WriteIndented = true }));
+            }
+        }
+        catch (Exception ex) { _logger.LogDebug("SaveCooldownState failed: {Err}", ex.Message); }
+    }
+
+    private void LoadCooldownState()
+    {
+        try
+        {
+            if (!File.Exists(CooldownStateFile)) return;
+            var json = File.ReadAllText(CooldownStateFile);
+            var state = JsonSerializer.Deserialize<Dictionary<string, string>>(json);
+            if (state == null) return;
+            var now = DateTime.UtcNow;
+            lock (_lock)
+            {
+                foreach (var (key, value) in state)
+                {
+                    if (DateTime.TryParse(value, null, System.Globalization.DateTimeStyles.RoundtripKind, out var dt)
+                        && dt.Date == now.Date) // Only load today's entries
+                    {
+                        _telegramCooldown[key] = dt;
+                    }
+                }
+            }
+            _logger.LogInformation("Notification cooldown state restored ({Count} entries from today)", _telegramCooldown.Count);
+        }
+        catch (Exception ex) { _logger.LogDebug("LoadCooldownState failed: {Err}", ex.Message); }
+    }
 
     // ── Send notification across all enabled channels ──
 
@@ -66,9 +109,11 @@ public class NotificationService
         }
 
         // Telegram — send Critical events once per day per alert type
+        // Skip if user is in an active agent conversation (mute state)
         if (Config.TelegramEnabled && !string.IsNullOrEmpty(Config.TelegramBotToken)
             && !string.IsNullOrEmpty(Config.TelegramChatId)
-            && severity == "Critical")
+            && severity == "Critical"
+            && !TelegramBotService.IsConversationMuted)
         {
             var cooldownKey = $"{title}:{severity}";
             var now = DateTime.UtcNow;
@@ -85,6 +130,8 @@ public class NotificationService
                 var old = _telegramCooldown.Where(kv => kv.Value.Date < now.Date).Select(kv => kv.Key).ToList();
                 foreach (var k in old) _telegramCooldown.Remove(k);
             }
+            // Persist cooldown state so restarts don't re-send today's alerts
+            SaveCooldownState();
         }
 
         // Always log

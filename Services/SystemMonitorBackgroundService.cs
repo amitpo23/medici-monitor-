@@ -76,7 +76,8 @@ public class SystemMonitorBackgroundService : BackgroundService
                 var criticalsToSend = criticals.Where(ShouldSendTelegramAlert).ToList();
 
                 // Send Telegram alert directly (with per-alert cooldown)
-                if (criticalsToSend.Count > 0)
+                // Skip if user is in an active agent conversation (mute state)
+                if (criticalsToSend.Count > 0 && !TelegramBotService.IsConversationMuted)
                 {
                     await SendTelegramMonitorAlert(report, criticalsToSend, warnings);
                     MarkTelegramAlertsSent(criticalsToSend);

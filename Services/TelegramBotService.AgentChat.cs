@@ -29,9 +29,11 @@ public partial class TelegramBotService
     };
 
     // Auto-mute during conversation — suppress push notifications
-    private DateTime? _conversationMuteUntil;
+    // Static so other services (NotificationService, SystemMonitorBackgroundService,
+    // AgentProactivityService) can check mute state before sending Telegram messages.
+    private static DateTime? _conversationMuteUntil;
 
-    private bool IsConversationMuted =>
+    public static bool IsConversationMuted =>
         _conversationMuteUntil.HasValue && DateTime.UtcNow < _conversationMuteUntil.Value;
 
     // ── /team — Agent Menu (instant, no Claude) ──────────────────
