@@ -38,6 +38,18 @@ public partial class TelegramBotService
 
     private async Task HandleTeamMenu(string chatId)
     {
+        var text = @"🏢 *צוות סוכנים* — לחץ לדוח מיידי:
+
+🛡️ *שמעון* — בטיחות, kill switch, חשיפה, spending
+📋 *אמיר* — הזמנות, סריקות, miss rate, orders
+💰 *יוסי* — תמחור חדרים, מחירים, margins
+🗺️ *מיכאל* — מיפויים, gaps, venues
+🖥️ *יעל* — מוניטור מערכת, WebJobs, Zenith
+🏨 *רוני* — השלמות, B2B, נראות חדרים
+🔀 *דני* — תיאום בין מערכות (Hotels↔Prediction↔Monitor)
+⚡ *גבי* — תיקון מהיר, autofix gaps
+🏢 *אריה* — חדר בקרה, סטטוס כל הסוכנים";
+
         var buttons = new object[][]
         {
             new[] { Btn("🛡️ שמעון", "agent:שמעון"), Btn("📋 אמיר", "agent:אמיר"), Btn("💰 יוסי", "agent:יוסי") },
@@ -45,7 +57,7 @@ public partial class TelegramBotService
             new[] { Btn("🔀 דני", "agent:דני"), Btn("⚡ גבי", "agent:גבי"), Btn("🏢 אריה", "agent:אריה") },
         };
 
-        await SendInlineKeyboard(chatId, "🏢 *צוות סוכנים* — לחץ לדוח מיידי:", buttons);
+        await SendInlineKeyboard(chatId, text, buttons);
     }
 
     // ── Agent Report View (instant, ~100ms, no Claude) ───────────
