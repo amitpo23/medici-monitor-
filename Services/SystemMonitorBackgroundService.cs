@@ -228,17 +228,18 @@ public class SystemMonitorBackgroundService : BackgroundService
     private bool ShouldSendTelegramAlert(MonitorAlert alert)
     {
         var key = GetAlertCooldownKey(alert);
+        // Same alert type → once per day only
         return !_lastTelegramAlertByKey.TryGetValue(key, out var lastSent)
-            || DateTime.UtcNow - lastSent > TelegramCooldown;
+            || lastSent.Date != DateTime.UtcNow.Date;
     }
 
     private void MarkTelegramAlertsSent(IEnumerable<MonitorAlert> alerts)
     {
         var now = DateTime.UtcNow;
-        var staleCutoff = now - (TelegramCooldown * 2);
 
+        // Clean entries from previous days
         foreach (var staleKey in _lastTelegramAlertByKey
-            .Where(entry => entry.Value < staleCutoff)
+            .Where(entry => entry.Value.Date < now.Date)
             .Select(entry => entry.Key)
             .ToList())
         {

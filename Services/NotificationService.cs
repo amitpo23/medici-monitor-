@@ -65,7 +65,7 @@ public class NotificationService
                 tasks.Add(SendWhatsAppTwilioLegacy(title, message, severity, result));
         }
 
-        // Telegram — send immediately for Critical events (with 10-min cooldown)
+        // Telegram — send Critical events once per day per alert type
         if (Config.TelegramEnabled && !string.IsNullOrEmpty(Config.TelegramBotToken)
             && !string.IsNullOrEmpty(Config.TelegramChatId)
             && severity == "Critical")
@@ -74,14 +74,16 @@ public class NotificationService
             var now = DateTime.UtcNow;
             lock (_lock)
             {
-                if (!_telegramCooldown.TryGetValue(cooldownKey, out var lastSent) || now - lastSent > TimeSpan.FromMinutes(10))
+                var isNewToday = !_telegramCooldown.TryGetValue(cooldownKey, out var lastSent)
+                    || lastSent.Date != now.Date;  // Same type → once per day only
+                if (isNewToday)
                 {
                     _telegramCooldown[cooldownKey] = now;
                     tasks.Add(SendTelegram(title, message, severity, result));
                 }
-                // Clean old cooldown entries
-                var expired = _telegramCooldown.Where(kv => now - kv.Value > TimeSpan.FromMinutes(30)).Select(kv => kv.Key).ToList();
-                foreach (var k in expired) _telegramCooldown.Remove(k);
+                // Clean entries from previous days
+                var old = _telegramCooldown.Where(kv => kv.Value.Date < now.Date).Select(kv => kv.Key).ToList();
+                foreach (var k in old) _telegramCooldown.Remove(k);
             }
         }
 
@@ -367,24 +369,12 @@ public class NotificationService
             if (severity == "Critical")
             {
                 // Add Ack/Snooze buttons for critical alerts
-                var alertKey = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(title))[..8];
                 payloadObj = new
                 {
                     chat_id = Config.TelegramChatId,
                     text,
                     parse_mode = "Markdown",
-                    disable_web_page_preview = true,
-                    reply_markup = new
-                    {
-                        inline_keyboard = new[]
-                        {
-                            new[]
-                            {
-                                new { text = "✅ אישור", callback_data = $"ack:{alertKey}" },
-                                new { text = "😴 השתק שעה", callback_data = $"snooze:{alertKey}" }
-                            }
-                        }
-                    }
+                    disable_web_page_preview = true
                 };
             }
             else
