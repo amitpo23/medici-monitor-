@@ -176,8 +176,8 @@ public partial class TelegramBotService : BackgroundService
                 // Poll for commands every 30 seconds
                 await PollCommands();
 
-                // Send 3-hourly report
-                if (DateTime.UtcNow - lastReportTime >= TimeSpan.FromHours(3))
+                // Send 3-hourly report (skip during active conversation)
+                if (DateTime.UtcNow - lastReportTime >= TimeSpan.FromHours(3) && !IsConversationMuted)
                 {
                     await SendHourlyReport();
                     lastReportTime = DateTime.UtcNow;
@@ -187,7 +187,7 @@ public partial class TelegramBotService : BackgroundService
                 var nowUtc = DateTime.UtcNow;
                 var israelHour = nowUtc.AddHours(3).Hour;
                 var isQuietHours = israelHour >= 23 || israelHour < 7;
-                if (nowUtc.Minute >= 3 && nowUtc.Minute < 6 && nowUtc.Hour != lastDashboardHour && !isQuietHours)
+                if (nowUtc.Minute >= 3 && nowUtc.Minute < 6 && nowUtc.Hour != lastDashboardHour && !isQuietHours && !IsConversationMuted)
                 {
                     lastDashboardHour = nowUtc.Hour;
                     _ = Task.Run(async () =>
@@ -384,7 +384,7 @@ public partial class TelegramBotService : BackgroundService
 
                         // ── Agent Chat ──
                         case "/team": await HandleTeamMenu(chatId); break;
-                        case "/talk": await HandleTalkToAgent(chatId, text); break;
+                        case "/talk": await HandleTeamMenu(chatId); break;
                         case "/bye": _claude.EndAllConversations(chatId); await SendToGroup("👋 שיחות סוכנים נסגרו.", chatId); break;
 
                         // ── AI + Monitor ──
