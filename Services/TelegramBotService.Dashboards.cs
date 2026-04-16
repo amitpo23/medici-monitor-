@@ -158,9 +158,40 @@ public partial class TelegramBotService
             }
             catch { }
 
+            // New Processes — ScanReports, BrowserScans, Incoming, Mapping
+            try
+            {
+                var status = await _data.GetFullStatus();
+                sb.AppendLine();
+                sb.AppendLine("*🔍 תהליכים חדשים:*");
+
+                if (status.ScanReports.Any())
+                {
+                    var scanOk = status.ScanReports.Sum(r => r.Working);
+                    var scanFail = status.ScanReports.Sum(r => r.ZenithFail);
+                    var scanDetails = status.ScanReports.Sum(r => r.TotalDetails);
+                    sb.AppendLine($"  📊 Scan Reports: {scanOk} OK | {scanFail} Zenith fail | {scanDetails} details");
+                    foreach (var r in status.ScanReports.Where(r => r.ZenithFail > 0).Take(3))
+                        sb.AppendLine($"    ⚠️ {r.City}: {r.ZenithFail} failures");
+                }
+                else sb.AppendLine("  📊 Scan Reports: אין נתונים (טבלה ריקה)");
+
+                if (status.BrowserScanResults.Any())
+                {
+                    var ok = status.BrowserScanResults.Count(b => b.ScanStatus == "OK");
+                    var fail = status.BrowserScanResults.Count(b => b.ScanStatus != "OK");
+                    var prices = status.BrowserScanResults.Sum(b => b.PricesFound);
+                    sb.AppendLine($"  🌐 Browser Scans: {ok} OK | {fail} fail | {prices} prices");
+                }
+
+                sb.AppendLine($"  📩 Incoming Reservations pending: {status.IncomingPending}");
+                sb.AppendLine($"  🗺️ Mapping Misses: {status.MappingMissesNew} new | {status.MappingMissesFixed} fixed");
+            }
+            catch { }
+
             sb.AppendLine();
             sb.AppendLine("━━━━━━━━━━━━━━━━━━━━");
-            sb.AppendLine("_דוח הבא בעוד שעה | /help לפקודות_");
+            sb.AppendLine("_דוח הבא בעוד 3 שעות | /help לפקודות_");
 
             await SendToGroup(sb.ToString(), targetChatId);
             _logger.LogInformation("Hourly Telegram report sent");

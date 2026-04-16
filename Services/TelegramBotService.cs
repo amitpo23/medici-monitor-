@@ -49,8 +49,14 @@ public partial class TelegramBotService : BackgroundService
 
     private string _botToken = "";
     private string _chatId = "";
+    private string _groupChatId = "";
     private int _lastUpdateId = 0;
     private HashSet<string> _authorizedUsers = new();
+
+    // Real-time buy/sell/reservation tracking (ID-based, cheap queries)
+    private int _lastKnownBookId = -1;
+    private int _lastKnownSoldBookId = -1;
+    private long _lastKnownReservationId = -1;
 
     // State persistence
     private static readonly string BotStateFile = Path.Combine(AppContext.BaseDirectory, "bot-state.json");
@@ -146,6 +152,8 @@ public partial class TelegramBotService : BackgroundService
     {
         _botToken = _config["Notifications:TelegramBotToken"] ?? "";
         _chatId = _config["Notifications:TelegramChatId"] ?? "";
+        _groupChatId = _config["Notifications:TelegramGroupChatId"] ?? "";
+        if (string.IsNullOrEmpty(_groupChatId)) _groupChatId = _chatId;
         _authorizedUsers = (_config["Telegram:AuthorizedUsers"] ?? "")
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .ToHashSet();
@@ -169,6 +177,8 @@ public partial class TelegramBotService : BackgroundService
         var lastReportTime = DateTime.UtcNow;
         var lastDashboardHour = -1;
         var lastDailySummaryDate = DateTime.MinValue.Date;
+        var lastHealthCheckTime = DateTime.UtcNow;
+        var lastBuySellCheckTime = DateTime.MinValue;
 
         while (!stoppingToken.IsCancellationRequested)
         {
@@ -177,11 +187,25 @@ public partial class TelegramBotService : BackgroundService
                 // Poll for commands every 30 seconds
                 await PollCommands();
 
-                // Send 3-hourly report (skip during active conversation)
+                // Send 3-hourly report to group (skip during active conversation)
                 if (DateTime.UtcNow - lastReportTime >= TimeSpan.FromHours(3) && !IsConversationMuted)
                 {
-                    await SendHourlyReport();
+                    await SendHourlyReport(_groupChatId);
                     lastReportTime = DateTime.UtcNow;
+                }
+
+                // Hourly health check (quick pulse) to primary chat
+                if (DateTime.UtcNow - lastHealthCheckTime >= TimeSpan.FromHours(1) && !IsConversationMuted)
+                {
+                    await SendHourlyHealthCheck();
+                    lastHealthCheckTime = DateTime.UtcNow;
+                }
+
+                // Real-time buy/sell/reservation delta — every 2 minutes
+                if (DateTime.UtcNow - lastBuySellCheckTime >= TimeSpan.FromMinutes(2))
+                {
+                    await CheckBuySellChangesLight();
+                    lastBuySellCheckTime = DateTime.UtcNow;
                 }
 
                 // Hourly dashboards at :03 every hour (skip quiet hours 23:00-07:00 Israel)
@@ -205,18 +229,18 @@ public partial class TelegramBotService : BackgroundService
                     });
                 }
 
-                // Daily summary at 07:00 UTC (10:00 Israel)
+                // Daily summary at 07:00 UTC (10:00 Israel) to group
                 if (DateTime.UtcNow.Hour == 7 && DateTime.UtcNow.Date > lastDailySummaryDate)
                 {
-                    await SendDailySummary();
+                    await SendDailySummary(_groupChatId);
                     lastDailySummaryDate = DateTime.UtcNow.Date;
                 }
 
-                // Weekly summary — Sunday at 08:00 UTC
+                // Weekly summary — Sunday at 08:00 UTC to group
                 if (DateTime.UtcNow.DayOfWeek == DayOfWeek.Sunday && DateTime.UtcNow.Hour == 8
                     && _lastWeeklySummaryDay != DayOfWeek.Sunday)
                 {
-                    await SendWeeklySummary();
+                    await SendWeeklySummary(_groupChatId);
                     _lastWeeklySummaryDay = DayOfWeek.Sunday;
                 }
                 if (DateTime.UtcNow.DayOfWeek != DayOfWeek.Sunday) _lastWeeklySummaryDay = DateTime.UtcNow.DayOfWeek;
@@ -303,6 +327,7 @@ public partial class TelegramBotService : BackgroundService
                         // ── Reports & Status ──
                         case "/status": await HandleStatus(chatId); break;
                         case "/report": await SendHourlyReport(chatId); break;
+                        case "/healthcheck": await SendHourlyHealthCheck(chatId); break;
                         case "/daily_summary": await SendDailySummary(chatId); break;
                         case "/alerts": await HandleAlerts(chatId); break;
 

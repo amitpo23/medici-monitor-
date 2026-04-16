@@ -516,6 +516,194 @@ public partial class TelegramBotService
         catch { }
     }
 
+    // ── Hourly Health Check (light, every hour) ──────────────────
+
+    private async Task SendHourlyHealthCheck(string? targetChatId = null)
+    {
+        try
+        {
+            var status = await _data.GetFullStatus();
+            var sb = new StringBuilder();
+            sb.AppendLine("🏥 *בדיקת בריאות שעתית*");
+            sb.AppendLine($"🕐 {DateTime.UtcNow:HH:mm} UTC");
+            sb.AppendLine("━━━━━━━━━━━━━━━━━━━━");
+
+            sb.AppendLine($"🗄️ DB: {(status.DbConnected ? "✅" : "❌")}");
+
+            var buyIcon = status.BuyRoomsHealthy ? "✅" : "❌";
+            sb.AppendLine($"🛒 BuyRooms: {buyIcon} (last: {status.MinutesSinceLastPurchase}m ago)");
+
+            sb.AppendLine($"📦 Active: {status.TotalActiveBookings} | Stuck: {status.StuckCancellations}");
+            sb.AppendLine($"💰 Bought today: {status.BoughtToday} | Sold: {status.SoldToday}");
+            sb.AppendLine($"📥 Reservations today: {status.ReservationsToday}");
+            sb.AppendLine($"📊 Queue: {status.QueuePending} pending | {status.QueueErrors} errors");
+
+            var scanOk = status.ScanReports.Sum(r => r.Working);
+            var scanFail = status.ScanReports.Sum(r => r.ZenithFail);
+            sb.AppendLine($"🔍 Scans: {scanOk} OK | {scanFail} Zenith fail");
+
+            var browserOk = status.BrowserScanResults.Count(b => b.ScanStatus == "OK");
+            var browserTotal = status.BrowserScanResults.Count;
+            sb.AppendLine($"🌐 Browser scans: {browserOk}/{browserTotal}");
+
+            sb.AppendLine($"📩 Incoming pending: {status.IncomingPending}");
+            sb.AppendLine($"🗺️ Mapping misses: {status.MappingMissesNew} new | {status.MappingMissesFixed} fixed");
+
+            try
+            {
+                var alerts = await _alerting.EvaluateAlerts();
+                var crit = alerts.Count(a => a.Severity == "Critical");
+                var warn = alerts.Count(a => a.Severity == "Warning");
+                var alertIcon = crit > 0 ? "🔴" : warn > 0 ? "🟡" : "✅";
+                sb.AppendLine($"🚨 Alerts: {alertIcon} {crit} critical | {warn} warning");
+            }
+            catch { }
+
+            sb.AppendLine("━━━━━━━━━━━━━━━━━━━━");
+            sb.AppendLine("_/status לפרטים | /report לדוח מלא_");
+
+            await SendToGroup(sb.ToString(), targetChatId ?? _chatId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("Hourly health check failed: {Err}", ex.Message);
+        }
+    }
+
+    // ── Real-time Buy/Sell/Reservation Change Detection (light, every 2 min) ──
+
+    private async Task CheckBuySellChangesLight()
+    {
+        if (_muteUntil.HasValue && DateTime.UtcNow < _muteUntil.Value) return;
+
+        try
+        {
+            using var conn = new Microsoft.Data.SqlClient.SqlConnection(_config.GetConnectionString("SqlServer"));
+            await conn.OpenAsync();
+
+            // Single combined query — 3 MAX lookups use clustered index, very cheap
+            using var cmd = new Microsoft.Data.SqlClient.SqlCommand(@"
+                SELECT
+                    ISNULL((SELECT MAX(PreBookId) FROM MED_Book), 0) AS MaxBookId,
+                    ISNULL((SELECT MAX(PreBookId) FROM MED_Book WHERE IsSold = 1), 0) AS MaxSoldId,
+                    ISNULL((SELECT MAX(Id) FROM Med_Reservation), 0) AS MaxResId", conn)
+            { CommandTimeout = 5 };
+
+            using var rdr = await cmd.ExecuteReaderAsync();
+            if (!await rdr.ReadAsync()) return;
+
+            int maxBook = rdr.IsDBNull(0) ? 0 : rdr.GetInt32(0);
+            int maxSold = rdr.IsDBNull(1) ? 0 : rdr.GetInt32(1);
+            long maxRes = rdr.IsDBNull(2) ? 0 : rdr.GetInt64(2);
+            await rdr.CloseAsync();
+
+            // First run — seed baseline only
+            if (_lastKnownBookId == -1)
+            {
+                _lastKnownBookId = maxBook;
+                _lastKnownSoldBookId = maxSold;
+                _lastKnownReservationId = maxRes;
+                return;
+            }
+
+            if (maxBook > _lastKnownBookId) await SendBuyAlert(conn, _lastKnownBookId);
+            if (maxSold > _lastKnownSoldBookId) await SendSellAlert(conn, _lastKnownSoldBookId);
+            if (maxRes > _lastKnownReservationId) await SendReservationAlert(conn, _lastKnownReservationId);
+
+            _lastKnownBookId = maxBook;
+            _lastKnownSoldBookId = maxSold;
+            _lastKnownReservationId = maxRes;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug("Buy/sell check error: {Err}", ex.Message);
+        }
+    }
+
+    private async Task SendBuyAlert(Microsoft.Data.SqlClient.SqlConnection conn, int sinceId)
+    {
+        using var cmd = new Microsoft.Data.SqlClient.SqlCommand(@"
+            SELECT TOP 5 b.PreBookId, b.HotelId,
+                   ISNULL(h.Name, 'Hotel ' + CAST(b.HotelId AS VARCHAR)) AS HotelName,
+                   b.Price, b.Datefrom, b.Dateto
+            FROM MED_Book b
+            LEFT JOIN Med_Hotels h ON h.HotelId = b.HotelId
+            WHERE b.PreBookId > @SinceId
+            ORDER BY b.PreBookId DESC", conn) { CommandTimeout = 10 };
+        cmd.Parameters.AddWithValue("@SinceId", sinceId);
+
+        var sb = new StringBuilder();
+        sb.AppendLine("🛒 *רכישה חדשה!*");
+        using var rdr = await cmd.ExecuteReaderAsync();
+        int count = 0;
+        while (await rdr.ReadAsync())
+        {
+            count++;
+            var hotel = rdr.IsDBNull(2) ? "?" : rdr.GetString(2);
+            var price = rdr.IsDBNull(3) ? 0 : Convert.ToDouble(rdr.GetValue(3));
+            var from = rdr.IsDBNull(4) ? "?" : rdr.GetDateTime(4).ToString("dd/MM");
+            var to = rdr.IsDBNull(5) ? "?" : rdr.GetDateTime(5).ToString("dd/MM");
+            sb.AppendLine($"  🏨 {hotel} | 💰 ${price:N0} | 📅 {from}–{to}");
+        }
+        if (count > 0) await SendToGroup(sb.ToString());
+    }
+
+    private async Task SendSellAlert(Microsoft.Data.SqlClient.SqlConnection conn, int sinceId)
+    {
+        using var cmd = new Microsoft.Data.SqlClient.SqlCommand(@"
+            SELECT TOP 5 b.PreBookId, b.HotelId,
+                   ISNULL(h.Name, 'Hotel ' + CAST(b.HotelId AS VARCHAR)) AS HotelName,
+                   b.Price, b.Datefrom, b.Dateto
+            FROM MED_Book b
+            LEFT JOIN Med_Hotels h ON h.HotelId = b.HotelId
+            WHERE b.IsSold = 1 AND b.PreBookId > @SinceId
+            ORDER BY b.PreBookId DESC", conn) { CommandTimeout = 10 };
+        cmd.Parameters.AddWithValue("@SinceId", sinceId);
+
+        var sb = new StringBuilder();
+        sb.AppendLine("💵 *מכירה חדשה!*");
+        using var rdr = await cmd.ExecuteReaderAsync();
+        int count = 0;
+        while (await rdr.ReadAsync())
+        {
+            count++;
+            var hotel = rdr.IsDBNull(2) ? "?" : rdr.GetString(2);
+            var price = rdr.IsDBNull(3) ? 0 : Convert.ToDouble(rdr.GetValue(3));
+            var from = rdr.IsDBNull(4) ? "?" : rdr.GetDateTime(4).ToString("dd/MM");
+            var to = rdr.IsDBNull(5) ? "?" : rdr.GetDateTime(5).ToString("dd/MM");
+            sb.AppendLine($"  🏨 {hotel} | 💰 ${price:N0} | 📅 {from}–{to}");
+        }
+        if (count > 0) await SendToGroup(sb.ToString());
+    }
+
+    private async Task SendReservationAlert(Microsoft.Data.SqlClient.SqlConnection conn, long sinceId)
+    {
+        using var cmd = new Microsoft.Data.SqlClient.SqlCommand(@"
+            SELECT TOP 5 r.HotelCode, h.Name, r.AmountAfterTax, r.CurrencyCode,
+                   r.Datefrom, r.Dateto, r.ResStatus
+            FROM Med_Reservation r
+            LEFT JOIN Med_Hotels h ON CAST(h.HotelId AS NVARCHAR(20)) = r.HotelCode
+            WHERE r.Id > @SinceId
+            ORDER BY r.Id DESC", conn) { CommandTimeout = 10 };
+        cmd.Parameters.AddWithValue("@SinceId", sinceId);
+
+        var sb = new StringBuilder();
+        sb.AppendLine("📥 *הזמנה נכנסת חדשה!*");
+        using var rdr = await cmd.ExecuteReaderAsync();
+        int count = 0;
+        while (await rdr.ReadAsync())
+        {
+            count++;
+            var hotel = rdr.IsDBNull(1) ? $"Hotel {(rdr.IsDBNull(0) ? "?" : rdr.GetString(0))}" : rdr.GetString(1);
+            var amount = rdr.IsDBNull(2) ? 0 : Convert.ToDouble(rdr.GetValue(2));
+            var currency = rdr.IsDBNull(3) ? "USD" : rdr.GetString(3);
+            var dates = $"{(rdr.IsDBNull(4) ? "?" : rdr.GetDateTime(4).ToString("dd/MM"))}–{(rdr.IsDBNull(5) ? "?" : rdr.GetDateTime(5).ToString("dd/MM"))}";
+            var status = rdr.IsDBNull(6) ? "?" : rdr.GetString(6);
+            sb.AppendLine($"  🏨 {hotel} | 💰 {amount:N0} {currency} | 📅 {dates} | {status}");
+        }
+        if (count > 0) await SendToGroup(sb.ToString());
+    }
+
     // ── Mute, Log, Oncall, Cancel, Schedule ─────────────────────
 
     private async Task HandleMute(string chatId, string text, string from)
