@@ -16,6 +16,7 @@ public class SystemMonitorBackgroundService : BackgroundService
     private readonly NotificationService _notifications;
     private readonly IConfiguration _config;
     private readonly ILogger<SystemMonitorBackgroundService> _logger;
+    private readonly MonitorPauseService _pause;
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(15) };
     private readonly int _intervalMinutes;
     private readonly string _predictionApiUrl;
@@ -32,12 +33,14 @@ public class SystemMonitorBackgroundService : BackgroundService
         SystemMonitorService monitor,
         NotificationService notifications,
         IConfiguration config,
-        ILogger<SystemMonitorBackgroundService> logger)
+        ILogger<SystemMonitorBackgroundService> logger,
+        MonitorPauseService pause)
     {
         _monitor = monitor;
         _notifications = notifications;
         _config = config;
         _logger = logger;
+        _pause = pause;
         _intervalMinutes = config.GetValue<int?>("SystemMonitor:IntervalMinutes") ?? 30;
         _predictionApiUrl = config["Integration:PredictionApiUrl"] ?? "https://medici-prediction-api.azurewebsites.net";
     }
@@ -62,6 +65,11 @@ public class SystemMonitorBackgroundService : BackgroundService
 
     private async Task RunScan(string source)
     {
+        if (_pause.IsPaused)
+        {
+            _logger.LogInformation("[SystemMonitor-{Source}] skipped — paused (until {Until})", source, _pause.PausedUntil);
+            return;
+        }
         try
         {
             var report = await _monitor.RunFullScan();

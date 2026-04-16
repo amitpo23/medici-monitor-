@@ -13,16 +13,18 @@ public class AlertNotificationService : BackgroundService
     private readonly IConfiguration _config;
     private readonly ILogger<AlertNotificationService> _logger;
     private readonly MonitorHubNotifier _hubNotifier;
+    private readonly MonitorPauseService _pause;
     private readonly Dictionary<string, DateTime> _lastNotified = new();
     private static readonly TimeSpan CooldownPeriod = TimeSpan.FromHours(1);
     private static readonly TimeSpan CheckInterval = TimeSpan.FromMinutes(5);
 
-    public AlertNotificationService(AlertingService alerting, IConfiguration config, ILogger<AlertNotificationService> logger, MonitorHubNotifier hubNotifier)
+    public AlertNotificationService(AlertingService alerting, IConfiguration config, ILogger<AlertNotificationService> logger, MonitorHubNotifier hubNotifier, MonitorPauseService pause)
     {
         _alerting = alerting;
         _config = config;
         _logger = logger;
         _hubNotifier = hubNotifier;
+        _pause = pause;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -33,6 +35,11 @@ public class AlertNotificationService : BackgroundService
         {
             try
             {
+                if (_pause.IsPaused)
+                {
+                    await Task.Delay(CheckInterval, stoppingToken);
+                    continue;
+                }
                 var alerts = await _alerting.EvaluateAlerts();
 
                 // Push all alerts to connected SignalR clients

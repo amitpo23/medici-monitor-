@@ -30,6 +30,7 @@ builder.Services.AddSingleton<BrowserReconciliationService>();
 builder.Services.AddSingleton<BookingReconciliationService>();
 builder.Services.AddSingleton<DeepVerificationService>();
 builder.Services.AddSingleton<SystemMonitorService>();
+builder.Services.AddSingleton<MonitorPauseService>();
 builder.Services.AddHostedService<FailSafeBackgroundService>();
 builder.Services.AddHostedService<AlertNotificationService>();
 builder.Services.AddHostedService<ReconciliationBackgroundService>();

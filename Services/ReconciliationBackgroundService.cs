@@ -10,17 +10,20 @@ public class ReconciliationBackgroundService : BackgroundService
     private readonly NotificationService _notifications;
     private readonly IConfiguration _config;
     private readonly ILogger<ReconciliationBackgroundService> _logger;
+    private readonly MonitorPauseService _pause;
 
     public ReconciliationBackgroundService(
         BookingReconciliationService reconciliation,
         NotificationService notifications,
         IConfiguration config,
-        ILogger<ReconciliationBackgroundService> logger)
+        ILogger<ReconciliationBackgroundService> logger,
+        MonitorPauseService pause)
     {
         _reconciliation = reconciliation;
         _notifications = notifications;
         _config = config;
         _logger = logger;
+        _pause = pause;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -45,6 +48,12 @@ public class ReconciliationBackgroundService : BackgroundService
         {
             try
             {
+                if (_pause.IsPaused)
+                {
+                    _logger.LogInformation("[Reconciliation] skipped — paused (until {Until})", _pause.PausedUntil);
+                    await Task.Delay(TimeSpan.FromMinutes(intervalMinutes), stoppingToken);
+                    continue;
+                }
                 var report = await _reconciliation.RunReconciliation(lookbackHours);
                 if (report != null && report.CriticalMismatches > 0)
                 {

@@ -11,11 +11,13 @@ public class FailSafeBackgroundService : BackgroundService
 {
     private readonly FailSafeService _failSafe;
     private readonly ILogger<FailSafeBackgroundService> _logger;
+    private readonly MonitorPauseService _pause;
 
-    public FailSafeBackgroundService(FailSafeService failSafe, ILogger<FailSafeBackgroundService> logger)
+    public FailSafeBackgroundService(FailSafeService failSafe, ILogger<FailSafeBackgroundService> logger, MonitorPauseService pause)
     {
         _failSafe = failSafe;
         _logger = logger;
+        _pause = pause;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -50,6 +52,11 @@ public class FailSafeBackgroundService : BackgroundService
 
     private async Task<string> RunScan(string source)
     {
+        if (_pause.IsPaused)
+        {
+            _logger.LogInformation("[FailSafe-{Source}] skipped — paused (until {Until})", source, _pause.PausedUntil);
+            return "PAUSED";
+        }
         try
         {
             var result = await _failSafe.ScanAsync();

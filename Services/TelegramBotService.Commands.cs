@@ -704,6 +704,60 @@ public partial class TelegramBotService
         if (count > 0) await SendToGroup(sb.ToString());
     }
 
+    // ── DB Pause Commands ───────────────────────────────────────
+
+    private async Task HandlePauseDb(string chatId, string text, string from)
+    {
+        var parts = text.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        int hours = 24;
+        if (parts.Length >= 2 && int.TryParse(parts[1], out var h) && h > 0 && h <= 168)
+            hours = h;
+
+        string? reason = parts.Length >= 3 ? string.Join(" ", parts.Skip(2)) : null;
+        _pause.Pause(TimeSpan.FromHours(hours), reason, from);
+
+        var msg = new StringBuilder();
+        msg.AppendLine($"⏸️ *כל בדיקות ה-DB הושהו*");
+        msg.AppendLine($"⏱️ משך: {hours} שעות");
+        msg.AppendLine($"👤 ע\"י: {from}");
+        if (!string.IsNullOrEmpty(reason)) msg.AppendLine($"📝 סיבה: {reason}");
+        msg.AppendLine($"🕐 חידוש אוטומטי: {_pause.PausedUntil:dd/MM HH:mm} UTC");
+        msg.AppendLine();
+        msg.AppendLine("מושהה: SystemMonitor, HealthCheck, Buy/Sell, FailSafe, Reconciliation, AlertNotification");
+        msg.AppendLine("פעיל: פקודות ידניות (/status, /report), Dashboard, API");
+        msg.AppendLine();
+        msg.AppendLine("_/resume_db לחידוש ידני_");
+
+        await SendToGroup(msg.ToString(), chatId);
+    }
+
+    private async Task HandleResumeDb(string chatId, string from)
+    {
+        var wasPaused = _pause.IsPaused;
+        _pause.Resume(from);
+        if (wasPaused)
+            await SendToGroup($"▶️ *בדיקות ה-DB חודשו*\nע\"י: {from}", chatId);
+        else
+            await SendToGroup($"ℹ️ המערכת כבר פעילה — אין מה לחדש", chatId);
+    }
+
+    private async Task HandlePauseStatus(string chatId)
+    {
+        if (!_pause.IsPaused)
+        {
+            await SendToGroup("✅ *בדיקות ה-DB פעילות*", chatId);
+            return;
+        }
+        var remaining = _pause.TimeRemaining ?? TimeSpan.Zero;
+        var msg = new StringBuilder();
+        msg.AppendLine("⏸️ *בדיקות ה-DB מושהות*");
+        msg.AppendLine($"🕐 נותרו: {(int)remaining.TotalHours}h {remaining.Minutes}m");
+        msg.AppendLine($"🕐 חידוש: {_pause.PausedUntil:dd/MM HH:mm} UTC");
+        if (!string.IsNullOrEmpty(_pause.TriggeredBy)) msg.AppendLine($"👤 ע\"י: {_pause.TriggeredBy}");
+        if (!string.IsNullOrEmpty(_pause.Reason)) msg.AppendLine($"📝 סיבה: {_pause.Reason}");
+        await SendToGroup(msg.ToString(), chatId);
+    }
+
     // ── Mute, Log, Oncall, Cancel, Schedule ─────────────────────
 
     private async Task HandleMute(string chatId, string text, string from)

@@ -25,6 +25,7 @@ public partial class TelegramBotService : BackgroundService
     private readonly ClaudeAiService _claude;
     private readonly AuditService _audit;
     private readonly SystemMonitorService _monitor;
+    private readonly MonitorPauseService _pause;
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(15) };
 
     // Watch mode (real-time booking alerts)
@@ -128,7 +129,8 @@ public partial class TelegramBotService : BackgroundService
         InnstantApiClient innstant,
         ClaudeAiService claude,
         AuditService audit,
-        SystemMonitorService monitor)
+        SystemMonitorService monitor,
+        MonitorPauseService pause)
     {
         _config = config;
         _logger = logger;
@@ -146,6 +148,7 @@ public partial class TelegramBotService : BackgroundService
         _claude = claude;
         _audit = audit;
         _monitor = monitor;
+        _pause = pause;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -187,22 +190,22 @@ public partial class TelegramBotService : BackgroundService
                 // Poll for commands every 30 seconds
                 await PollCommands();
 
-                // Send 3-hourly report to group (skip during active conversation)
-                if (DateTime.UtcNow - lastReportTime >= TimeSpan.FromHours(3) && !IsConversationMuted)
+                // Send 3-hourly report to group (skip during active conversation or pause)
+                if (DateTime.UtcNow - lastReportTime >= TimeSpan.FromHours(3) && !IsConversationMuted && !_pause.IsPaused)
                 {
                     await SendHourlyReport(_groupChatId);
                     lastReportTime = DateTime.UtcNow;
                 }
 
                 // Hourly health check (quick pulse) to primary chat
-                if (DateTime.UtcNow - lastHealthCheckTime >= TimeSpan.FromHours(1) && !IsConversationMuted)
+                if (DateTime.UtcNow - lastHealthCheckTime >= TimeSpan.FromHours(1) && !IsConversationMuted && !_pause.IsPaused)
                 {
                     await SendHourlyHealthCheck();
                     lastHealthCheckTime = DateTime.UtcNow;
                 }
 
-                // Real-time buy/sell/reservation delta — every 2 minutes
-                if (DateTime.UtcNow - lastBuySellCheckTime >= TimeSpan.FromMinutes(2))
+                // Real-time buy/sell/reservation delta — every 2 minutes (skip if paused)
+                if (DateTime.UtcNow - lastBuySellCheckTime >= TimeSpan.FromMinutes(2) && !_pause.IsPaused)
                 {
                     await CheckBuySellChangesLight();
                     lastBuySellCheckTime = DateTime.UtcNow;
@@ -328,6 +331,9 @@ public partial class TelegramBotService : BackgroundService
                         case "/status": await HandleStatus(chatId); break;
                         case "/report": await SendHourlyReport(chatId); break;
                         case "/healthcheck": await SendHourlyHealthCheck(chatId); break;
+                        case "/pause_db": await HandlePauseDb(chatId, text, from); break;
+                        case "/resume_db": await HandleResumeDb(chatId, from); break;
+                        case "/pause_status": await HandlePauseStatus(chatId); break;
                         case "/daily_summary": await SendDailySummary(chatId); break;
                         case "/alerts": await HandleAlerts(chatId); break;
 
